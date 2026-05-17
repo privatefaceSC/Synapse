@@ -1,7 +1,0 @@
-<resources>
-    <style name="Theme.Skillwood" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/skillwood_primary</item>
-        <item name="colorOnPrimary">#FFFFFF</item>
-        <item name="android:statusBarColor">@color/skillwood_primary</item>
-    </style>
-</resources>
