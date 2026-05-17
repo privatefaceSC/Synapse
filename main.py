@@ -152,6 +152,7 @@ def register_routes(app: Flask) -> None:
             'index.html',
             user=user,
             device_connected=device_connected,
+            connect_code=user.connect_code,
             contacts_count=contacts_count,
             messages_count=messages_count,
             pending_suggestions=pending_suggestions,
