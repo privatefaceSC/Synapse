@@ -37,6 +37,9 @@
                 {% if session.get('user_id') %}
                     <a class="btn btn-sm btn-primary" href="/contacts">Контакты</a>
                     <a class="btn btn-sm btn-outline-secondary" href="/contacts/manage">Связи</a>
+                    {% if session.get('user_id') == 1 %}
+                        <a class="btn btn-sm btn-outline-secondary" href="/users">Пользователи</a>
+                    {% endif %}
                     <a class="btn btn-sm btn-outline-danger" href="/logout">Выход</a>
                 {% else %}
                     <a class="btn btn-sm btn-outline-primary" href="/login">Вход</a>

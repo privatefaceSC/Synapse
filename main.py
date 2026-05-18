@@ -115,6 +115,33 @@ def _avatar_mime_file(user_id) -> str:
     return os.path.join(_media_root(), str(user_id), 'avatar.mime')
 
 
+def _read_avatar(user_id):
+    from data.crypto import decrypt_bytes
+    path = _avatar_file(user_id)
+    if not os.path.exists(path):
+        return None
+    with open(path, 'rb') as f:
+        raw = decrypt_bytes(f.read())
+    mime = 'image/jpeg'
+    mime_path = _avatar_mime_file(user_id)
+    if os.path.exists(mime_path):
+        with open(mime_path, 'r', encoding='utf-8') as f:
+            mime = f.read().strip() or mime
+    return raw, mime
+
+
+def _user_avatar_for(user):
+    label = (user.name or "?").strip()
+    user.initial = label[:1].upper() if label else "?"
+    user.avatar_color = _AVATAR_PALETTE[user.id % len(_AVATAR_PALETTE)]
+    user.has_avatar = os.path.exists(_avatar_file(user.id))
+    return user
+
+
+def _is_admin() -> bool:
+    return session.get('user_id') == 1
+
+
 def register_routes(app: Flask) -> None:
 
     @app.route('/')
@@ -177,16 +204,32 @@ def register_routes(app: Flask) -> None:
                 f.write(mime)
             return redirect('/home')
 
-        from data.crypto import decrypt_bytes
-        path = _avatar_file(user_id)
-        if not os.path.exists(path):
+        result = _read_avatar(user_id)
+        if result is None:
             return 'Not Found', 404
-        with open(path, 'rb') as f:
-            raw = decrypt_bytes(f.read())
-        mime = 'image/jpeg'
-        if os.path.exists(_avatar_mime_file(user_id)):
-            with open(_avatar_mime_file(user_id), 'r', encoding='utf-8') as f:
-                mime = f.read().strip() or mime
+        raw, mime = result
+        return Response(raw, mimetype=mime)
+
+    @app.route('/users')
+    def users_list():
+        if not session.get('user_id'):
+            return redirect('/login')
+        if not _is_admin():
+            abort(403)
+        db = get_db()
+        users = db.query(User).order_by(User.id.asc()).all()
+        for u in users:
+            _user_avatar_for(u)
+        return render_template('users.html', users=users)
+
+    @app.route('/users/<int:user_id>/avatar')
+    def user_avatar(user_id):
+        if not _is_admin():
+            return 'Forbidden', 403
+        result = _read_avatar(user_id)
+        if result is None:
+            return 'Not Found', 404
+        raw, mime = result
         return Response(raw, mimetype=mime)
 
     @app.route('/register', methods=['GET', 'POST'])

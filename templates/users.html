@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+
+{% block title %}Пользователи{% endblock %}
+
+{% block body %}
+<div class="container" style="max-width: 640px;">
+    <div class="d-flex align-items-center justify-content-between mb-3">
+        <h2 class="mb-0">Пользователи</h2>
+        <span class="badge bg-secondary">{{ users|length }}</span>
+    </div>
+
+    {% if users %}
+    <div class="list-group shadow-sm">
+        {% for u in users %}
+        <div class="list-group-item d-flex align-items-center gap-3">
+            {% if u.has_avatar %}
+                <img src="/users/{{ u.id }}/avatar" alt="Аватар"
+                     class="rounded-circle border"
+                     style="width:48px;height:48px;object-fit:cover;flex:0 0 auto;">
+            {% else %}
+                <div class="avatar" style="background: {{ u.avatar_color }};">
+                    {{ u.initial }}
+                </div>
+            {% endif %}
+            <div class="fw-semibold">{{ u.name or 'Без имени' }}</div>
+        </div>
+        {% endfor %}
+    </div>
+    {% else %}
+    <div class="alert alert-info">Пока никто не зарегистрировался.</div>
+    {% endif %}
+</div>
+{% endblock %}
