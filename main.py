@@ -26,7 +26,6 @@ def _avatar_for(contact):
 
 
 def _enrich_with_last_message(db, contacts):
-    """Для каждого контакта подкладывает last_preview / last_time / last_at / unread_count."""
     from data.contacts import MessengerHandle
     from sqlalchemy import func
 
@@ -68,7 +67,6 @@ def _enrich_with_last_message(db, contacts):
 
 
 def _attach_media(db, msgs):
-    """Подкладывает каждому сообщению список его вложений в m.media."""
     from data.attachments import Attachment
     ids = [m.id for m in msgs]
     by_msg = {}
@@ -87,7 +85,6 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
 
     app = Flask(__name__)
     app.config['SECRET_KEY'] = 'yandexlyceum_secret_key'
-    # Потолок размера запроса: фото из уведомлений ~0.1-0.5 МБ, с запасом.
     app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
 
     @app.teardown_appcontext
@@ -107,17 +104,14 @@ def get_db():
 
 
 def _media_root() -> str:
-    """Каталог для зашифрованных медиа-файлов. По умолчанию media/ в cwd."""
     return os.environ.get('SKILLWOOD_MEDIA_ROOT') or os.path.join(os.getcwd(), 'media')
 
 
 def _avatar_file(user_id) -> str:
-    """Зашифрованный файл аватарки пользователя (хранится как и прочее медиа)."""
     return os.path.join(_media_root(), str(user_id), 'avatar.enc')
 
 
 def _avatar_mime_file(user_id) -> str:
-    """MIME аватарки в открытом виде (не секрет) — чтобы корректно отдать <img>."""
     return os.path.join(_media_root(), str(user_id), 'avatar.mime')
 
 
@@ -161,11 +155,6 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/home/avatar', methods=['GET', 'POST'])
     def avatar():
-        """Аватарка пользователя: загрузка через веб-форму и отдача в <img>.
-
-        Файл шифруется тем же Fernet, что и медиа сообщений, и лежит в media/
-        (БД не трогаем — отдельная колонка не нужна).
-        """
         if not session.get('user_id'):
             return redirect('/login') if request.method == 'POST' \
                 else ('Unauthorized', 401)
@@ -178,7 +167,6 @@ def register_routes(app: Flask) -> None:
                 return redirect('/home')
             data = upload.read()
             mime = (upload.mimetype or '').lower()
-            # Простая защита формы: только изображения, до 5 МБ.
             if not data or len(data) > 5 * 1024 * 1024 \
                     or not mime.startswith('image/'):
                 return redirect('/home')
@@ -189,7 +177,6 @@ def register_routes(app: Flask) -> None:
                 f.write(mime)
             return redirect('/home')
 
-        # GET — отдать расшифрованную аватарку.
         from data.crypto import decrypt_bytes
         path = _avatar_file(user_id)
         if not os.path.exists(path):
@@ -321,7 +308,6 @@ def register_routes(app: Flask) -> None:
         if not contact:
             return 'Not Found', 404
 
-        # Отметить чат как прочитанный — до подсчёта unread в списке.
         contact.last_read_at = datetime.now()
         db.commit()
 
@@ -366,8 +352,7 @@ def register_routes(app: Flask) -> None:
                 .filter(Messages.handle_id.in_(handle_ids))
                 .order_by(Messages.created_at.asc().nullsfirst(), Messages.id.asc())
                 .all())
-        # Отметить чат как прочитанный при поллинге — иначе непрочитанные
-        # будут «застревать» пока пользователь не перезагрузит страницу.
+        # Для того чтобы не обновлять страницу каждый раз как пришло уведомление
         contact.last_read_at = datetime.now()
         db.commit()
         _attach_media(db, msgs)
@@ -419,8 +404,6 @@ def register_routes(app: Flask) -> None:
         if new_name:
             contact.display_name = new_name
             db.commit()
-        # Поведение зависит от того, откуда вызвали — со страницы списка контактов
-        # хотим JSON и остаться на месте; с /contacts/manage — редирект.
         if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
             return jsonify({'ok': True, 'display_name': contact.display_name})
         return redirect('/contacts/manage')
@@ -439,22 +422,17 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'not_found'}), 404
         handle_ids = [h.id for h in db.query(MessengerHandle)
                       .filter(MessengerHandle.contact_id == contact.id).all()]
-        # Удаляем все сообщения этого контакта.
         if handle_ids:
             db.query(Messages).filter(Messages.handle_id.in_(handle_ids)).delete(
                 synchronize_session=False)
-        # Чистим связанные MergeSuggestion: те, что указывают на контакт как target,
-        # и те, что указывают на любой его handle как source.
         conditions = [MergeSuggestion.target_contact_id == contact.id]
         if handle_ids:
             conditions.append(MergeSuggestion.source_handle_id.in_(handle_ids))
         db.query(MergeSuggestion).filter(or_(*conditions)).delete(
             synchronize_session=False)
-        # Удаляем handles контакта.
         db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).delete(
             synchronize_session=False)
-        # И сам контакт.
         db.delete(contact)
         db.commit()
         return jsonify({'ok': True})
@@ -564,7 +542,6 @@ def register_routes(app: Flask) -> None:
         return redirect('/contacts/manage')
 
     def _device_from_bearer(db):
-        """Достаёт Device по Authorization: Bearer ... или возвращает None."""
         from data.devices import Device, hash_token
         auth = request.headers.get('Authorization', '')
         if not auth.startswith('Bearer '):
@@ -592,9 +569,6 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/download/skillwood.apk')
     def download_apk():
-        # Tests use monkeypatch.chdir(tmp_path) and put dist/ there;
-        # production runs via `python main.py` from project root.
-        # Try cwd first (so tests still work), fall back to module dir.
         candidates = [
             os.path.join(os.getcwd(), 'dist'),
             os.path.join(os.path.dirname(os.path.abspath(__file__)), 'dist'),
@@ -632,12 +606,7 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/add_media', methods=['POST'])
     def add_media():
-        """Приём медиа-вложения (пока только фото) от Android-клиента.
-
-        multipart/form-data: sender, messenger_name, обязательный файл `file`,
-        опционально text (подпись), kind (по умолчанию 'image'),
-        dedup_key (стабильный id источника — защита от повторных уведомлений).
-        """
+        # Приём медиа от Android-клиента
         from sqlalchemy.exc import IntegrityError
 
         from data.attachments import Attachment
@@ -664,8 +633,7 @@ def register_routes(app: Flask) -> None:
         device.last_seen_at = datetime.now()
         db.commit()
 
-        # Дедуп ДО создания сообщения: повторное накопительное уведомление
-        # Max/VK присылает то же фото — второй раз ничего не создаём.
+        # Если это фото уже было (Max/VK шлёт повторно) - не создаём дубль
         if dedup_key is not None:
             exists = (db.query(Attachment.id)
                       .filter(Attachment.user_id == user_id,
@@ -678,7 +646,7 @@ def register_routes(app: Flask) -> None:
             return 'Bad Request', 400
 
         now = datetime.now()
-        handle, _ = find_or_create_handle(db, user_id, messenger_name, sender)
+        handle = find_or_create_handle(db, user_id, messenger_name, sender)
         placeholder = {'image': '📷 Фото',
                        'sticker': '🩷 Стикер',
                        'video': '🎬 Видео'}.get(kind, '📎 Вложение')
@@ -715,7 +683,6 @@ def register_routes(app: Flask) -> None:
         try:
             db.commit()
         except IntegrityError:
-            # Гонка двух одновременных уведомлений с тем же dedup_key.
             db.rollback()
             return 'OK Duplicate', 200
         return 'OK', 200
@@ -741,7 +708,6 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/api/ping')
     def api_ping():
-        """Лёгкий эндпоинт для проверки доступности сервера (для Android-клиента)."""
         return jsonify({'ok': True, 'service': 'skillwood'})
 
     @app.route('/api/connect', methods=['POST'])
@@ -776,8 +742,5 @@ def _generate_code() -> str:
 
 if __name__ == '__main__':
     app = create_app()
-    # Порт берём из окружения (Replit/start.sh задаёт PORT), локально — 5000.
     port = int(os.environ.get('PORT', '5000'))
-    # use_reloader=False: на хостинге reloader плодит дочерний процесс и мешает
-    # биндингу порта; debug и так выключен.
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)

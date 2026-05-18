@@ -1,15 +1,5 @@
-"""Симметричное шифрование сообщений в БД.
-
-Цель: при прямом просмотре `db/blogs.db` (через `sqlite3`, DB Browser, утечку
-backup'а, SQL injection) текст сообщений выглядит как шифротекст.
-
-Ключ берётся из переменной окружения `SKILLWOOD_ENCRYPTION_KEY`. Для локальной
-разработки и тестов есть встроенный dev-ключ. В проде ОБЯЗАТЕЛЬНО ставить
-свою переменную окружения.
-
-Защищает от: утечки файла БД, SQL injection с дампом таблиц, любопытных глаз.
-НЕ защищает от: админа с SSH-доступом к серверу (у него есть ключ из env).
-"""
+# Шифрование текста сообщений (Fernet). В ПРОДЕ обязательно задать
+# SKILLWOOD_ENCRYPTION_KEY, иначе используется публичный dev-ключ.
 import os
 
 import sqlalchemy.types as types
@@ -30,7 +20,6 @@ def _cipher() -> Fernet:
 
 
 def encrypt(plaintext):
-    """Зашифровать строку. None прокидываем как None."""
     if plaintext is None:
         return None
     token = _cipher().encrypt(plaintext.encode("utf-8")).decode("ascii")
@@ -40,10 +29,10 @@ def encrypt(plaintext):
 def decrypt(value):
     """Расшифровать значение.
 
-    - None → None.
+    - None - None.
     - Строки без префикса `enc:v1:` возвращаем как есть (обратная совместимость
       со старыми незашифрованными данными).
-    - Битый шифротекст / чужой ключ → возвращаем как есть, чтобы не валить
+    - Битый шифротекст / чужой ключ - возвращаем как есть, чтобы не валить
       рендер UI на одном плохом сообщении.
     """
     if value is None or not isinstance(value, str):
@@ -63,17 +52,14 @@ def decrypt(value):
 
 
 def encrypt_bytes(data: bytes) -> bytes:
-    """Зашифровать бинарные данные (содержимое медиа-файла) тем же ключом."""
     return _cipher().encrypt(data)
 
 
 def decrypt_bytes(token: bytes) -> bytes:
-    """Расшифровать то, что записал encrypt_bytes."""
     return _cipher().decrypt(token)
 
 
 class EncryptedText(types.TypeDecorator):
-    """SQLAlchemy-тип: автоматически шифрует на запись, расшифровывает на чтение."""
     impl = types.Text
     cache_ok = True
 

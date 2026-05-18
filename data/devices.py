@@ -22,10 +22,8 @@ class Device(SqlAlchemyBase):
 
 
 def generate_token() -> str:
-    """Возвращает случайный URL-safe токен ~43 символа."""
     return secrets.token_urlsafe(32)
 
 
 def hash_token(raw_token: str) -> str:
-    """SHA-256 hex-digest от токена. Используется для хранения в БД."""
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()

@@ -38,7 +38,6 @@
                            class="form-control" style="max-width:320px;" required>
                     <button type="submit" class="btn btn-primary">Загрузить</button>
                 </form>
-                <div class="form-text">Изображение до 5 МБ, хранится зашифрованным.</div>
             </div>
         </div>
     </div>
@@ -80,16 +79,10 @@
             <div class="d-flex align-items-center gap-2 mt-1">
                 <span class="fs-3 fw-bold font-monospace"
                       style="letter-spacing:.2em;">{{ connect_code }}</span>
-                <button type="button" class="btn btn-sm btn-outline-secondary"
-                        onclick="navigator.clipboard.writeText('{{ connect_code }}');
-                                 this.textContent='Скопировано';">
-                    Копировать
-                </button>
             </div>
             <div class="form-text">
                 {% if device_connected %}
-                    Устройство уже привязано. Код пригодится, если переустановите
-                    или очистите приложение — введите его заново.
+                    Устройство уже привязано.
                 {% else %}
                     Откройте Synapse на телефоне и введите этот код.
                 {% endif %}
@@ -98,7 +91,7 @@
     </div>
 
     <div class="d-grid mt-4">
-        <a href="/contacts" class="btn btn-primary btn-lg">Открыть переписку →</a>
+        <a href="/contacts" class="btn btn-primary btn-lg">Открыть переписку</a>
     </div>
 </div>
 {% endblock %}

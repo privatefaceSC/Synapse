@@ -1,9 +1,3 @@
-"""Одноразовые миграции данных.
-
-Запуск: `python -m data.migrations [имя_миграции]`.
-
-Без аргумента — `migrate_to_contacts_v1` для обратной совместимости.
-"""
 from datetime import datetime
 
 import sqlalchemy
@@ -16,13 +10,6 @@ from .users import Messages, User
 
 
 def migrate_to_contacts_v1(db) -> dict:
-    """Привязать существующие Messages к Contact + MessengerHandle.
-
-    Идемпотентна: повторный вызов не создаёт дубликатов и не трогает уже
-    привязанные сообщения. Не запускает автомэтчинг.
-
-    Возвращает {"contacts_created", "handles_created", "messages_linked"}.
-    """
     contacts_created = 0
     handles_created = 0
     messages_linked = 0
@@ -87,21 +74,7 @@ def migrate_to_contacts_v1(db) -> dict:
 
 
 def migrate_group_handles_v1(db) -> dict:
-    """Задним числом склеить handles с общим префиксом в групповые Contact'ы.
-
-    Идемпотентна. Запускать ПОСЛЕ migrate_to_contacts_v1.
-
-    Алгоритм:
-    1. Для каждого user_id группируем все handles по
-       split_group_sender(sender_raw)[0]. Для каждого префикса с ≥ 2 handles,
-       распределённых по ≥ 2 разным Contact'ам, переподвязываем их на единый
-       Contact (существующий с display_name=prefix, иначе создаём).
-    2. Опустевшие Contact'ы (без handles вообще — могли появиться как из шага 1,
-       так и от ручных перемещений через /contacts/handles/<id>/move) удаляются
-       вместе с pending-MergeSuggestion, ссылающимися на них.
-
-    Возвращает {"groups_created", "handles_moved", "contacts_removed"}.
-    """
+    # Склейка handles с общим префиксом в группы. Запускать ПОСЛЕ migrate_to_contacts_v1.
     groups_created = 0
     handles_moved = 0
     contacts_removed = 0
@@ -145,9 +118,6 @@ def migrate_group_handles_v1(db) -> dict:
                     handles_moved += 1
             db.flush()
 
-        # Чистка осиротевших Contact'ов: тех, на кого больше не ссылается ни один handle.
-        # Это покрывает и наши перенесённые сиблинги, и orphans от ручных перемещений
-        # через /contacts/handles/<id>/move (баг отдельного эндпоинта).
         user_contacts = db.query(Contact).filter(Contact.user_id == user_id).all()
         for c in user_contacts:
             has_handles = (db.query(MessengerHandle)
@@ -171,15 +141,7 @@ def migrate_group_handles_v1(db) -> dict:
 
 
 def migrate_encrypt_messages_v1(db) -> dict:
-    """Зашифровать незашифрованный `messages.text` в БД.
-
-    Использует raw SQL, чтобы обойти TypeDecorator `EncryptedText` (он бы
-    расшифровал на load и зашифровал на save → двойное шифрование).
-
-    Идемпотентна: сообщения с уже зашифрованным текстом пропускаем.
-
-    Возвращает {"encrypted": сколько_зашифровали}.
-    """
+    # Зашифровать незашифрованный `messages.text` в БД (raw SQL намеренно — иначе двойное шифрование).
     rows = db.execute(sqlalchemy.text("SELECT id, text FROM messages")).fetchall()
     encrypted = 0
     for row_id, text in rows:

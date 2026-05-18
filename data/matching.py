@@ -5,10 +5,6 @@ MATCH_THRESHOLD = 0.7
 
 
 def normalize(s: str) -> str:
-    """Привести имя отправителя к канонической форме для сравнения.
-
-    Lowercase, strip, удаление символов кроме букв и цифр (включая emoji).
-    """
     s = s.lower().strip()
     return ''.join(
         ch for ch in s
@@ -17,12 +13,6 @@ def normalize(s: str) -> str:
 
 
 def split_group_sender(sender_raw: str):
-    """Разобрать sender_raw как 'X: Y' / 'X:Y' → (prefix, member).
-
-    Сплит по первому двоеточию (partition), чтобы 'Время: 10:30' дало
-    ('Время', '10:30'). Возвращает None, если двоеточия нет либо после strip()
-    префикс или участник пустые.
-    """
     if not sender_raw or ":" not in sender_raw:
         return None
     prefix, _, member = sender_raw.partition(":")
@@ -33,12 +23,6 @@ def split_group_sender(sender_raw: str):
 
 
 def display_author(sender_raw: str, contact_display_name: str) -> str:
-    """Имя автора без префикса группы.
-
-    Если sender_raw начинается с 'contact_display_name:' (точное совпадение
-    префикса до двоеточия после strip()) — возвращаем то, что после двоеточия.
-    Иначе — sender_raw как есть.
-    """
     if not sender_raw or not contact_display_name:
         return sender_raw
     parsed = split_group_sender(sender_raw)
@@ -51,7 +35,6 @@ def display_author(sender_raw: str, contact_display_name: str) -> str:
 
 
 def similarity_score(a_norm: str, b_norm: str) -> float:
-    """Сходство двух уже нормализованных строк, [0.0, 1.0]."""
     if not a_norm and not b_norm:
         return 1.0
     if not a_norm or not b_norm:
@@ -60,11 +43,6 @@ def similarity_score(a_norm: str, b_norm: str) -> float:
 
 
 def suggest_merges_for_handle(db, new_handle) -> int:
-    """Создать MergeSuggestion(pending) для каждого существующего handle того же
-    user_id с другим contact_id и similarity_score ≥ MATCH_THRESHOLD.
-
-    Возвращает количество созданных предложений.
-    """
     from .contacts import MergeSuggestion, MessengerHandle
 
     candidates = (

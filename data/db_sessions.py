@@ -18,10 +18,6 @@ def global_init(db_file):
         raise Exception("Необходимо указать файл базы данных.")
 
     db_file = db_file.strip()
-    # На хостинге (Replit) ФС при старте откатывается к git-состоянию, а
-    # каталог db/ в .gitignore — его не будет. SQLite не создаёт
-    # промежуточные каталоги сам, поэтому создаём их (для ":memory:"
-    # и пути без каталога os.path.dirname вернёт "" — пропускаем).
     db_dir = os.path.dirname(db_file)
     if db_dir and db_file != ":memory:":
         os.makedirs(db_dir, exist_ok=True)
@@ -43,6 +39,5 @@ def create_session() -> Session:
 
 
 def _reset_for_tests():
-    """Reset module-level factory. Используется только из тестов."""
     global __factory
     __factory = None

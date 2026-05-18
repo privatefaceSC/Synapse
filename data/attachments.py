@@ -7,14 +7,6 @@ from .db_sessions import SqlAlchemyBase
 
 
 class Attachment(SqlAlchemyBase):
-    """Медиа-вложение сообщения.
-
-    Файл лежит на диске в зашифрованном виде (см. data/crypto.encrypt_bytes),
-    в БД хранится только относительный путь. dedup_key — стабильный идентификатор
-    источника (например, content://-Uri из уведомления Max/VK): повторные
-    накопительные уведомления присылают то же фото, уникальный индекс
-    (user_id, dedup_key) не даёт создать дубль.
-    """
     __tablename__ = 'attachments'
 
     id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)

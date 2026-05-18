@@ -61,20 +61,7 @@ class MergeSuggestion(SqlAlchemyBase):
 
 
 def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str):
-    """Возвращает (MessengerHandle, created: bool).
-
-    Если handle для (user_id, messenger_name, sender_raw) уже есть — отдаём его.
-
-    Если sender_raw разбирается как 'prefix: member' И среди handles того же
-    пользователя уже есть другой handle с тем же prefix — переподвязываем
-    всех сиблингов на единый Contact с display_name=prefix (создаём при первом
-    промоушне) и привязываем новый handle туда же. Опустевшие одиночные
-    Contact'ы удаляются. suggest_merges_for_handle для групповых handles
-    не вызывается.
-
-    Иначе — создаём Contact с display_name=sender_raw и запускаем автомэтчинг.
-    """
-    from .matching import normalize, split_group_sender, suggest_merges_for_handle
+    from .matching import normalize, split_group_sender
 
     handle = (
         db.query(MessengerHandle)
@@ -86,7 +73,7 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
         .first()
     )
     if handle:
-        return handle, False
+        return handle
 
     parsed = split_group_sender(sender_raw)
     if parsed is not None:
@@ -155,7 +142,7 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
             )
             db.add(handle)
             db.flush()
-            return handle, True
+            return handle
 
     contact = Contact(user_id=user_id, display_name=sender_raw)
     db.add(contact)
@@ -169,17 +156,15 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
     )
     db.add(handle)
     db.flush()
-    suggest_merges_for_handle(db, handle)
-    return handle, True
+    return handle
 
 
 def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text: str):
-    """Сохранить сообщение, найдя/создав соответствующий handle."""
     import datetime as _dt
 
     from .users import Messages
 
-    handle, _ = find_or_create_handle(db, user_id, messenger_name, sender_raw)
+    handle = find_or_create_handle(db, user_id, messenger_name, sender_raw)
     now = _dt.datetime.now()
     msg = Messages(
         sender=sender_raw,
@@ -196,15 +181,6 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
 
 
 def merge_contacts(db, user_id: int, source_id: int, target_id: int) -> None:
-    """Переподвязать handles source-Contact на target и удалить source.
-
-    Помечает dismissed все pending-предложения, ссылающиеся на удаляемый
-    контакт (как target_contact_id) или на любой из его handles
-    (как source_handle_id).
-
-    Бросает ValueError("same") если source_id == target_id.
-    Бросает LookupError если контакты не принадлежат user_id.
-    """
     if source_id == target_id:
         raise ValueError("same")
     src = db.query(Contact).filter(Contact.id == source_id, Contact.user_id == user_id).first()
