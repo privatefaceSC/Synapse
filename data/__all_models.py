@@ -2,3 +2,9 @@ from . import users
 from . import contacts
 from . import devices
 from . import attachments
+from . import direct
+from . import pending_replies
+from . import reactions
+from . import edits
+from . import chat_topics
+from . import topic_reads

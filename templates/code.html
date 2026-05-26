@@ -1,27 +1,80 @@
 {% extends 'base.html' %}
 
-{% block title %}
-Ваш код подключения
-{% endblock %}
+{% block title %}Ваш код подключения{% endblock %}
 
 {% block body %}
 <meta http-equiv="refresh" content="3">
-<div class="container text-center mt-5">
-    <h1>Подключите устройство</h1>
+<style>
+    .code-wrap { max-width: 560px; }
+    @keyframes codeFadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .code-card {
+        opacity: 0; animation: codeFadeUp 0.5s cubic-bezier(.22,1,.36,1) forwards;
+        background: #fff; border: 1px solid #ecedf1; border-radius: 20px;
+        box-shadow: 0 8px 26px rgba(16,24,40,.09), 0 1px 2px rgba(16,24,40,.04);
+        padding: 36px 32px; text-align: center;
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .code-card h1 { font-weight: 700; font-size: 1.5rem; margin-bottom: 6px;
+        color: #1a2230; }
+    .code-card .hint { color: #6b7280; font-size: .92rem; margin-bottom: 22px; }
+    .code-big {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 3rem; font-weight: 800; letter-spacing: .2em;
+        color: #1d4ed8; background: #f6f8fc; border: 1px dashed #c7d2e3;
+        border-radius: 16px; padding: 18px 10px; margin-bottom: 20px;
+    }
+    .waiting {
+        display: inline-flex; align-items: center; gap: 9px;
+        color: #6b7280; font-size: .9rem;
+    }
+    .waiting .pulse {
+        width: 9px; height: 9px; border-radius: 50%; background: #f59e0b;
+        box-shadow: 0 0 0 0 rgba(245,158,11,.5);
+        animation: pulseDot 1.6s infinite;
+    }
+    @keyframes pulseDot {
+        0%   { box-shadow: 0 0 0 0 rgba(245,158,11,.5); }
+        70%  { box-shadow: 0 0 0 10px rgba(245,158,11,0); }
+        100% { box-shadow: 0 0 0 0 rgba(245,158,11,0); }
+    }
+    .code-card hr { margin: 24px 0; opacity: .5; }
+    .code-foot { font-size: .9rem; color: #6b7280; }
 
-    <p class="mt-4">Введите этот код в приложении Synapse на вашем устройстве:</p>
+    [data-bs-theme="dark"] .code-card {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 8px 26px rgba(0,0,0,.45);
+    }
+    [data-bs-theme="dark"] .code-card h1 { color: #e5e7eb; }
+    [data-bs-theme="dark"] .code-big {
+        background: #14171d; border-color: #344155; color: #93c5fd;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .code-card { opacity: 1; animation: none; }
+        .waiting .pulse { animation: none; }
+    }
+</style>
 
-    <div class="display-1 fw-bold text-primary my-4">
-        {{ code }}
+<div class="container code-wrap">
+    <div class="code-card">
+        <h1>Подключите устройство</h1>
+        <div class="hint">Введите этот код в приложении Synapse на телефоне</div>
+
+        <div class="code-big">{{ code }}</div>
+
+        <div class="waiting">
+            <span class="pulse"></span>
+            Ожидаем устройство… страница обновится автоматически
+        </div>
+
+        <hr>
+
+        <div class="code-foot">
+            Ещё нет приложения?
+            <a href="/download">Скачать Synapse-клиент для Android</a>
+        </div>
     </div>
-
-
-    <hr class="my-4">
-
-    <p class="mt-4">
-        Хотите быстрее? Поставьте <a href="/download">Synapse-клиент для Android</a>
-        и введите этот код в приложении.
-    </p>
-
 </div>
 {% endblock %}

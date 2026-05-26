@@ -1,0 +1,124 @@
+{% extends 'base.html' %}
+
+{% block title %}Устройства{% endblock %}
+
+{% block body %}
+<style>
+    .dev-wrap { max-width: 720px; }
+
+    @keyframes devFadeUp {
+        from { opacity: 0; transform: translateY(14px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .dev-card {
+        opacity: 0;
+        animation: devFadeUp 0.45s cubic-bezier(.22,1,.36,1) forwards;
+    }
+    .dev-card:nth-child(1) { animation-delay: .02s; }
+    .dev-card:nth-child(2) { animation-delay: .08s; }
+    .dev-card:nth-child(3) { animation-delay: .14s; }
+    .dev-card:nth-child(4) { animation-delay: .20s; }
+    .dev-card:nth-child(5) { animation-delay: .26s; }
+
+    .card-soft {
+        background: #fff; border: 1px solid #ecedf1; border-radius: 16px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background 0.25s ease, border-color 0.25s ease,
+                    box-shadow 0.2s ease, transform 0.2s ease;
+    }
+    .device-row {
+        display: flex; align-items: center; gap: 16px;
+        padding: 16px 18px;
+    }
+    .device-row:hover { transform: translateY(-2px);
+        box-shadow: 0 8px 22px rgba(16,24,40,.10); }
+    .device-row .ico {
+        width: 46px; height: 46px; border-radius: 13px; flex: 0 0 auto;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 1.35rem; background: #e0edff; color: #2563eb;
+    }
+    .device-row .nm { font-weight: 600; font-size: 15px; color: #1a2230; }
+    .device-row .meta { color: #6b7280; font-size: 12.5px; margin-top: 2px; }
+    .device-row .meta span { white-space: nowrap; }
+    .device-row .sep { color: #c7ccd6; margin: 0 7px; }
+    .unlink-btn {
+        border: 1px solid #f1c4c4; background: #fff; color: #dc2626;
+        border-radius: 10px; padding: 7px 14px; font-size: .86rem;
+        font-weight: 600; cursor: pointer; flex: 0 0 auto;
+        transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .unlink-btn:hover { background: #fef2f2; }
+    .unlink-btn:active { transform: scale(.96); }
+
+    .empty-dev {
+        text-align: center; padding: 40px 24px; color: #6b7280;
+    }
+    .empty-dev .big { font-size: 2.6rem; margin-bottom: 10px; }
+
+    [data-bs-theme="dark"] .card-soft {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .device-row:hover { box-shadow: 0 8px 22px rgba(0,0,0,.5); }
+    [data-bs-theme="dark"] .device-row .ico { background: #1c2c44; color: #93c5fd; }
+    [data-bs-theme="dark"] .device-row .nm { color: #e5e7eb; }
+    [data-bs-theme="dark"] .device-row .meta { color: #9ca3af; }
+    [data-bs-theme="dark"] .device-row .sep { color: #3a4150; }
+    [data-bs-theme="dark"] .unlink-btn {
+        background: #232831; border-color: #5b2a2a; color: #f87171;
+    }
+    [data-bs-theme="dark"] .unlink-btn:hover { background: #3a1f1f; }
+    [data-bs-theme="dark"] .empty-dev { color: #9ca3af; }
+
+    @media (prefers-reduced-motion: reduce) {
+        .dev-card { opacity: 1; animation: none; }
+        .card-soft, .device-row, .unlink-btn { transition: none; }
+    }
+</style>
+
+<div class="container dev-wrap">
+    <div class="d-flex align-items-center justify-content-between mb-1">
+        <h2 class="mb-0">Устройства</h2>
+        <a href="/code" class="btn btn-outline-primary btn-sm">+ Привязать</a>
+    </div>
+    <p class="text-muted small mb-3">
+        Устройства, привязанные к вашему аккаунту. Отвязка немедленно
+        прекращает приём уведомлений с этого устройства.
+    </p>
+
+    {% if devices %}
+        {% for d in devices %}
+        <div class="dev-card card-soft device-row mb-3">
+            <div class="ico">📱</div>
+            <div class="flex-grow-1">
+                <div class="nm">{{ d.name }}</div>
+                <div class="meta">
+                    <span>Активность:
+                        {{ d.last_seen_at.strftime('%d.%m.%Y %H:%M')
+                           if d.last_seen_at else 'ещё не выходило на связь' }}</span>
+                    {% if d.last_seen_ip %}
+                        <span class="sep">·</span>
+                        <span>IP {{ d.last_seen_ip }}</span>
+                    {% endif %}
+                    <span class="sep">·</span>
+                    <span>привязано {{ d.created_at.strftime('%d.%m.%Y') }}</span>
+                </div>
+            </div>
+            <form method="post" action="/devices/{{ d.id }}/delete"
+                  onsubmit="return confirm('Отвязать «{{ d.name }}»? Устройство перестанет присылать уведомления, пока не привяжете заново.');">
+                <button type="submit" class="unlink-btn">Отвязать</button>
+            </form>
+        </div>
+        {% endfor %}
+    {% else %}
+        <div class="dev-card card-soft empty-dev">
+            <div class="big">📭</div>
+            <div class="fw-semibold mb-1">Нет привязанных устройств</div>
+            <div class="small">
+                Откройте <a href="/code">страницу с кодом</a> и введите его
+                в приложении Synapse на телефоне.
+            </div>
+        </div>
+    {% endif %}
+</div>
+{% endblock %}

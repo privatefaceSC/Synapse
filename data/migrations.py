@@ -3,7 +3,7 @@ from datetime import datetime
 import sqlalchemy
 
 from . import db_sessions
-from .contacts import Contact, MergeSuggestion, MessengerHandle
+from .contacts import Contact, MessengerHandle
 from .crypto import _PREFIX as _ENC_PREFIX, encrypt as _encrypt_text
 from .matching import normalize, split_group_sender
 from .users import Messages, User
@@ -123,11 +123,6 @@ def migrate_group_handles_v1(db) -> dict:
             has_handles = (db.query(MessengerHandle)
                            .filter(MessengerHandle.contact_id == c.id).count())
             if has_handles == 0:
-                db.query(MergeSuggestion).filter(
-                    MergeSuggestion.status == "pending",
-                    MergeSuggestion.target_contact_id == c.id,
-                ).update({MergeSuggestion.status: "dismissed"},
-                         synchronize_session=False)
                 db.delete(c)
                 contacts_removed += 1
         db.flush()

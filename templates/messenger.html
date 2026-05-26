@@ -1,0 +1,834 @@
+{% extends 'base.html' %}
+
+{% block title %}Сообщения{% endblock %}
+
+{% block body %}
+<script>
+    // Блокируем скролл body — список слева и лента справа скроллятся
+    // независимо. Снимаем при уходе со страницы.
+    (function() {
+        document.documentElement.classList.add('contacts-locked');
+        document.body.classList.add('contacts-locked');
+        window.addEventListener('beforeunload', function() {
+            document.documentElement.classList.remove('contacts-locked');
+            document.body.classList.remove('contacts-locked');
+        });
+    })();
+</script>
+<style>
+    html.contacts-locked, body.contacts-locked { height: 100%; overflow: hidden; }
+    body.contacts-locked { display: flex; flex-direction: column; margin: 0; }
+    body.contacts-locked > nav { flex: 0 0 auto; }
+    body.contacts-locked > .contacts-shell {
+        flex: 1 1 auto; min-height: 0; height: auto;
+    }
+    .contacts-shell { height: calc(100vh - 110px); }
+    #col-list, #col-feed { display: flex; flex-direction: column; min-height: 0; }
+
+    .contact-search { flex: 0 0 auto; margin-bottom: 12px; position: relative; }
+    .contact-search input {
+        width: 100%; border: 1px solid #e6e8ee; border-radius: 12px;
+        padding: 10px 14px 10px 38px; font-size: 14px; background: #fff;
+        outline: none; transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .contact-search input:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .contact-search::before {
+        content: "🔍"; position: absolute; left: 13px; top: 50%;
+        transform: translateY(-50%); font-size: 13px; opacity: .55;
+        pointer-events: none;
+    }
+    [data-bs-theme="dark"] .contact-search input {
+        background: #1a1d24; border-color: #262b34; color: #e5e7eb;
+    }
+
+    .list-label {
+        flex: 0 0 auto; font-size: 11px; font-weight: 600;
+        text-transform: uppercase; letter-spacing: .06em; color: #9aa1ad;
+        padding: 0 4px 6px;
+    }
+
+    .contact-list {
+        flex: 1 1 auto; min-height: 0; overflow-y: auto; background: #fff;
+        border: 1px solid #ecedf1; border-radius: 16px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background .25s ease, border-color .25s ease;
+        overscroll-behavior: contain;
+    }
+    .contact-row {
+        display: flex; gap: 14px; align-items: center; padding: 13px 16px;
+        border-bottom: 1px solid #f1f2f5; text-decoration: none; color: inherit;
+        transition: background .16s ease, transform .16s ease;
+    }
+    .contact-row:hover { background: #f6f8fc; color: inherit; transform: translateX(3px); }
+    .contact-row.active { background: #eef4ff; box-shadow: inset 3px 0 0 #3b82f6; }
+    .contact-row .avatar {
+        width: 46px; height: 46px; font-size: 17px;
+        box-shadow: 0 2px 5px rgba(16,24,40,.18);
+        border: 2px solid rgba(255,255,255,.55);
+    }
+    .contact-row .name {
+        font-weight: 600; color: #1a2230; font-size: 15px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .contact-row.active .name { color: #1d4ed8; }
+    .contact-row .preview {
+        color: #6b7280; font-size: 13px; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+    }
+    .contact-row .time {
+        font-size: 11px; color: #9ca3af; flex: 0 0 auto; letter-spacing: .02em;
+    }
+    .contact-row .badge-unread {
+        background: #ef4444; color: #fff; border-radius: 999px;
+        min-width: 20px; height: 20px; padding: 0 6px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 600; margin-top: 2px;
+        box-shadow: 0 1px 3px rgba(239,68,68,.4);
+    }
+    .contact-meta { flex: 1; min-width: 0; }
+
+    .feed-back-btn {
+        background: transparent; border: 0; font-size: 22px; line-height: 1;
+        padding: 4px 10px; color: #1a2230; cursor: pointer; border-radius: 8px;
+        text-decoration: none; transition: background .12s ease;
+    }
+    .feed-back-btn:hover { background: #f1f3f5; color: #1a2230; }
+
+    .feed {
+        height: 100%; overflow-y: auto;
+        background:
+            radial-gradient(1100px 380px at 50% -8%, #e9eefb 0%, rgba(233,238,251,0) 70%),
+            linear-gradient(180deg, #eef1f6 0%, #f4f5f9 100%);
+        border: 1px solid #e6e8ee; border-radius: 16px; padding: 18px 22px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background .25s ease, border-color .25s ease;
+        overscroll-behavior: contain;
+    }
+    .feed-header {
+        display: flex; align-items: center; gap: 13px;
+        padding: 16px 22px 14px; border-bottom: 1px solid #e6e8ee;
+        margin: -18px -22px 16px; position: sticky; top: -18px;
+        background: rgba(247,248,251,.82); backdrop-filter: blur(10px);
+        z-index: 10; border-radius: 16px 16px 0 0;
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .feed-header .fw-semibold { font-size: 16px; font-weight: 700; color: #111827; }
+    .feed-header .avatar {
+        width: 46px; height: 46px; font-size: 17px;
+        box-shadow: 0 3px 8px rgba(16,24,40,.22);
+        border: 2px solid rgba(255,255,255,.7);
+    }
+
+    .bubble-row { display: flex; flex-direction: column; margin-bottom: 14px; max-width: 78%; }
+    .bubble-row.outgoing { margin-left: auto; align-items: flex-end; }
+    .bubble-row.outgoing .bubble {
+        background: #dbeafe; border-radius: 16px 16px 6px 16px;
+    }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble { background: #1e3a5f; }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble .text { color: #e8eaed; }
+    .bubble {
+        position: relative; background: #fff; padding: 10px 14px;
+        border-radius: 16px 16px 16px 6px;
+        word-wrap: break-word; line-height: 1.45;
+        box-shadow: 0 2px 6px rgba(16,24,40,.07), 0 1px 2px rgba(16,24,40,.04);
+        transition: background .25s ease;
+    }
+    .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; }
+    .bubble .media-img {
+        display: block; margin-top: 8px; max-width: 260px; max-height: 340px;
+        border-radius: 14px; cursor: zoom-in; object-fit: cover;
+    }
+    .bubble .media-video {
+        display: block; margin-top: 8px; max-width: 280px; max-height: 360px;
+        border-radius: 14px; background: #000;
+    }
+    .bubble .media-audio { display: block; margin-top: 8px; max-width: 280px; height: 40px; }
+    .bubble .media-file {
+        display: inline-flex; align-items: center; gap: 9px; margin-top: 8px;
+        padding: 9px 13px; background: rgba(16,24,40,.05);
+        border: 1px solid rgba(16,24,40,.07); border-radius: 12px;
+        text-decoration: none; color: #1f2733; font-size: 13.5px;
+        max-width: 280px; transition: background .14s ease;
+    }
+    .bubble .media-file:hover { background: rgba(16,24,40,.09); color: #1f2733; }
+    .bubble .media-file .file-ico { font-size: 18px; flex: 0 0 auto; }
+    .bubble .media-file .file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    [data-bs-theme="dark"] .bubble .media-file {
+        background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.09); color: #e8eaed;
+    }
+    [data-bs-theme="dark"] .bubble .media-file:hover {
+        background: rgba(255,255,255,.1); color: #e8eaed;
+    }
+    .bubble .time {
+        font-size: 10px; color: #9aa3b2; margin-top: 4px; text-align: right;
+        font-variant-numeric: tabular-nums;
+    }
+
+    .composer {
+        position: sticky; bottom: -18px;
+        margin: 10px -22px -18px; padding: 12px 22px 14px;
+        background: rgba(247,248,251,.94); backdrop-filter: blur(10px);
+        border-top: 1px solid #e6e8ee; border-radius: 0 0 16px 16px;
+        display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap;
+    }
+    .composer-preview {
+        width: 100%; display: flex; align-items: center; gap: 9px;
+        padding: 7px 10px; background: #eef2f7;
+        border: 1px solid #e6e8ee; border-radius: 11px; font-size: 13px;
+    }
+    .composer-preview .cp-thumb {
+        width: 40px; height: 40px; border-radius: 8px; object-fit: cover; flex: 0 0 auto;
+    }
+    .composer-preview .cp-ico { font-size: 24px; flex: 0 0 auto; }
+    .composer-preview .cp-name {
+        flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; color: #1f2733;
+    }
+    .composer-preview .cp-remove {
+        flex: 0 0 auto; border: 0; background: transparent; cursor: pointer;
+        font-size: 20px; color: #9ca3af; line-height: 1; padding: 2px 7px;
+    }
+    .composer-preview .cp-remove:hover { color: #ef4444; }
+    [data-bs-theme="dark"] .composer-preview { background: #232831; border-color: #2f3540; }
+    [data-bs-theme="dark"] .composer-preview .cp-name { color: #e5e7eb; }
+    .composer textarea {
+        flex: 1 1 auto; resize: none; border: 1px solid #d6dae2;
+        border-radius: 12px; padding: 9px 13px; font-size: 14px;
+        min-height: 40px; max-height: 120px; outline: none;
+        background: #fff; line-height: 1.4; color: #1f2733;
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .composer textarea:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .composer .attach-btn {
+        flex: 0 0 auto; border: 1px solid #d6dae2; border-radius: 12px;
+        background: #fff; font-size: 18px; line-height: 1;
+        padding: 8px 12px; cursor: pointer; transition: background .12s ease;
+    }
+    .composer .attach-btn:hover { background: #f1f3f5; }
+    [data-bs-theme="dark"] .composer .attach-btn { background: #232831; border-color: #2f3540; }
+    .composer .send-btn {
+        flex: 0 0 auto; border: 0; border-radius: 12px; color: #fff;
+        background: #3b82f6; font-weight: 600; padding: 10px 18px;
+        cursor: pointer; transition: background .15s ease, transform .12s ease;
+    }
+    .composer .send-btn:hover { background: #2563eb; }
+    .composer .send-btn:active { transform: scale(.97); }
+    .composer .send-btn:disabled, .composer .attach-btn:disabled {
+        opacity: .5; cursor: default;
+    }
+    [data-bs-theme="dark"] .composer {
+        background: rgba(19,21,25,.94); border-top-color: #242832;
+    }
+    [data-bs-theme="dark"] .composer textarea {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
+    }
+
+    .empty-state {
+        color: #9aa3b2; text-align: center; margin-top: 90px;
+        font-size: 15px; padding: 0 24px; line-height: 1.5;
+    }
+
+    .lightbox {
+        display: flex; position: fixed; inset: 0; z-index: 1080;
+        background: rgba(0,0,0,.92); align-items: center; justify-content: center;
+        cursor: zoom-out; opacity: 0; visibility: hidden; pointer-events: none;
+        transition: opacity .22s ease, visibility .22s ease;
+    }
+    .lightbox.open { opacity: 1; visibility: visible; pointer-events: auto; }
+    .lightbox img {
+        max-width: 96vw; max-height: 96vh; object-fit: contain; border-radius: 6px;
+        box-shadow: 0 0 40px rgba(0,0,0,.6);
+    }
+    .lightbox .lb-close {
+        position: fixed; top: 16px; right: 22px; color: #fff; font-size: 34px;
+        line-height: 1; cursor: pointer; user-select: none; opacity: .85;
+    }
+
+    .contact-list, .feed { scrollbar-width: thin; scrollbar-color: #cdd2db transparent; }
+    .contact-list::-webkit-scrollbar, .feed::-webkit-scrollbar { width: 8px; }
+    .contact-list::-webkit-scrollbar-thumb, .feed::-webkit-scrollbar-thumb {
+        background: #cdd2db; border-radius: 999px; border: 2px solid transparent;
+        background-clip: content-box;
+    }
+
+    /* Тёмная тема */
+    [data-bs-theme="dark"] .contact-list {
+        background: #1a1d24; border-color: #262b34;
+    }
+    [data-bs-theme="dark"] .contact-row { border-bottom: 1px solid #262b34; }
+    [data-bs-theme="dark"] .contact-row:hover { background: #232831; }
+    [data-bs-theme="dark"] .contact-row.active {
+        background: #1c2c44; box-shadow: inset 3px 0 0 #60a5fa;
+    }
+    [data-bs-theme="dark"] .contact-row .name { color: #e5e7eb; }
+    [data-bs-theme="dark"] .contact-row.active .name { color: #93c5fd; }
+    [data-bs-theme="dark"] .contact-row .preview { color: #9ca3af; }
+    [data-bs-theme="dark"] .feed-back-btn { color: #e5e7eb; }
+    [data-bs-theme="dark"] .feed {
+        background:
+            radial-gradient(1100px 380px at 50% -8%, #1b2436 0%, rgba(27,36,54,0) 70%),
+            linear-gradient(180deg, #131519 0%, #17191f 100%);
+        border-color: #242832;
+    }
+    [data-bs-theme="dark"] .feed-header {
+        border-bottom-color: #242832; background: rgba(19,21,25,.82);
+    }
+    [data-bs-theme="dark"] .feed-header .fw-semibold { color: #f3f4f6; }
+    [data-bs-theme="dark"] .bubble { background: #242a33; }
+    [data-bs-theme="dark"] .bubble .text { color: #e8eaed; }
+    [data-bs-theme="dark"] .bubble .time { color: #6b7280; }
+    [data-bs-theme="dark"] .empty-state { color: #6b7280; }
+    [data-bs-theme="dark"] .list-label { color: #6b7280; }
+
+    @media (prefers-reduced-motion: reduce) {
+        .feed, .feed-header, .bubble, .contact-row { transition: none; }
+    }
+</style>
+
+<div class="container-fluid contacts-shell">
+    <div class="row g-3 h-100">
+        <div class="col-md-4 h-100 {% if selected_id %}d-none d-md-flex{% endif %}" id="col-list">
+            <div class="contact-search">
+                <input type="search" id="user-search-input" autocomplete="off"
+                       placeholder="Поиск пользователя по User ID…">
+            </div>
+            <div class="list-label" id="list-label">Переписки</div>
+            <div class="contact-list" id="contact-list"
+                 data-active-id="{{ selected_id or '' }}">
+                {% if conversations %}
+                    {% for c in conversations %}
+                    <a class="contact-row{% if selected_id == c.id %} active{% endif %}"
+                       data-user-id="{{ c.id }}" href="/messenger/{{ c.id }}">
+                        {% if c.avatar_url %}
+                        <span class="avatar"><img src="{{ c.avatar_url }}" alt=""></span>
+                        {% else %}
+                        <span class="avatar" style="background: {{ c.avatar_color }};">
+                            {{ c.initial }}</span>
+                        {% endif %}
+                        <div class="contact-meta">
+                            <div class="d-flex justify-content-between">
+                                <span class="name">{{ c.display_name }}</span>
+                                <span class="time">{{ c.last_time }}</span>
+                            </div>
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div class="preview">{{ c.last_preview }}</div>
+                                {% if c.unread_count and c.unread_count > 0 %}
+                                <span class="badge-unread">{{ c.unread_count }}</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                    </a>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-state p-4">
+                        Переписок пока нет.<br>
+                        Найдите пользователя по User ID в поиске выше.
+                    </div>
+                {% endif %}
+            </div>
+        </div>
+
+        <div class="col-md-8 h-100 {% if not selected_id %}d-none d-md-flex{% endif %}" id="col-feed">
+            <div class="feed" id="feed" data-initial-user-id="{{ selected_id or '' }}">
+                <div class="empty-state">
+                    💬 Выберите переписку слева<br>
+                    или найдите пользователя по User ID.
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="lightbox" id="lightbox">
+    <span class="lb-close" id="lb-close">&times;</span>
+    <img id="lb-img" src="" alt="фото">
+</div>
+
+<script>
+// Полноэкранный просмотр фото.
+(function() {
+    const box = document.getElementById('lightbox');
+    const img = document.getElementById('lb-img');
+    if (!box || !img) return;
+    function close() { box.classList.remove('open'); img.src = ''; }
+    document.addEventListener('click', function(e) {
+        const t = e.target;
+        if (t && t.classList && t.classList.contains('media-img')) {
+            e.preventDefault();
+            img.src = t.dataset.full || t.src;
+            box.classList.add('open');
+        }
+    });
+    box.addEventListener('click', close);
+    document.getElementById('lb-close').addEventListener('click', close);
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') close();
+    });
+})();
+</script>
+
+<script>
+// Внутренний мессенджер: список переписок, поиск пользователей по User ID,
+// открытие диалога без перезагрузки, отправка текста и файлов, поллинг.
+(function() {
+    const feed = document.getElementById('feed');
+    const list = document.getElementById('contact-list');
+    const colList = document.getElementById('col-list');
+    const colFeed = document.getElementById('col-feed');
+    const searchInput = document.getElementById('user-search-input');
+    const listLabel = document.getElementById('list-label');
+    if (!feed || !list) return;
+
+    let currentUserId = list.dataset.activeId || null;
+    let convCache = [];
+    let searching = false;
+    let lastMsgSig = '';
+    let navToken = 0;
+    let convTimer = null;
+    let msgTimer = null;
+    let searchDebounce = null;
+    let searchToken = 0;
+    let pendingFile = null;
+    let pendingUrl = null;
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function avatarHtml(c) {
+        return c.avatar_url
+            ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
+            : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">`
+              + `${escapeHtml(c.initial)}</span>`;
+    }
+
+    function isNearBottom() {
+        return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 90;
+    }
+    function scrollToBottom() { feed.scrollTop = feed.scrollHeight; }
+
+    // --- Список переписок ---------------------------------------------
+    function convRowHtml(c) {
+        const active = String(c.id) === String(currentUserId);
+        const badge = (c.unread_count && c.unread_count > 0)
+            ? `<span class="badge-unread">${c.unread_count}</span>` : '';
+        return `<a class="contact-row${active ? ' active' : ''}"
+                   data-user-id="${c.id}" href="/messenger/${c.id}">
+            ${avatarHtml(c)}
+            <div class="contact-meta">
+                <div class="d-flex justify-content-between">
+                    <span class="name">${escapeHtml(c.display_name)}</span>
+                    <span class="time">${escapeHtml(c.last_time || '')}</span>
+                </div>
+                <div class="d-flex justify-content-between align-items-center">
+                    <div class="preview">${escapeHtml(c.last_preview || '')}</div>
+                    ${badge}
+                </div>
+            </div>
+        </a>`;
+    }
+
+    function renderConversations() {
+        if (!convCache.length) {
+            list.innerHTML = '<div class="empty-state p-4">'
+                + 'Переписок пока нет.<br>'
+                + 'Найдите пользователя по User ID в поиске выше.</div>';
+            return;
+        }
+        list.innerHTML = convCache.map(convRowHtml).join('');
+    }
+
+    function searchRowHtml(u) {
+        return `<a class="contact-row" data-user-id="${u.id}"
+                   href="/messenger/${u.id}">
+            ${avatarHtml(u)}
+            <div class="contact-meta">
+                <div class="name">${escapeHtml(u.display_name)}</div>
+                <div class="preview">@${escapeHtml(u.username)} · Написать сообщение</div>
+            </div>
+        </a>`;
+    }
+
+    function renderSearchResults(users) {
+        if (!users.length) {
+            list.innerHTML = '<div class="empty-state p-4">'
+                + 'Никого не нашлось.<br>Проверьте User ID.</div>';
+            return;
+        }
+        list.innerHTML = users.map(searchRowHtml).join('');
+    }
+
+    // --- Лента диалога ------------------------------------------------
+    function mediaHtml(attachments) {
+        return (attachments || []).map(a => {
+            const src = '/dm/attachments/' + a.id;
+            if (a.kind === 'video')
+                return `<video class="media-video" src="${src}" controls preload="metadata"></video>`;
+            if (a.kind === 'audio')
+                return `<audio class="media-audio" src="${src}" controls preload="metadata"></audio>`;
+            if (a.kind === 'file')
+                return `<a class="media-file" href="${src}" download>`
+                    + `<span class="file-ico">📎</span>`
+                    + `<span class="file-name">${escapeHtml(a.name || 'Файл')}</span></a>`;
+            return `<img class="media-img" src="${src}" data-full="${src}" loading="lazy" alt="фото">`;
+        }).join('');
+    }
+
+    function messageHtml(m) {
+        return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}"
+                     data-message-id="${m.id}">
+            <div class="bubble">
+                ${m.text ? `<div class="text">${escapeHtml(m.text)}</div>` : ''}
+                ${mediaHtml(m.attachments)}
+                <div class="time">${escapeHtml(m.time || '')}</div>
+            </div>
+        </div>`;
+    }
+
+    function renderMessages(messages) {
+        if (!messages.length)
+            return '<div class="empty-state">Сообщений пока нет.<br>Напишите первым!</div>';
+        return messages.map(messageHtml).join('');
+    }
+
+    function headerHtml(p) {
+        return `<div class="feed-header" data-user-id="${p.id}">
+            <button type="button" class="feed-back-btn d-md-none"
+                    aria-label="Назад" data-feed-back="1">←</button>
+            ${avatarHtml(p)}
+            <div class="flex-fill" style="min-width:0;">
+                <div class="fw-semibold text-truncate">${escapeHtml(p.display_name)}</div>
+                <div class="text-muted small text-truncate">@${escapeHtml(p.username)}</div>
+            </div>
+        </div>`;
+    }
+
+    function composerHtml(p) {
+        return `<form class="composer" id="composer" data-user-id="${p.id}">
+            <div class="composer-preview" id="composer-preview" hidden></div>
+            <button type="button" class="attach-btn" id="composer-attach"
+                    title="Прикрепить файл">📎</button>
+            <input type="file" id="composer-file" hidden>
+            <textarea id="composer-text" rows="1"
+                      placeholder="Написать сообщение…"></textarea>
+            <button type="submit" class="send-btn" id="composer-send">Отправить</button>
+        </form>`;
+    }
+
+    function paint(partner, messages) {
+        feed.innerHTML = headerHtml(partner)
+            + '<div id="messages-container">' + renderMessages(messages) + '</div>'
+            + composerHtml(partner);
+    }
+
+    function signature(messages) {
+        return JSON.stringify(messages.map(m => m.id));
+    }
+
+    function setActiveRow() {
+        list.dataset.activeId = currentUserId == null ? '' : String(currentUserId);
+        list.querySelectorAll('.contact-row.active').forEach(
+            a => a.classList.remove('active'));
+        if (currentUserId == null) return;
+        const row = list.querySelector(
+            '.contact-row[data-user-id="' + currentUserId + '"]');
+        if (row) {
+            row.classList.add('active');
+            const b = row.querySelector('.badge-unread');
+            if (b) b.remove();
+        }
+    }
+
+    function setMobileView(view) {
+        if (!colList || !colFeed) return;
+        if (view === 'feed') {
+            colList.classList.add('d-none', 'd-md-flex');
+            colFeed.classList.remove('d-none');
+            colFeed.classList.add('d-md-flex');
+        } else {
+            colFeed.classList.add('d-none', 'd-md-flex');
+            colList.classList.remove('d-none');
+            colList.classList.add('d-md-flex');
+        }
+    }
+
+    function stopMsgPolling() {
+        if (msgTimer) { clearInterval(msgTimer); msgTimer = null; }
+    }
+
+    async function pollMessages() {
+        if (currentUserId == null) return;
+        const idAtStart = currentUserId;
+        try {
+            const r = await fetch('/messenger/' + idAtStart + '/messages.json',
+                                  {credentials: 'same-origin'});
+            if (!r.ok) return;
+            const data = await r.json();
+            if (String(idAtStart) !== String(currentUserId)) return;
+            const sig = signature(data.messages);
+            if (sig !== lastMsgSig) {
+                const stick = isNearBottom();
+                const c = document.getElementById('messages-container');
+                if (c) c.innerHTML = renderMessages(data.messages);
+                lastMsgSig = sig;
+                if (stick) scrollToBottom();
+            }
+        } catch (e) { /* сетевой сбой */ }
+    }
+
+    async function openConversation(userId, opts) {
+        opts = opts || {};
+        const token = ++navToken;
+        currentUserId = String(userId);
+        lastMsgSig = '';
+        clearPreview();
+        setActiveRow();
+        setMobileView('feed');
+        try {
+            const r = await fetch('/messenger/' + userId + '/messages.json',
+                                  {credentials: 'same-origin'});
+            if (token !== navToken) return;
+            if (!r.ok) { window.location = '/messenger/' + userId; return; }
+            const data = await r.json();
+            if (token !== navToken) return;
+            paint(data.partner, data.messages);
+            lastMsgSig = signature(data.messages);
+            document.title = data.partner.display_name;
+            scrollToBottom();
+            stopMsgPolling();
+            msgTimer = setInterval(pollMessages, 4000);
+            if (opts.push !== false) {
+                history.pushState({userId: String(userId)}, '',
+                                  '/messenger/' + userId);
+            }
+        } catch (e) {
+            window.location = '/messenger/' + userId;
+        }
+    }
+
+    function showEmpty(opts) {
+        opts = opts || {};
+        currentUserId = null;
+        lastMsgSig = '';
+        stopMsgPolling();
+        setActiveRow();
+        setMobileView('list');
+        feed.innerHTML = '<div class="empty-state">'
+            + '💬 Выберите переписку слева<br>'
+            + 'или найдите пользователя по User ID.</div>';
+        document.title = 'Сообщения';
+        if (opts.push !== false) {
+            history.pushState({userId: null}, '', '/messenger');
+        }
+    }
+
+    // --- Поллинг списка переписок -------------------------------------
+    async function pollConversations() {
+        try {
+            const r = await fetch('/messenger/conversations.json',
+                                  {credentials: 'same-origin'});
+            if (!r.ok) return;
+            const data = await r.json();
+            convCache = data.conversations || [];
+            if (!searching) renderConversations();
+        } catch (e) { /* сетевой сбой */ }
+    }
+
+    // --- Поиск пользователей ------------------------------------------
+    async function runSearch() {
+        const q = searchInput.value.trim();
+        if (!q) {
+            searching = false;
+            listLabel.textContent = 'Переписки';
+            renderConversations();
+            return;
+        }
+        searching = true;
+        listLabel.textContent = 'Результаты поиска';
+        const my = ++searchToken;
+        try {
+            const r = await fetch('/messenger/users/search.json?q='
+                                  + encodeURIComponent(q),
+                                  {credentials: 'same-origin'});
+            if (my !== searchToken) return;
+            const data = await r.json();
+            renderSearchResults(data.users || []);
+        } catch (e) {
+            if (my === searchToken)
+                list.innerHTML = '<div class="empty-state p-4">'
+                    + 'Поиск недоступен.</div>';
+        }
+    }
+
+    if (searchInput) {
+        searchInput.addEventListener('input', function() {
+            clearTimeout(searchDebounce);
+            searchDebounce = setTimeout(runSearch, 250);
+        });
+    }
+
+    // --- Делегирование кликов -----------------------------------------
+    list.addEventListener('click', function(e) {
+        const row = e.target.closest('a.contact-row');
+        if (!row) return;
+        e.preventDefault();
+        const id = row.dataset.userId;
+        if (!id) return;
+        if (searching && searchInput) {
+            searchInput.value = '';
+            searching = false;
+            listLabel.textContent = 'Переписки';
+            renderConversations();
+        }
+        openConversation(id);
+    });
+
+    feed.addEventListener('click', function(e) {
+        const back = e.target.closest('.feed-back-btn');
+        if (back) { e.preventDefault(); showEmpty(); return; }
+        if (e.target.closest('#composer-attach')) {
+            const inp = feed.querySelector('#composer-file');
+            if (inp) inp.click();
+        } else if (e.target.closest('.cp-remove')) {
+            clearPreview();
+        }
+    });
+
+    window.addEventListener('popstate', function(e) {
+        const st = e.state;
+        if (st && st.userId) {
+            openConversation(st.userId, {push: false});
+            return;
+        }
+        const m = location.pathname.match(/^\/messenger\/(\d+)/);
+        if (m) openConversation(m[1], {push: false});
+        else showEmpty({push: false});
+    });
+
+    // --- Отправка сообщения -------------------------------------------
+    function appendMessage(m) {
+        const c = document.getElementById('messages-container');
+        if (!c) return;
+        const empty = c.querySelector('.empty-state');
+        if (empty) c.innerHTML = '';
+        c.insertAdjacentHTML('beforeend', messageHtml(m));
+        lastMsgSig = '';  // следующий поллинг переотрисует с серверными данными
+        scrollToBottom();
+    }
+
+    async function sendMessage(form) {
+        const ta = form.querySelector('#composer-text');
+        const btn = form.querySelector('#composer-send');
+        const attach = form.querySelector('#composer-attach');
+        const text = ta ? ta.value.trim() : '';
+        if (!text && !pendingFile) return;
+        const uid = form.dataset.userId;
+        if (btn) btn.disabled = true;
+        if (attach) attach.disabled = true;
+        const fd = new FormData();
+        fd.append('text', text);
+        if (pendingFile) fd.append('file', pendingFile);
+        try {
+            const r = await fetch('/messenger/' + uid + '/send', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: fd,
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.ok) {
+                if (String(uid) === String(currentUserId)) {
+                    appendMessage({
+                        id: data.id, text: data.text, time: data.time,
+                        outgoing: true, attachments: data.attachments || [],
+                    });
+                }
+                if (ta) { ta.value = ''; ta.style.height = ''; }
+                clearPreview();
+            } else {
+                alert('Не удалось отправить: '
+                      + (data.detail || data.error || ('HTTP ' + r.status)));
+            }
+        } catch (e) {
+            alert('Сеть недоступна — сообщение не отправлено.');
+        } finally {
+            if (btn) btn.disabled = false;
+            if (attach) attach.disabled = false;
+            if (ta) ta.focus();
+        }
+    }
+
+    feed.addEventListener('submit', function(e) {
+        const form = e.target.closest('#composer');
+        if (form) { e.preventDefault(); sendMessage(form); }
+    });
+
+    function showPreview(file) {
+        const box = feed.querySelector('#composer-preview');
+        if (!box) return;
+        if (pendingUrl) { URL.revokeObjectURL(pendingUrl); pendingUrl = null; }
+        let thumb;
+        if (file.type && file.type.indexOf('image/') === 0) {
+            pendingUrl = URL.createObjectURL(file);
+            thumb = '<img class="cp-thumb" src="' + pendingUrl + '" alt="">';
+        } else {
+            const ico = file.type && file.type.indexOf('video/') === 0 ? '🎬'
+                : file.type && file.type.indexOf('audio/') === 0 ? '🎵' : '📎';
+            thumb = '<span class="cp-ico">' + ico + '</span>';
+        }
+        box.innerHTML = thumb
+            + '<span class="cp-name">' + escapeHtml(file.name) + '</span>'
+            + '<button type="button" class="cp-remove" title="Убрать">×</button>';
+        box.hidden = false;
+    }
+
+    function clearPreview() {
+        pendingFile = null;
+        if (pendingUrl) { URL.revokeObjectURL(pendingUrl); pendingUrl = null; }
+        const box = feed.querySelector('#composer-preview');
+        if (box) { box.hidden = true; box.innerHTML = ''; }
+    }
+
+    feed.addEventListener('change', function(e) {
+        const inp = e.target.closest('#composer-file');
+        if (inp && inp.files && inp.files[0]) {
+            pendingFile = inp.files[0];
+            showPreview(pendingFile);
+            inp.value = '';
+        }
+    });
+    feed.addEventListener('input', function(e) {
+        const ta = e.target.closest('#composer-text');
+        if (!ta) return;
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    });
+    feed.addEventListener('keydown', function(e) {
+        const ta = e.target.closest('#composer-text');
+        if (ta && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            const form = ta.closest('#composer');
+            if (form) sendMessage(form);
+        }
+    });
+
+    // --- Инициализация ------------------------------------------------
+    pollConversations();
+    convTimer = setInterval(pollConversations, 5000);
+
+    const initial = feed.dataset.initialUserId;
+    if (initial) {
+        currentUserId = String(initial);
+        history.replaceState({userId: currentUserId}, '', location.pathname);
+        openConversation(initial, {push: false});
+    } else {
+        history.replaceState({userId: null}, '', location.pathname);
+    }
+})();
+</script>
+{% endblock %}

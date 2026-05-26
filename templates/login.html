@@ -1,40 +1,85 @@
 {% extends 'base.html' %}
 
-{% block title %}
-Вход
-{% endblock %}
+{% block title %}Вход{% endblock %}
 
 {% block body %}
-<div class="container">
-    <div class="log"><h1><b>Вход</b></h1></div>
+<style>
+    .auth-wrap { max-width: 440px; }
+    @keyframes authFadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .auth-card {
+        opacity: 0; animation: authFadeUp 0.5s cubic-bezier(.22,1,.36,1) forwards;
+        background: #fff; border: 1px solid #ecedf1; border-radius: 18px;
+        box-shadow: 0 6px 24px rgba(16,24,40,.08), 0 1px 2px rgba(16,24,40,.04);
+        padding: 32px 30px;
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .auth-title { font-weight: 700; font-size: 1.5rem; margin-bottom: 4px;
+        color: #1a2230; }
+    .auth-sub { color: #6b7280; font-size: .9rem; margin-bottom: 22px; }
+    .auth-card .form-label { font-size: .85rem; font-weight: 600;
+        color: #4b5563; margin-bottom: 4px; }
+    .auth-card .form-control {
+        border-radius: 11px; padding: 11px 13px; border: 1px solid #d6dae2;
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .auth-card .form-control:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .auth-btn {
+        border-radius: 12px; padding: 12px; font-weight: 600; font-size: 1rem;
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+        box-shadow: 0 6px 16px rgba(59,130,246,.26);
+    }
+    .auth-btn:hover { transform: translateY(-2px);
+        box-shadow: 0 10px 24px rgba(59,130,246,.34); }
+    .auth-foot { text-align: center; font-size: .88rem; color: #6b7280;
+        margin-top: 18px; }
 
-    {% if message %}
-    <div class="alert alert-danger" role="alert">
-        {{ message }}
+    [data-bs-theme="dark"] .auth-card {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 6px 24px rgba(0,0,0,.45);
+    }
+    [data-bs-theme="dark"] .auth-title { color: #e5e7eb; }
+    [data-bs-theme="dark"] .auth-card .form-control {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .auth-card { opacity: 1; animation: none; }
+        .auth-btn, .auth-card .form-control { transition: none; }
+    }
+</style>
+
+<div class="container auth-wrap">
+    <div class="auth-card">
+        <div class="auth-title">С возвращением 👋</div>
+        <div class="auth-sub">Войдите в свой аккаунт Synapse</div>
+
+        {% if message %}
+        <div class="alert alert-danger py-2" role="alert">{{ message }}</div>
+        {% endif %}
+
+        <form method="POST" action="/login">
+            <div class="mb-3">
+                <label for="email" class="form-label">Email</label>
+                <input type="email" class="form-control" id="email"
+                       name="email" placeholder="you@example.com" required>
+            </div>
+            <div class="mb-4">
+                <label for="password" class="form-label">Пароль</label>
+                <input type="password" class="form-control" id="password"
+                       name="password" placeholder="••••••••" required>
+            </div>
+            <div class="d-grid">
+                <button class="btn btn-primary auth-btn" type="submit">Войти</button>
+            </div>
+        </form>
+
+        <div class="auth-foot">
+            Нет аккаунта? <a href="/register">Зарегистрироваться</a>
+        </div>
     </div>
-    {% endif %}
-
-    <form class="needs-validation" method="POST" action="/login">
-        <div class="form-floating">
-            <input type="email" class="form-control" id="floatingInput" name="email" placeholder="введите почту">
-            <label for="floatingInput">Email address</label>
-        </div>
-
-        <div class="form-floating">
-            <input type="password" class="form-control" id="floatingPassword" name="password" placeholder="Password">
-            <label for="floatingPassword">Password</label>
-        </div>
-
-        <div class="form-check text-start my-3">
-            <input class="form-check-input" type="checkbox" value="remember-me" id="checkDefault">
-            <label class="form-check-label" for="checkDefault">
-                Remember me
-            </label>
-        </div>
-
-        <button class="btn btn-primary w-100 py-2" type="submit">Sign in</button>
-
-        <p class="mt-5 mb-3 text-body-secondary">© 2017–2025</p>
-    </form>
 </div>
 {% endblock %}

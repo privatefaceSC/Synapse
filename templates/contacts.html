@@ -3,30 +3,187 @@
 {% block title %}{% if selected %}{{ selected.display_name }}{% else %}Контакты{% endif %}{% endblock %}
 
 {% block body %}
+<script>
+    // Блокируем скролл body, чтобы прокрутка списка слева не уезжала со
+    // всем экраном. Снимаем при уходе со страницы — если когда-нибудь
+    // появится навигация без full reload.
+    (function() {
+        document.documentElement.classList.add('contacts-locked');
+        document.body.classList.add('contacts-locked');
+        window.addEventListener('beforeunload', function() {
+            document.documentElement.classList.remove('contacts-locked');
+            document.body.classList.remove('contacts-locked');
+        });
+    })();
+</script>
 <style>
-    .contacts-shell { height: calc(100vh - 110px); }
-    .contact-list { height: 100%; overflow-y: auto; background: #fff; border-radius: 12px; }
-    .contact-row {
-        display: flex; gap: 12px; align-items: center; padding: 12px 14px;
-        border-bottom: 1px solid #eef0f3; text-decoration: none; color: inherit;
-        transition: background 0.1s;
+    /* На странице контактов body НЕ скроллится — иначе при прокрутке
+       списка слева колесо «утаскивает» весь чат справа вверх.
+       body становится flex-колонкой, navbar занимает свою высоту,
+       .contacts-shell — весь оставшийся остаток. Так обе панели
+       (.contact-list и .feed) получают честную внутреннюю высоту,
+       и каждая скроллится независимо. */
+    html.contacts-locked, body.contacts-locked {
+        height: 100%; overflow: hidden;
     }
-    .contact-row:hover { background: #f7f9fc; color: inherit; }
-    .contact-row.active { background: #e7f1ff; }
-    .contact-row .name { font-weight: 600; color: #1a2230; }
+    body.contacts-locked {
+        display: flex; flex-direction: column; margin: 0;
+    }
+    body.contacts-locked > nav { flex: 0 0 auto; }
+    body.contacts-locked > .contacts-shell {
+        flex: 1 1 auto; min-height: 0; height: auto;
+    }
+    /* Запасной фолбэк для случая, когда .contacts-locked по какой-то
+       причине не повесился (например, скрипт упал): даём контейнеру
+       детерминированную высоту, как было раньше. */
+    .contacts-shell { height: calc(100vh - 110px); }
+    #col-list, #col-feed { display: flex; flex-direction: column; min-height: 0; }
+    .contact-search { flex: 0 0 auto; margin-bottom: 12px; position: relative; }
+    .search-results {
+        position: absolute; left: 0; right: 0; top: calc(100% + 6px);
+        background: #fff; border: 1px solid #ecedf1; border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(16,24,40,.15);
+        max-height: 360px; overflow-y: auto; z-index: 1050;
+        display: none;
+    }
+    .search-results.open { display: block; }
+    .search-result {
+        display: block; padding: 10px 12px; border-bottom: 1px solid #f1f2f5;
+        cursor: pointer; transition: background .12s ease;
+    }
+    .search-result:last-child { border-bottom: none; }
+    .search-result:hover { background: #f6f8fc; }
+    .search-result .sr-head {
+        display: flex; justify-content: space-between; align-items: baseline;
+        gap: 8px; margin-bottom: 3px;
+    }
+    .search-result .sr-name { font-weight: 600; color: #1a2230;
+        font-size: 14px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .search-result .sr-meta { color: #6b7280; font-size: 11px;
+        flex: 0 0 auto; }
+    .search-result .sr-snippet {
+        color: #4b5563; font-size: 13px; line-height: 1.35;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+        overflow: hidden;
+    }
+    .search-result .sr-snippet mark {
+        background: #fef08a; padding: 0 2px; border-radius: 3px; color: inherit;
+    }
+    .search-results .sr-empty {
+        padding: 14px; color: #9ca3af; font-size: 13px;
+        text-align: center; font-style: italic;
+    }
+    [data-bs-theme="dark"] .search-results {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 12px 32px rgba(0,0,0,.55);
+    }
+    [data-bs-theme="dark"] .search-result { border-bottom-color: #232831; }
+    [data-bs-theme="dark"] .search-result:hover { background: #232831; }
+    [data-bs-theme="dark"] .search-result .sr-name { color: #e5e7eb; }
+    [data-bs-theme="dark"] .search-result .sr-snippet { color: #cbd5e1; }
+    [data-bs-theme="dark"] .search-result .sr-snippet mark {
+        background: #92400e; color: #fde68a;
+    }
+    [data-bs-theme="dark"] .search-results .sr-empty { color: #6b7280; }
+    .contact-search input {
+        width: 100%; border: 1px solid #e6e8ee; border-radius: 12px;
+        padding: 10px 44px 10px 38px; font-size: 14px; background: #fff;
+        outline: none; transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .contact-search .enable-notif {
+        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+        border: 1px solid #bfdbfe; background: #e0edff; color: #1d4ed8;
+        width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
+        font-size: 15px; line-height: 1; padding: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: background .15s ease, border-color .15s ease;
+    }
+    .contact-search .enable-notif:hover { background: #c7defe; }
+    [data-bs-theme="dark"] .contact-search .enable-notif {
+        background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
+    }
+    [data-bs-theme="dark"] .contact-search .enable-notif:hover {
+        background: #233d5e;
+    }
+    .contact-search input:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .contact-search::before {
+        content: "🔍"; position: absolute; left: 13px; top: 50%;
+        transform: translateY(-50%); font-size: 13px; opacity: .55;
+        pointer-events: none;
+    }
+    .contact-list {
+        flex: 1 1 auto; min-height: 0;
+        overflow-y: auto; background: #fff;
+        border: 1px solid #ecedf1; border-radius: 16px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background 0.25s ease, border-color 0.25s ease;
+    }
+    [data-bs-theme="dark"] .contact-search input {
+        background: #1a1d24; border-color: #262b34; color: #e5e7eb;
+    }
+    .contact-row {
+        display: flex; gap: 14px; align-items: center; padding: 13px 16px;
+        border-bottom: 1px solid #f1f2f5; text-decoration: none; color: inherit;
+        transition: background 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease;
+    }
+    .contact-row:hover {
+        background: #f6f8fc; color: inherit; transform: translateX(3px);
+    }
+    .contact-row.active {
+        background: #eef4ff;
+        box-shadow: inset 3px 0 0 #3b82f6;
+    }
+    .contact-row .avatar {
+        width: 46px; height: 46px; font-size: 17px;
+        box-shadow: 0 2px 5px rgba(16,24,40,.18);
+        border: 2px solid rgba(255,255,255,.55);
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+    .contact-row:hover .avatar {
+        transform: scale(1.07);
+        box-shadow: 0 4px 10px rgba(16,24,40,.22);
+    }
+    .contact-row .name {
+        font-weight: 600; color: #1a2230; font-size: 15px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .contact-row.active .name { color: #1d4ed8; }
     .contact-row .preview {
         color: #6b7280; font-size: 13px; white-space: nowrap;
-        overflow: hidden; text-overflow: ellipsis;
+        overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
     }
-    .contact-row .time { font-size: 11px; color: #9ca3af; flex: 0 0 auto; }
+    .contact-row .time {
+        font-size: 11px; color: #9ca3af; flex: 0 0 auto;
+        letter-spacing: .02em;
+    }
     .contact-row .badge-unread {
         background: #ef4444; color: #fff; border-radius: 999px;
         min-width: 20px; height: 20px; padding: 0 6px;
         display: inline-flex; align-items: center; justify-content: center;
         font-size: 12px; font-weight: 600; margin-top: 2px;
+        box-shadow: 0 1px 3px rgba(239,68,68,.4);
+    }
+    /* Без звука — бэйдж нейтральный серый (не кричит вниманием) */
+    .contact-row .badge-unread.muted {
+        background: #94a3b8; box-shadow: 0 1px 2px rgba(100,116,139,.35);
+    }
+    [data-bs-theme="dark"] .contact-row .badge-unread.muted {
+        background: #475569; box-shadow: 0 1px 2px rgba(0,0,0,.4);
     }
     .contact-meta { flex: 1; min-width: 0; }
     .contact-row-wrap { position: relative; }
+    /* Иконка-пометка статуса (📌 закреплено, 🔇 без звука) рядом с именем */
+    .contact-row .status-marks { display: inline-flex; gap: 3px;
+        margin-left: 4px; font-size: 11px; opacity: .75; flex: 0 0 auto; }
+    /* Закреплённые контакты — тонкий жёлтый штрих слева */
+    .contact-row-wrap.pinned .contact-row { background: linear-gradient(
+        90deg, rgba(250, 204, 21, .12) 0, rgba(250, 204, 21, 0) 24px); }
+    [data-bs-theme="dark"] .contact-row-wrap.pinned .contact-row {
+        background: linear-gradient(
+            90deg, rgba(250, 204, 21, .18) 0, rgba(250, 204, 21, 0) 24px); }
     /* Освобождаем место для kebab-кнопки справа, чтобы превью не уезжало под неё. */
     .contact-row-wrap .contact-row { padding-right: 44px; }
     .contact-kebab {
@@ -35,144 +192,990 @@
         top: 50%;
         transform: translateY(-50%);
         z-index: 5;
-        background: transparent; border: 0; color: #4b5563;
+        background: transparent; border: 0; color: #9aa1ad;
         font-size: 22px; font-weight: 700; line-height: 1;
         padding: 6px 10px;
-        cursor: pointer; border-radius: 6px;
-        transition: background 0.1s, color 0.1s;
+        cursor: pointer; border-radius: 8px;
+        transition: background 0.12s ease, color 0.12s ease;
     }
     .contact-kebab:hover { background: #eef0f3; color: #1a2230; }
-    .contact-kebab.open { background: #e7f1ff; color: #1a2230; }
+    .contact-kebab.open { background: #eef4ff; color: #1d4ed8; }
     /* Кнопка «назад к списку» в шапке чата на узких экранах. */
     .feed-back-btn {
         background: transparent; border: 0; font-size: 22px;
         line-height: 1; padding: 4px 10px; color: #1a2230;
-        cursor: pointer; border-radius: 6px; text-decoration: none;
+        cursor: pointer; border-radius: 8px; text-decoration: none;
+        transition: background 0.12s ease;
     }
     .feed-back-btn:hover { background: #f1f3f5; color: #1a2230; }
     .popover-menu {
         position: absolute; z-index: 100; background: #fff;
-        border: 1px solid #e5e7eb; border-radius: 8px;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.12);
-        min-width: 160px; padding: 4px 0;
+        border: 1px solid #e5e7eb; border-radius: 14px;
+        box-shadow: 0 14px 36px rgba(16,24,40,.18), 0 2px 8px rgba(16,24,40,.08);
+        min-width: 196px; padding: 6px;
+        transform-origin: top right;
+        animation: popoverIn 0.16s cubic-bezier(.34,1.3,.64,1) both;
+    }
+    @keyframes popoverIn {
+        from { opacity: 0; transform: scale(.92) translateY(-4px); }
+        to   { opacity: 1; transform: scale(1) translateY(0); }
     }
     .popover-menu button {
         width: 100%; background: transparent; border: 0;
-        text-align: left; padding: 8px 14px; cursor: pointer;
-        font-size: 14px; color: #1a2230;
+        text-align: left; padding: 9px 12px; cursor: pointer;
+        font-size: 14px; color: #1a2230; line-height: 1.2;
+        border-radius: 9px;
+        display: flex; align-items: center; gap: 10px;
+        transition: background 0.12s ease;
     }
-    .popover-menu button:hover { background: #f7f9fc; }
-    .popover-menu button.danger { color: #ef4444; }
+    .popover-menu button:hover { background: #eef2ff; color: #1d4ed8; }
+    .popover-menu button.danger { color: #b91c1c; }
+    .popover-menu button.danger:hover { background: #fef2f2; color: #b91c1c; }
+    .popover-menu .menu-ico {
+        width: 22px; flex: 0 0 auto; font-size: 15px; text-align: center;
+        opacity: .9;
+    }
+    .popover-menu .menu-divider {
+        height: 1px; background: #eef0f3; margin: 4px 6px;
+    }
+    [data-bs-theme="dark"] .popover-menu .menu-divider { background: #2a2f3a; }
+    .popover-menu .menu-note {
+        font-size: 12px; color: #6b7280; padding: 8px 12px 4px;
+        line-height: 1.35; max-width: 240px;
+    }
+    [data-bs-theme="dark"] .popover-menu .menu-note { color: #9ca3af; }
+    /* Полоска эмодзи-реакций внутри контекстного меню сообщения */
+    .popover-menu .menu-reactions {
+        display: flex; gap: 2px; padding: 4px 4px 6px; justify-content: space-between;
+    }
+    .popover-menu .menu-reactions .rp-emoji {
+        background: transparent; border: 0; cursor: pointer;
+        font-size: 22px; line-height: 1; padding: 6px 7px;
+        border-radius: 9px;
+        transition: background .12s ease, transform .12s ease;
+    }
+    .popover-menu .menu-reactions .rp-emoji:hover {
+        background: #eef2ff; transform: scale(1.25);
+    }
+    .popover-menu .menu-reactions .rp-emoji.mine {
+        background: #dbeafe;
+    }
+    [data-bs-theme="dark"] .popover-menu .menu-reactions .rp-emoji:hover {
+        background: #1c2c44;
+    }
+    [data-bs-theme="dark"] .popover-menu .menu-reactions .rp-emoji.mine {
+        background: #1c2c44;
+    }
     .popover-menu .rename-input {
-        width: calc(100% - 28px); margin: 4px 14px; padding: 6px 8px;
-        border: 1px solid #d1d5db; border-radius: 6px; font-size: 14px;
+        width: calc(100% - 28px); margin: 4px 14px; padding: 7px 9px;
+        border: 1px solid #d1d5db; border-radius: 8px; font-size: 14px;
+        outline: none;
     }
-    .feed { height: 100%; overflow-y: auto; background: #fff; border-radius: 12px; padding: 16px 20px; }
+    .popover-menu .rename-input:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    #col-feed { position: relative; }
+    .scroll-fab {
+        position: absolute; right: 36px; bottom: 110px;
+        width: 46px; height: 46px; border-radius: 50%;
+        background: #fff; color: #475569;
+        border: 1px solid rgba(15, 23, 42, .08);
+        box-shadow: 0 10px 24px rgba(15, 23, 42, .18),
+                    0 2px 6px rgba(15, 23, 42, .08);
+        display: inline-flex; align-items: center; justify-content: center;
+        cursor: pointer; padding: 0;
+        opacity: 0; transform: translateY(10px) scale(.85);
+        pointer-events: none;
+        transition: opacity .22s cubic-bezier(.34,1.3,.64,1),
+                    transform .22s cubic-bezier(.34,1.3,.64,1),
+                    background .15s ease, color .15s ease,
+                    box-shadow .2s ease;
+        z-index: 12;
+        backdrop-filter: saturate(180%) blur(6px);
+    }
+    .scroll-fab:hover {
+        background: #3b82f6; color: #fff;
+        border-color: #3b82f6;
+        box-shadow: 0 14px 28px rgba(59,130,246,.35),
+                    0 2px 6px rgba(59,130,246,.18);
+        transform: translateY(-1px) scale(1.03);
+    }
+    .scroll-fab:active { transform: translateY(0) scale(.97); }
+    .scroll-fab.show {
+        opacity: 1; transform: translateY(0) scale(1); pointer-events: auto;
+    }
+    .scroll-fab svg { width: 18px; height: 18px; display: block; }
+    .scroll-fab .fab-badge {
+        position: absolute; top: -6px; right: -6px;
+        background: #3b82f6; color: #fff; border-radius: 999px;
+        min-width: 20px; height: 20px; padding: 0 6px;
+        font-size: 11px; font-weight: 700; line-height: 1;
+        display: none; align-items: center; justify-content: center;
+        box-shadow: 0 2px 6px rgba(59,130,246,.45);
+        border: 2px solid #fff;
+    }
+    .scroll-fab .fab-badge.show { display: inline-flex; }
+    [data-bs-theme="dark"] .scroll-fab {
+        background: #1a1d24; color: #cbd5e1; border-color: #2a2f3a;
+        box-shadow: 0 10px 24px rgba(0,0,0,.45),
+                    0 2px 6px rgba(0,0,0,.25);
+    }
+    [data-bs-theme="dark"] .scroll-fab:hover {
+        background: #3b82f6; color: #fff; border-color: #3b82f6;
+    }
+    [data-bs-theme="dark"] .scroll-fab .fab-badge { border-color: #1a1d24; }
+    .feed {
+        height: 100%; overflow-y: auto;
+        background:
+            radial-gradient(1100px 380px at 50% -8%, #e9eefb 0%, rgba(233,238,251,0) 70%),
+            linear-gradient(180deg, #eef1f6 0%, #f4f5f9 100%);
+        border: 1px solid #e6e8ee; border-radius: 16px; padding: 18px 22px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background 0.25s ease, border-color 0.25s ease;
+    }
     .feed-header {
-        display: flex; align-items: center; gap: 12px;
-        padding-bottom: 12px; border-bottom: 1px solid #eef0f3; margin-bottom: 12px;
+        display: flex; flex-direction: column;
+        padding: 0; border-bottom: 1px solid #e6e8ee;
+        margin: -18px -22px 16px; position: sticky; top: -18px;
+        background: rgba(247,248,251,.82); backdrop-filter: blur(10px);
+        z-index: 10; border-radius: 16px 16px 0 0;
+        transition: background 0.25s ease, border-color 0.25s ease;
     }
-    .bubble-row { display: flex; flex-direction: column; margin-bottom: 12px; max-width: 80%; }
+    .feed-header-top {
+        display: flex; align-items: center; gap: 13px;
+        padding: 16px 22px 14px;
+        transition: background .15s ease;
+    }
+    .feed-header .is-typing { color: #3b82f6; font-style: italic; }
+    [data-bs-theme="dark"] .feed-header .is-typing { color: #60a5fa; }
+    .feed-header.expandable .feed-header-top { cursor: pointer; user-select: none; }
+    .feed-header.expandable .feed-header-top:hover { background: rgba(0,0,0,.025); }
+    .feed-header .fw-semibold { font-size: 16px; font-weight: 700; color: #111827; }
+    .feed-header .avatar { width: 46px; height: 46px; font-size: 17px;
+        box-shadow: 0 3px 8px rgba(16,24,40,.22);
+        border: 2px solid rgba(255,255,255,.7); }
+    .feed-header .chevron {
+        margin-left: auto; color: #6b7280; font-size: 13px;
+        transition: transform .22s ease;
+        flex: 0 0 auto;
+    }
+    .feed-header.open .chevron { transform: rotate(180deg); }
+    .handles-panel {
+        max-height: 0; overflow: hidden;
+        transition: max-height .25s ease;
+        background: rgba(247,248,251,.5);
+        border-top: 1px solid transparent;
+    }
+    .feed-header.open .handles-panel {
+        max-height: 320px; overflow-y: auto;
+        border-top-color: #e6e8ee;
+    }
+    .handles-panel-inner {
+        padding: 10px 18px 14px;
+        display: flex; flex-wrap: wrap; gap: 6px;
+    }
+    .handle-pill {
+        display: inline-flex; align-items: center; gap: 8px;
+        padding: 5px 11px 5px 5px; background: #fff;
+        border: 1px solid #e6e8ee; border-radius: 999px;
+        font-size: 13px; color: #1f2937; max-width: 100%;
+    }
+    .handle-pill .messenger-tag {
+        font-size: 11px; font-weight: 600; color: #2563eb;
+        background: #e0edff; padding: 2px 9px; border-radius: 999px;
+    }
+    .handle-pill .sender-name {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+        max-width: 280px;
+    }
+    .members-box { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+    .members-box .members-status { color: #6b7280; font-size: 13px; }
+    .member-chip {
+        display: inline-flex; align-items: baseline; gap: 6px;
+        padding: 4px 11px; background: #fff;
+        border: 1px solid #e6e8ee; border-radius: 999px;
+        font-size: 13px; color: #1f2937;
+    }
+    .member-chip .member-username { color: #6b7280; font-size: 12px; }
+    [data-bs-theme="dark"] .member-chip {
+        background: #1a1d24; border-color: #2a2f3a; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .member-chip .member-username { color: #9ca3af; }
+    .bubble-row { display: flex; flex-direction: column;
+        align-items: flex-start;  /* bubble сжимается под контент, а не до 78% */
+        margin-bottom: 14px; max-width: 78%; }
+    /* bubble тоже не тянется шире своей строки */
+    .bubble { max-width: 100%; }
+    /* Плавное появление новых сообщений (входящих и исходящих) */
+    @keyframes bubbleSlideIn {
+        from { opacity: 0; transform: translateY(8px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .bubble-row.new-msg .bubble { animation: bubbleSlideIn .22s ease-out; }
+    /* Свежеотправленное наше сообщение — пока сервер не подтвердил доставку,
+       сидит чуть приглушённое (как в Telegram «отправляется»). */
+    .bubble-row.outgoing.pending .bubble { opacity: .65; }
     .bubble-row .source {
-        font-size: 11px; color: #6b7280; margin-bottom: 2px; padding-left: 4px;
+        font-size: 11px; color: #5b6472; margin: 0 0 4px 7px;
+        font-weight: 600; letter-spacing: .02em;
     }
+    /* Исходящие (отправленные из веб-панели) — справа, другой цвет. */
+    .bubble-row.outgoing { margin-left: auto; align-items: flex-end; }
+    .bubble-row.outgoing .source { margin: 0 7px 4px 0; }
+    .bubble .time-row {
+        display: flex; align-items: center; gap: 4px;
+        justify-content: flex-end;
+        font-size: 11px; color: #909090; margin-top: 4px;
+    }
+    .bubble .tg-tick { font-size: 12px; line-height: 1; color: #94a3b8;
+        font-family: -apple-system, "Segoe UI Symbol", sans-serif; }
+    .bubble .tg-tick.read { color: #3b82f6; }
+    [data-bs-theme="dark"] .bubble .tg-tick { color: #6b7280; }
+    [data-bs-theme="dark"] .bubble .tg-tick.read { color: #60a5fa; }
+    .bubble .ttl-mark { font-size: 12px; line-height: 1; cursor: help;
+        opacity: .85; }
+    /* Реакции под bubble */
+    .reactions-row {
+        display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;
+    }
+    .reaction-chip {
+        display: inline-flex; align-items: center; gap: 4px;
+        padding: 2px 8px; border-radius: 11px;
+        background: #f1f3f5; border: 1px solid #e6e8ee;
+        color: #1a2230; font-size: 12px; line-height: 1.4;
+        cursor: pointer; user-select: none;
+        transition: background .12s ease, border-color .12s ease,
+                    transform .12s ease;
+    }
+    .reaction-chip:hover { transform: translateY(-1px); }
+    .reaction-chip.mine { background: #dbeafe; border-color: #93c5fd; color: #1d4ed8; }
+    .reaction-chip .rc-emoji { font-size: 14px; line-height: 1; }
+    .reaction-chip .rc-count { font-weight: 600; font-size: 11px; }
+    .reaction-chip .rc-count.zero { display: none; }
+    [data-bs-theme="dark"] .reaction-chip {
+        background: #232831; border-color: #2a2f3a; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .reaction-chip.mine {
+        background: #1c2c44; border-color: #2c3f5e; color: #93c5fd;
+    }
+    /* Поповер выбора эмодзи (вызывается из меню сообщения) */
+    /* Удалённое сообщение: текст остаётся виден, но сверху плашка-предупреждение,
+       а сам контент приглушён. Это и есть фишка — видеть то, что от тебя
+       попытались скрыть. */
+    .bubble.deleted .text,
+    .bubble.deleted .reply-quote,
+    .bubble.deleted .media-img,
+    .bubble.deleted .media-video,
+    .bubble.deleted .media-audio,
+    .bubble.deleted .media-file,
+    .bubble.deleted .sticker-img { opacity: .72; }
+    .bubble .deleted-banner {
+        display: inline-flex; align-items: center; gap: 6px;
+        font-size: 12px; color: #b91c1c; background: #fee2e2;
+        border: 1px solid #fecaca; border-radius: 7px;
+        padding: 3px 8px; margin-bottom: 6px;
+        font-weight: 500;
+    }
+    [data-bs-theme="dark"] .bubble .deleted-banner {
+        color: #fca5a5; background: #3a1f1f; border-color: #5b2727;
+    }
+    .bubble-row.outgoing .bubble {
+        background: #dbeafe; border-radius: 16px 16px 6px 16px;
+    }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble { background: #1e3a5f; }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble .text { color: #e8eaed; }
     .bubble {
-        background: #f1f3f5; padding: 8px 12px; border-radius: 14px 14px 14px 4px;
-        word-wrap: break-word; line-height: 1.35;
+        position: relative; background: #ffffff; padding: 10px 14px;
+        border-radius: 16px 16px 16px 6px;
+        word-wrap: break-word; line-height: 1.45;
+        box-shadow: 0 2px 6px rgba(16,24,40,.07), 0 1px 2px rgba(16,24,40,.04);
+        transition: background 0.25s ease, box-shadow 0.18s ease;
     }
-    .bubble .text { color: #1a2230; }
+    .bubble:hover { box-shadow: 0 4px 14px rgba(16,24,40,.10); }
+    .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; }
+    /* Цитата сообщения, на которое это — ответ (reply). */
+    .bubble .reply-quote {
+        display: block; margin-bottom: 6px; padding: 4px 9px;
+        border-left: 3px solid #3b82f6; border-radius: 5px;
+        background: rgba(59,130,246,.08); font-size: 12.5px; line-height: 1.35;
+    }
+    .bubble .reply-quote { cursor: pointer;
+        transition: background .12s ease, border-color .12s ease; }
+    .bubble .reply-quote:hover { background: #dbeafe; }
+    [data-bs-theme="dark"] .bubble .reply-quote:hover { background: #1c2c44; }
+    /* Подсветка цели при переходе по reply / по результату поиска */
+    @keyframes bubbleHighlight {
+        0%   { background: rgba(59,130,246,.35); }
+        100% { background: transparent; }
+    }
+    .bubble.highlight { animation: bubbleHighlight 1.6s ease-out; }
+    .bubble .reply-quote .rq-author {
+        font-weight: 600; color: #2563eb; display: block;
+    }
+    .bubble .reply-quote .rq-text {
+        color: #5b6472; display: block; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+    }
+    [data-bs-theme="dark"] .bubble .reply-quote {
+        background: rgba(96,165,250,.12); border-left-color: #60a5fa;
+    }
+    [data-bs-theme="dark"] .bubble .reply-quote .rq-author { color: #93c5fd; }
+    [data-bs-theme="dark"] .bubble .reply-quote .rq-text { color: #9aa3b2; }
+    /* «↪ Переслано от …» — шапка над содержимым пересланного сообщения. */
+    .bubble .fwd-header {
+        display: flex; align-items: center; gap: 4px;
+        margin-bottom: 4px; font-size: 12.5px; line-height: 1.3;
+        color: #5b6472;
+    }
+    .bubble .fwd-header .fwd-ico { color: #3b82f6; font-weight: 600; }
+    .bubble .fwd-header .fwd-label { color: #6b7280; }
+    .bubble .fwd-header .fwd-name {
+        color: #1f2733; font-weight: 600;
+    }
+    .bubble .fwd-header .fwd-link {
+        color: #2563eb; text-decoration: none; cursor: pointer;
+    }
+    .bubble .fwd-header .fwd-link:hover { text-decoration: underline; }
+    [data-bs-theme="dark"] .bubble .fwd-header { color: #9aa3b2; }
+    [data-bs-theme="dark"] .bubble .fwd-header .fwd-ico { color: #60a5fa; }
+    [data-bs-theme="dark"] .bubble .fwd-header .fwd-name { color: #e5e7eb; }
+    [data-bs-theme="dark"] .bubble .fwd-header .fwd-link { color: #93c5fd; }
+    /* Кнопка «📝 ред. ×N» — открывает popover c историей правок. */
+    .edited-badge {
+        background: none; border: none; padding: 0 4px;
+        font-size: 11px; line-height: 1; color: #6b7280; cursor: pointer;
+        border-radius: 4px;
+    }
+    .edited-badge:hover { background: rgba(0,0,0,.06); color: #2563eb; }
+    [data-bs-theme="dark"] .edited-badge { color: #9aa3b2; }
+    [data-bs-theme="dark"] .edited-badge:hover {
+        background: rgba(255,255,255,.08); color: #93c5fd;
+    }
+    .edits-popover {
+        position: fixed; z-index: 1080;
+        background: #ffffff; border: 1px solid #e2e8f0;
+        border-radius: 10px; box-shadow: 0 12px 36px rgba(0,0,0,.18);
+        padding: 10px 12px; max-width: 360px; min-width: 220px;
+        font-size: 13px; line-height: 1.4;
+    }
+    [data-bs-theme="dark"] .edits-popover {
+        background: #1a1d24; border-color: #2a2f3a; color: #e5e7eb;
+        box-shadow: 0 12px 36px rgba(0,0,0,.6);
+    }
+    .edits-popover .ep-title {
+        font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
+        color: #6b7280; margin-bottom: 6px;
+    }
+    .edits-popover .ep-version {
+        padding: 6px 0; border-top: 1px solid #f1f5f9;
+    }
+    [data-bs-theme="dark"] .edits-popover .ep-version { border-top-color: #2a2f3a; }
+    .edits-popover .ep-version:first-of-type { border-top: none; }
+    .edits-popover .ep-when {
+        font-size: 11px; color: #9ca3af; margin-bottom: 2px;
+    }
+    .edits-popover .ep-text {
+        white-space: pre-wrap; word-wrap: break-word; color: #1f2733;
+    }
+    [data-bs-theme="dark"] .edits-popover .ep-text { color: #e5e7eb; }
+    .edits-popover .ep-text.current { font-weight: 600; }
+    .edits-popover .ep-text.empty {
+        font-style: italic; color: #9ca3af;
+    }
+    /* Кнопка «📑 Темы» в шапке чата + всплывающая панель с темами. */
+    .feed-header .topics-btn {
+        background: none; border: none; padding: 4px 8px;
+        font-size: 18px; line-height: 1; cursor: pointer;
+        border-radius: 8px; flex: 0 0 auto;
+    }
+    .feed-header .topics-btn:hover { background: rgba(0,0,0,.06); }
+    [data-bs-theme="dark"] .feed-header .topics-btn:hover {
+        background: rgba(255,255,255,.08);
+    }
+    .topics-panel {
+        position: fixed; z-index: 1090;
+        background: #ffffff; border: 1px solid #e2e8f0;
+        border-radius: 12px; box-shadow: 0 16px 48px rgba(0,0,0,.22);
+        padding: 12px 14px; width: min(420px, 90vw);
+        max-height: 70vh; overflow-y: auto;
+    }
+    [data-bs-theme="dark"] .topics-panel {
+        background: #1a1d24; border-color: #2a2f3a; color: #e5e7eb;
+        box-shadow: 0 16px 48px rgba(0,0,0,.6);
+    }
+    .topics-panel .tp-head {
+        display: flex; align-items: center; justify-content: space-between;
+        margin-bottom: 8px;
+    }
+    .topics-panel .tp-title {
+        font-weight: 600; font-size: 14px;
+    }
+    .topics-panel .tp-limit {
+        font-size: 12px; color: #6b7280; cursor: pointer;
+        background: rgba(0,0,0,.04); border: none; padding: 3px 8px;
+        border-radius: 6px;
+    }
+    [data-bs-theme="dark"] .topics-panel .tp-limit {
+        background: rgba(255,255,255,.06); color: #cbd5e1;
+    }
+    .topics-panel .tp-status {
+        color: #6b7280; font-size: 13px; padding: 12px 0;
+        text-align: center;
+    }
+    .topics-panel .tp-status.error { color: #ef4444; white-space: pre-wrap; }
+    .topics-panel .tp-item {
+        padding: 10px 12px; border-radius: 8px; cursor: pointer;
+        border: 1px solid transparent; margin-bottom: 6px;
+        transition: background .15s, border-color .15s;
+    }
+    .topics-panel .tp-item:hover {
+        background: rgba(59,130,246,.08); border-color: rgba(59,130,246,.25);
+    }
+    [data-bs-theme="dark"] .topics-panel .tp-item:hover {
+        background: rgba(96,165,250,.12); border-color: rgba(96,165,250,.3);
+    }
+    .topics-panel .tp-item-title {
+        font-weight: 600; font-size: 14px; margin-bottom: 2px;
+    }
+    .topics-panel .tp-item-meta {
+        font-size: 12px; color: #6b7280;
+    }
+    .topics-panel .tp-footer {
+        margin-top: 8px; padding-top: 8px; border-top: 1px solid #f1f5f9;
+        font-size: 11px; color: #94a3b8; text-align: center;
+    }
+    [data-bs-theme="dark"] .topics-panel .tp-footer {
+        border-top-color: #2a2f3a;
+    }
+    /* Pinned-бар тем чата — сверху ленты сообщений (как в Telegram). */
+    .topics-pin {
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px 12px;
+        background: linear-gradient(180deg, #f0f9ff 0%, #e0f2fe 100%);
+        border-bottom: 1px solid #bae6fd;
+        cursor: pointer; user-select: none;
+        transition: background .2s;
+    }
+    .topics-pin:hover {
+        background: linear-gradient(180deg, #e0f2fe 0%, #bae6fd 100%);
+    }
+    [data-bs-theme="dark"] .topics-pin {
+        background: linear-gradient(180deg, #0c2540 0%, #0a1f3a 100%);
+        border-bottom-color: #1e3a8a;
+    }
+    [data-bs-theme="dark"] .topics-pin:hover {
+        background: linear-gradient(180deg, #0a1f3a 0%, #0a1832 100%);
+    }
+    .topics-pin .tp-ico {
+        font-size: 18px; flex: 0 0 auto;
+    }
+    .topics-pin .tp-bars {
+        display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto;
+        height: 36px; width: 3px;
+    }
+    /* Вертикальная «лента» из коротких сегментов — индикатор сколько
+     * закрепов и где мы сейчас (Telegram-style). */
+    .topics-pin .tp-bar {
+        flex: 1; background: #93c5fd; border-radius: 2px;
+        opacity: .5; transition: opacity .2s;
+    }
+    .topics-pin .tp-bar.active { opacity: 1; background: #2563eb; }
+    [data-bs-theme="dark"] .topics-pin .tp-bar { background: #475569; }
+    [data-bs-theme="dark"] .topics-pin .tp-bar.active { background: #60a5fa; }
+    .topics-pin .tp-content {
+        flex: 1; min-width: 0;
+    }
+    .topics-pin .tp-label {
+        font-size: 11px; color: #2563eb; font-weight: 600;
+        text-transform: uppercase; letter-spacing: .04em;
+    }
+    [data-bs-theme="dark"] .topics-pin .tp-label { color: #60a5fa; }
+    .topics-pin .tp-cur-title {
+        font-size: 14px; font-weight: 600; color: #1e293b;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    [data-bs-theme="dark"] .topics-pin .tp-cur-title { color: #e2e8f0; }
+    .topics-pin .tp-close {
+        background: none; border: none; cursor: pointer; padding: 4px 8px;
+        font-size: 18px; color: #64748b; line-height: 1;
+        border-radius: 6px;
+    }
+    .topics-pin .tp-close:hover { background: rgba(0,0,0,.08); }
+    [data-bs-theme="dark"] .topics-pin .tp-close { color: #94a3b8; }
+    [data-bs-theme="dark"] .topics-pin .tp-close:hover {
+        background: rgba(255,255,255,.08);
+    }
+    /* Forum picker — список тем форум-чата (вместо ленты сообщений). */
+    .forum-picker {
+        padding: 14px 14px; flex: 1 1 auto; overflow-y: auto;
+    }
+    .forum-picker .fp-title {
+        font-size: 13px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: .04em; color: #64748b; margin-bottom: 10px;
+        padding: 0 6px;
+    }
+    .forum-picker .fp-status {
+        color: #6b7280; font-size: 14px; padding: 14px 0;
+        text-align: center;
+    }
+    .forum-picker .fp-list {
+        display: flex; flex-direction: column; gap: 2px;
+    }
+    .forum-picker .fp-item {
+        display: flex; align-items: center; gap: 12px;
+        padding: 10px 12px; border-radius: 10px;
+        cursor: pointer; transition: background .12s;
+        border: 1px solid transparent;
+    }
+    .forum-picker .fp-item:hover {
+        background: rgba(59,130,246,.07);
+        border-color: rgba(59,130,246,.18);
+    }
+    [data-bs-theme="dark"] .forum-picker .fp-item { color: #e5e7eb; }
+    [data-bs-theme="dark"] .forum-picker .fp-item:hover {
+        background: rgba(96,165,250,.12);
+        border-color: rgba(96,165,250,.25);
+    }
+    /* Цветной значок темы (как аватар чата в Telegram). Цвет хешируется
+     * от id темы — стабильный. */
+    .forum-picker .fp-ico {
+        width: 44px; height: 44px; flex: 0 0 auto;
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 50%; color: #fff; font-size: 20px; font-weight: 600;
+    }
+    .forum-picker .fp-body {
+        flex: 1 1 auto; min-width: 0;
+        display: flex; flex-direction: column; gap: 2px;
+    }
+    .forum-picker .fp-row {
+        display: flex; align-items: baseline; gap: 8px;
+    }
+    .forum-picker .fp-name {
+        font-size: 15px; font-weight: 600; flex: 1 1 auto;
+        min-width: 0; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .forum-picker .fp-time {
+        font-size: 11px; color: #94a3b8; flex: 0 0 auto;
+    }
+    .forum-picker .fp-preview {
+        font-size: 13px; color: #64748b;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    [data-bs-theme="dark"] .forum-picker .fp-preview { color: #94a3b8; }
+    .forum-picker .fp-side {
+        display: flex; flex-direction: column; align-items: flex-end;
+        gap: 4px; flex: 0 0 auto;
+    }
+    .forum-picker .fp-unread {
+        background: #3b82f6; color: #fff;
+        min-width: 22px; height: 22px; padding: 0 7px; border-radius: 11px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 12px; font-weight: 700;
+    }
+    [data-bs-theme="dark"] .forum-picker .fp-unread { background: #2563eb; }
+    .forum-picker .fp-search {
+        margin-bottom: 12px; width: 100%;
+        padding: 8px 12px; border-radius: 10px;
+        border: 1px solid #e2e8f0; background: #f8fafc;
+        font-size: 14px;
+    }
+    .forum-picker .fp-search:focus {
+        outline: none; border-color: #3b82f6;
+        background: #fff;
+    }
+    [data-bs-theme="dark"] .forum-picker .fp-search {
+        background: #0f1620; border-color: #2a2f3a; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .forum-picker .fp-search:focus {
+        background: #0a0f17; border-color: #60a5fa;
+    }
+
+    /* Подсветка сообщений выбранной темы — мягкое цветное обрамление. */
+    .bubble-row.topic-hl .bubble {
+        box-shadow: 0 0 0 2px rgba(37,99,235,.5),
+                    0 0 14px rgba(37,99,235,.2);
+        background: linear-gradient(180deg,
+            rgba(219,234,254,.55) 0%, rgba(219,234,254,.25) 100%);
+        transition: box-shadow .25s, background .25s;
+    }
+    [data-bs-theme="dark"] .bubble-row.topic-hl .bubble {
+        box-shadow: 0 0 0 2px rgba(96,165,250,.5),
+                    0 0 14px rgba(96,165,250,.2);
+        background: linear-gradient(180deg,
+            rgba(30,58,138,.35) 0%, rgba(30,58,138,.15) 100%);
+    }
     .bubble .media-img {
-        display: block; margin-top: 6px; max-width: 260px; max-height: 340px;
-        border-radius: 10px; cursor: zoom-in; object-fit: cover;
+        display: block; margin-top: 8px; max-width: 260px; max-height: 340px;
+        border-radius: 14px; cursor: zoom-in; object-fit: cover;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+    }
+    .bubble .media-img:hover {
+        transform: scale(1.015);
+        box-shadow: 0 6px 18px rgba(16,24,40,.18);
     }
     .bubble .sticker-img {
-        display: block; margin-top: 6px; width: 130px; height: 130px;
+        display: block; margin-top: 6px; width: 132px; height: 132px;
         object-fit: contain; background: transparent;
     }
     .bubble .media-video {
-        display: block; margin-top: 6px; max-width: 280px; max-height: 360px;
-        border-radius: 10px; background: #000;
+        display: block; margin-top: 8px; max-width: 280px; max-height: 360px;
+        border-radius: 14px; background: #000;
+    }
+    .bubble .media-audio {
+        display: block; margin-top: 8px; max-width: 280px; height: 40px;
+    }
+    .bubble .media-file {
+        display: inline-flex; align-items: center; gap: 9px; margin-top: 8px;
+        padding: 9px 13px; background: rgba(16,24,40,.05);
+        border: 1px solid rgba(16,24,40,.07); border-radius: 12px;
+        text-decoration: none; color: #1f2733; font-size: 13.5px;
+        max-width: 280px; transition: background .14s ease;
+    }
+    .bubble .media-file:hover { background: rgba(16,24,40,.09); color: #1f2733; }
+    .bubble .media-file .file-ico { font-size: 18px; flex: 0 0 auto; }
+    .bubble .media-file .file-name {
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    [data-bs-theme="dark"] .bubble .media-file {
+        background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.09);
+        color: #e8eaed;
+    }
+    [data-bs-theme="dark"] .bubble .media-file:hover {
+        background: rgba(255,255,255,.1); color: #e8eaed;
+    }
+    /* Попап выбора мессенджера у контакта-«папки». */
+    .msgr-picker {
+        display: none; position: fixed; inset: 0; z-index: 1090;
+        background: rgba(0,0,0,.5); align-items: center; justify-content: center;
+        padding: 20px;
+    }
+    .msgr-picker.open { display: flex; }
+    .msgr-picker-box {
+        background: #fff; border-radius: 16px; padding: 20px;
+        min-width: 280px; max-width: 92vw;
+        box-shadow: 0 20px 50px rgba(0,0,0,.3);
+    }
+    .msgr-picker-title {
+        font-weight: 700; margin-bottom: 14px; font-size: 15px; color: #1a2230;
+    }
+    .msgr-pick-btn {
+        display: flex; align-items: center; gap: 10px; width: 100%;
+        padding: 11px 13px; margin-bottom: 8px; border: 1px solid #e6e8ee;
+        border-radius: 11px; background: #fff; cursor: pointer;
+        font-size: 14px; text-align: left; transition: background .12s ease;
+    }
+    .msgr-pick-btn:last-child { margin-bottom: 0; }
+    .msgr-pick-btn:hover { background: #f6f8fc; }
+    .msgr-pick-btn .m-tag {
+        font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+        background: #e0edff; color: #2563eb;
+    }
+    .msgr-pick-btn .m-hint { margin-left: auto; font-size: 12px; color: #9ca3af; }
+    [data-bs-theme="dark"] .msgr-picker-box {
+        background: #1a1d24; box-shadow: 0 20px 50px rgba(0,0,0,.6);
+    }
+    [data-bs-theme="dark"] .msgr-picker-title { color: #e5e7eb; }
+    [data-bs-theme="dark"] .msgr-pick-btn {
+        background: #1a1d24; border-color: #2a2f3a; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .msgr-pick-btn:hover { background: #232831; }
+    [data-bs-theme="dark"] .msgr-pick-btn .m-tag {
+        background: #1c2c44; color: #93c5fd;
+    }
+    .fwd-search {
+        width: 100%; padding: 9px 12px; border-radius: 10px;
+        border: 1px solid #d1d5db; font-size: 14px; margin-bottom: 12px;
+        outline: none;
+    }
+    .fwd-search:focus { border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+    [data-bs-theme="dark"] .fwd-search {
+        background: #232831; border-color: #2a2f3a; color: #e5e7eb;
+    }
+    .fwd-list { max-height: 320px; overflow-y: auto; padding: 2px 0; }
+    .fwd-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 9px 11px; border-radius: 10px; cursor: pointer;
+        transition: background .12s ease;
+    }
+    .fwd-row:hover { background: #eef2ff; }
+    [data-bs-theme="dark"] .fwd-row:hover { background: #1c2c44; }
+    .fwd-row .avatar { width: 32px; height: 32px; font-size: 12px;
+        border-radius: 50%; color: #fff;
+        display: inline-flex; align-items: center; justify-content: center; }
+    .fwd-row .avatar img { width: 100%; height: 100%; border-radius: 50%;
+        object-fit: cover; }
+    .fwd-row .name {
+        flex: 1 1 auto; min-width: 0; font-size: 14px; color: #1a2230;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    [data-bs-theme="dark"] .fwd-row .name { color: #e5e7eb; }
+    .fwd-empty {
+        padding: 18px 6px; text-align: center; color: #9ca3af;
+        font-size: 13px; font-style: italic;
+    }
+
+    /* Поле ввода ответа — прилипает к низу ленты чата. */
+    .composer {
+        position: sticky; bottom: -18px;
+        margin: 10px -22px -18px; padding: 12px 22px 14px;
+        background: rgba(247,248,251,.94); backdrop-filter: blur(10px);
+        border-top: 1px solid #e6e8ee; border-radius: 0 0 16px 16px;
+        display: flex; gap: 9px; align-items: flex-end; flex-wrap: wrap;
+    }
+    .composer-preview {
+        width: 100%; display: flex; align-items: center; gap: 9px;
+        padding: 7px 10px; background: #eef2f7;
+        border: 1px solid #e6e8ee; border-radius: 11px; font-size: 13px;
+    }
+    .composer-preview .cp-thumb {
+        width: 40px; height: 40px; border-radius: 8px; object-fit: cover;
+        flex: 0 0 auto;
+    }
+    .composer-preview .cp-ico { font-size: 24px; flex: 0 0 auto; }
+    .composer-preview .cp-name {
+        flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; color: #1f2733;
+    }
+    .composer-preview .cp-remove {
+        flex: 0 0 auto; border: 0; background: transparent; cursor: pointer;
+        font-size: 20px; color: #9ca3af; line-height: 1; padding: 2px 7px;
+    }
+    .composer-preview .cp-remove:hover { color: #ef4444; }
+    [data-bs-theme="dark"] .composer-preview {
+        background: #232831; border-color: #2f3540;
+    }
+    [data-bs-theme="dark"] .composer-preview .cp-name { color: #e5e7eb; }
+    /* Плашка «отвечаем на сообщение» над полем ввода. */
+    .composer-reply {
+        width: 100%; display: flex; align-items: center; gap: 9px;
+        padding: 6px 11px; background: #eef2f7;
+        border-left: 3px solid #3b82f6; border-radius: 8px; font-size: 13px;
+    }
+    .composer-reply .cr-body { flex: 1 1 auto; min-width: 0; }
+    .composer-reply .cr-author { font-weight: 600; color: #2563eb; display: block; }
+    .composer-reply .cr-text {
+        color: #5b6472; display: block; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap;
+    }
+    .composer-reply .cr-remove {
+        flex: 0 0 auto; border: 0; background: transparent; cursor: pointer;
+        font-size: 20px; color: #9ca3af; line-height: 1; padding: 2px 7px;
+    }
+    .composer-reply .cr-remove:hover { color: #ef4444; }
+    [data-bs-theme="dark"] .composer-reply {
+        background: #232831; border-left-color: #60a5fa;
+    }
+    [data-bs-theme="dark"] .composer-reply .cr-author { color: #93c5fd; }
+    [data-bs-theme="dark"] .composer-reply .cr-text { color: #9aa3b2; }
+    .composer textarea {
+        flex: 1 1 auto; resize: none; border: 1px solid #d6dae2;
+        border-radius: 12px; padding: 9px 13px; font-size: 14px;
+        min-height: 40px; max-height: 120px; outline: none;
+        background: #fff; line-height: 1.4; color: #1f2733;
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .composer textarea:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .composer .attach-btn {
+        flex: 0 0 auto; border: 1px solid #d6dae2; border-radius: 12px;
+        background: #fff; font-size: 18px; line-height: 1;
+        padding: 8px 12px; cursor: pointer; transition: background .12s ease;
+    }
+    .composer .attach-btn:hover { background: #f1f3f5; }
+    .composer .attach-btn:disabled { opacity: .5; cursor: default; }
+    [data-bs-theme="dark"] .composer .attach-btn {
+        background: #232831; border-color: #2f3540;
+    }
+    .composer .send-btn {
+        flex: 0 0 auto; border: 0; border-radius: 12px; color: #fff;
+        background: #3b82f6; font-weight: 600; padding: 10px 18px;
+        cursor: pointer; transition: background .15s ease, transform .12s ease;
+    }
+    .composer .send-btn:hover { background: #2563eb; }
+    .composer .send-btn:active { transform: scale(.97); }
+    .composer .send-btn:disabled { opacity: .5; cursor: default; }
+    [data-bs-theme="dark"] .composer {
+        background: rgba(19,21,25,.94); border-top-color: #242832;
+    }
+    [data-bs-theme="dark"] .composer textarea {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
     }
     .lightbox {
-        display: none; position: fixed; inset: 0; z-index: 1080;
+        display: flex; position: fixed; inset: 0; z-index: 1080;
         background: rgba(0, 0, 0, .92); align-items: center; justify-content: center;
         cursor: zoom-out;
+        opacity: 0; visibility: hidden; pointer-events: none;
+        transition: opacity 0.22s ease, visibility 0.22s ease;
     }
-    .lightbox.open { display: flex; }
+    .lightbox.open { opacity: 1; visibility: visible; pointer-events: auto; }
     .lightbox img {
         max-width: 96vw; max-height: 96vh; object-fit: contain;
         border-radius: 6px; box-shadow: 0 0 40px rgba(0, 0, 0, .6);
+        transform: scale(.9); transition: transform 0.22s ease;
     }
+    .lightbox.open img { transform: scale(1); }
     .lightbox .lb-close {
         position: fixed; top: 16px; right: 22px; color: #fff;
         font-size: 34px; line-height: 1; cursor: pointer; user-select: none;
         opacity: .85;
     }
     .lightbox .lb-close:hover { opacity: 1; }
-    .bubble .time { font-size: 10px; color: #9ca3af; margin-top: 2px; text-align: right; }
+    .bubble .time {
+        font-size: 10px; color: #9aa3b2; margin-top: 4px; text-align: right;
+        font-variant-numeric: tabular-nums; letter-spacing: .02em;
+    }
     .bubble .truncated-note {
         font-size: 11px; color: #b45309; background: #fef3c7;
-        border-radius: 6px; padding: 4px 8px; margin-top: 6px;
-        line-height: 1.3;
+        border: 1px solid rgba(180,83,9,.18);
+        border-radius: 8px; padding: 6px 10px; margin-top: 8px;
+        line-height: 1.35;
     }
-    .empty-state { color: #9ca3af; text-align: center; margin-top: 80px; }
+    .empty-state {
+        color: #9aa3b2; text-align: center; margin-top: 90px;
+        font-size: 15px; padding: 0 24px; line-height: 1.5;
+    }
+
+    /* Тонкие скроллбары для панелей. */
+    .contact-list, .feed {
+        scrollbar-width: thin; scrollbar-color: #cdd2db transparent;
+        /* Не передавать scroll-bubbling наверх к body. */
+        overscroll-behavior: contain;
+    }
+    .contact-list::-webkit-scrollbar, .feed::-webkit-scrollbar { width: 8px; }
+    .contact-list::-webkit-scrollbar-thumb, .feed::-webkit-scrollbar-thumb {
+        background: #cdd2db; border-radius: 999px; border: 2px solid transparent;
+        background-clip: content-box;
+    }
+    .contact-list::-webkit-scrollbar-thumb:hover,
+    .feed::-webkit-scrollbar-thumb:hover { background: #aab1bd; background-clip: content-box; }
 
     /* Тёмная тема */
-    [data-bs-theme="dark"] .contact-list { background: #1a1d24; }
-    [data-bs-theme="dark"] .contact-row { border-bottom: 1px solid #2a2f3a; }
+    [data-bs-theme="dark"] .contact-list {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .contact-row { border-bottom: 1px solid #262b34; }
     [data-bs-theme="dark"] .contact-row:hover { background: #232831; }
-    [data-bs-theme="dark"] .contact-row.active { background: #1e3a5f; }
+    [data-bs-theme="dark"] .contact-row.active {
+        background: #1c2c44; box-shadow: inset 3px 0 0 #60a5fa;
+    }
     [data-bs-theme="dark"] .contact-row .name { color: #e5e7eb; }
+    [data-bs-theme="dark"] .contact-row.active .name { color: #93c5fd; }
     [data-bs-theme="dark"] .contact-row .preview { color: #9ca3af; }
     [data-bs-theme="dark"] .contact-row .time { color: #6b7280; }
+    [data-bs-theme="dark"] .contact-row .avatar { border-color: rgba(255,255,255,.12); }
+    [data-bs-theme="dark"] .feed-header .avatar { border-color: rgba(255,255,255,.12); }
     [data-bs-theme="dark"] .contact-kebab { color: #6b7280; }
     [data-bs-theme="dark"] .contact-kebab:hover { background: #2a2f3a; color: #e5e7eb; }
-    [data-bs-theme="dark"] .contact-kebab.open { background: #1e3a5f; color: #e5e7eb; }
+    [data-bs-theme="dark"] .contact-kebab.open { background: #1c2c44; color: #93c5fd; }
     [data-bs-theme="dark"] .feed-back-btn { color: #e5e7eb; }
     [data-bs-theme="dark"] .feed-back-btn:hover { background: #2a2f3a; color: #e5e7eb; }
     [data-bs-theme="dark"] .popover-menu {
         background: #1a1d24; border-color: #2a2f3a;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.5);
     }
     [data-bs-theme="dark"] .popover-menu button { color: #e5e7eb; }
-    [data-bs-theme="dark"] .popover-menu button:hover { background: #232831; }
+    [data-bs-theme="dark"] .popover-menu button:hover {
+        background: #1c2c44; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .popover-menu button.danger { color: #fca5a5; }
+    [data-bs-theme="dark"] .popover-menu button.danger:hover {
+        background: #3a1f1f; color: #fca5a5;
+    }
     [data-bs-theme="dark"] .popover-menu .rename-input {
         background: #232831; border-color: #2a2f3a; color: #e5e7eb;
     }
-    [data-bs-theme="dark"] .feed { background: #1a1d24; }
-    [data-bs-theme="dark"] .feed-header { border-bottom-color: #2a2f3a; }
-    [data-bs-theme="dark"] .bubble { background: #2a2f3a; }
-    [data-bs-theme="dark"] .bubble .text { color: #e5e7eb; }
+    [data-bs-theme="dark"] .feed {
+        background:
+            radial-gradient(1100px 380px at 50% -8%, #1b2436 0%, rgba(27,36,54,0) 70%),
+            linear-gradient(180deg, #131519 0%, #17191f 100%);
+        border-color: #242832; box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .feed-header {
+        border-bottom-color: #242832; background: rgba(19,21,25,.82);
+    }
+    [data-bs-theme="dark"] .feed-header.expandable .feed-header-top:hover {
+        background: rgba(255,255,255,.04);
+    }
+    [data-bs-theme="dark"] .feed-header .fw-semibold { color: #f3f4f6; }
+    [data-bs-theme="dark"] .feed-header .chevron { color: #9ca3af; }
+    [data-bs-theme="dark"] .handles-panel { background: rgba(19,21,25,.6); }
+    [data-bs-theme="dark"] .feed-header.open .handles-panel {
+        border-top-color: #242832;
+    }
+    [data-bs-theme="dark"] .handle-pill {
+        background: #1a1d24; border-color: #2a2f3a; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .handle-pill .messenger-tag {
+        background: #1c2c44; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .bubble {
+        background: #242a33;
+        box-shadow: 0 2px 6px rgba(0,0,0,.32), 0 1px 2px rgba(0,0,0,.24);
+    }
+    [data-bs-theme="dark"] .bubble:hover { box-shadow: 0 4px 14px rgba(0,0,0,.42); }
+    [data-bs-theme="dark"] .bubble .text { color: #e8eaed; }
     [data-bs-theme="dark"] .bubble .time { color: #6b7280; }
-    [data-bs-theme="dark"] .bubble-row .source { color: #9ca3af; }
+    [data-bs-theme="dark"] .bubble-row .source { color: #9aa3b2; }
     [data-bs-theme="dark"] .bubble .truncated-note {
         color: #fcd34d; background: rgba(245, 158, 11, 0.12);
+        border-color: rgba(245,158,11,.22);
     }
     [data-bs-theme="dark"] .empty-state { color: #6b7280; }
+    [data-bs-theme="dark"] .contact-list, [data-bs-theme="dark"] .feed {
+        scrollbar-color: #3a4150 transparent;
+    }
+    [data-bs-theme="dark"] .contact-list::-webkit-scrollbar-thumb,
+    [data-bs-theme="dark"] .feed::-webkit-scrollbar-thumb { background: #3a4150; background-clip: content-box; }
+
+    @media (prefers-reduced-motion: reduce) {
+        .feed, .feed-header, .bubble, .bubble .media-img,
+        .contact-row, .contact-row .avatar { transition: none; }
+        .bubble:hover, .bubble .media-img:hover { transform: none; }
+    }
 </style>
 
 <div class="container-fluid contacts-shell">
     <div class="row g-3 h-100">
-        <div class="col-md-4 h-100 {% if selected %}d-none d-md-block{% endif %}">
+        <div class="col-md-4 h-100 {% if selected %}d-none d-md-flex{% endif %}" id="col-list">
+            <div class="contact-search">
+                <input type="search" id="contact-search-input" autocomplete="off"
+                       placeholder="Поиск по контактам и сообщениям…">
+                <button type="button" id="enable-notif-btn" class="enable-notif"
+                        hidden title="Включить уведомления о новых сообщениях">🔔</button>
+                <div class="search-results" id="search-results" role="listbox"></div>
+            </div>
             <div class="contact-list" id="contact-list"
                  data-active-id="{{ selected.id if selected else '' }}">
                 {% if contacts %}
                     {% for c in contacts %}
-                    <div class="contact-row-wrap" data-contact-id="{{ c.id }}">
+                    <div class="contact-row-wrap{% if c.pinned_at %} pinned{% endif %}"
+                         data-contact-id="{{ c.id }}"
+                         data-messengers="{{ c.messengers|join(',') }}"
+                         data-pinned="{{ '1' if c.pinned_at else '0' }}"
+                         data-muted="{{ '1' if c.muted else '0' }}">
                         <a href="/contacts/{{ c.id }}"
                            class="contact-row {% if selected and selected.id == c.id %}active{% endif %}">
+                            {% if c.avatar_url %}
+                            <span class="avatar"><img src="{{ c.avatar_url }}" alt=""></span>
+                            {% else %}
                             <span class="avatar" style="background: {{ c.avatar_color }};">
                                 {{ c.initial }}
                             </span>
+                            {% endif %}
                             <div class="contact-meta">
                                 <div class="d-flex justify-content-between">
-                                    <span class="name">{{ c.display_name }}</span>
+                                    <span class="name">{{ c.display_name }}<span
+                                        class="status-marks">{% if c.pinned_at %}📌{% endif %}{% if c.muted %}🔇{% endif %}</span></span>
                                     <span class="time">{{ c.last_time or '' }}</span>
                                 </div>
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div class="preview">{{ c.last_preview or 'Нет сообщений' }}</div>
                                     {% if c.unread_count and c.unread_count > 0 %}
-                                        <span class="badge-unread">{{ c.unread_count }}</span>
+                                        <span class="badge-unread{% if c.muted %} muted{% endif %}">{{ c.unread_count }}</span>
                                     {% endif %}
                                 </div>
                             </div>
@@ -190,32 +1193,90 @@
             </div>
         </div>
 
-        <div class="col-md-8 h-100 {% if not selected %}d-none d-md-block{% endif %}">
+        <div class="col-md-8 h-100 {% if not selected %}d-none d-md-flex{% endif %}" id="col-feed">
+            <button type="button" id="scroll-fab" class="scroll-fab"
+                    aria-label="К новым сообщениям">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.4" stroke-linecap="round"
+                     stroke-linejoin="round">
+                    <path d="M6 9l6 6 6-6"></path>
+                </svg>
+                <span class="fab-badge" id="scroll-fab-badge">0</span>
+            </button>
             <div class="feed" id="feed">
                 {% if selected %}
-                    <div class="feed-header">
-                        <a href="/contacts" class="feed-back-btn d-md-none" aria-label="Назад">←</a>
-                        <span class="avatar" style="background: {{ selected.avatar_color }};">
-                            {{ selected.initial }}
-                        </span>
-                        <div>
-                            <div class="fw-semibold">{{ selected.display_name }}</div>
-                            <div class="text-muted small">
-                                {% if selected_handles %}
-                                    {{ selected_handles|join(' · ') }}
-                                {% else %}
-                                    нет личностей
-                                {% endif %}
+                    {% set _multi = (messengers or [])|length > 1 %}
+                    {% set _expandable = is_group or _multi %}
+                    <div class="feed-header{% if _expandable %} expandable{% endif %}"
+                         id="feed-header" data-contact-id="{{ selected.id }}"
+                         data-is-group="{{ '1' if is_group else '' }}"
+                         data-messengers="{{ (messengers or [])|join(',') }}">
+                        <div class="feed-header-top">
+                            <a href="/contacts" class="feed-back-btn d-md-none" aria-label="Назад">←</a>
+                            {% if selected.avatar_url %}
+                            <span class="avatar"><img src="{{ selected.avatar_url }}" alt=""></span>
+                            {% else %}
+                            <span class="avatar" style="background: {{ selected.avatar_color }};">
+                                {{ selected.initial }}
+                            </span>
+                            {% endif %}
+                            <div class="flex-fill" style="min-width:0;">
+                                <div class="fw-semibold text-truncate">{{ selected.display_name }}</div>
+                                <div class="text-muted small text-truncate">
+                                    {% if is_group %}
+                                        Группа — нажмите, чтобы увидеть участников
+                                    {% elif _multi %}
+                                        {{ current_messenger }} · нажмите, чтобы сменить чат
+                                    {% elif current_messenger %}
+                                        {{ current_messenger }}
+                                    {% else %}
+                                        нет личностей
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <button type="button" class="topics-btn"
+                                    data-topics-btn="1"
+                                    title="📑 Темы чата (анализирует Ollama)">📑</button>
+                            {% if _expandable %}
+                                <span class="chevron" aria-hidden="true">▾</span>
+                            {% endif %}
+                        </div>
+                        {% if is_group %}
+                        <div class="handles-panel" id="handles-panel">
+                            <div class="handles-panel-inner">
+                                <div class="members-box" id="members-box">Загрузка участников…</div>
                             </div>
                         </div>
+                        {% endif %}
                     </div>
                     <div id="messages-container">
                         {% if messages %}
                             {% for m in messages %}
-                            <div class="bubble-row" data-message-id="{{ m.id }}">
-                                <span class="source">{{ m.messenger_name }} · {{ m.display_author or m.sender }}</span>
-                                <div class="bubble">
-                                    <div class="text">{{ m.text }}</div>
+                            <div class="bubble-row{% if m.outgoing %} outgoing{% endif %}"
+                                 data-message-id="{{ m.id }}"
+                                 data-messenger="{{ m.messenger_name or '' }}"
+                                 {% if m.edit_history %}data-edits-json='{{ m.edit_history|tojson|forceescape }}'{% endif %}>
+                                <span class="source">{% if m.outgoing %}Вы{% else %}{{ m.messenger_name }} · {{ m.display_author or m.sender }}{% endif %}</span>
+                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}">
+                                    {% if m.deleted_at %}
+                                    <div class="deleted-banner"
+                                         title="Сообщение удалили в мессенджере, но мы успели сохранить">
+                                        🗑 {% if m.outgoing %}Вы удалили это сообщение{% else %}Удалено собеседником{% endif %}
+                                    </div>
+                                    {% endif %}
+                                    {% if m.fwd_quote %}
+                                    <div class="fwd-header" title="Это сообщение переслано">
+                                        <span class="fwd-ico">↪</span><span class="fwd-label">Переслано от </span>{% if m.fwd_quote.contact_id %}<a class="fwd-name fwd-link" href="/contacts/{{ m.fwd_quote.contact_id }}" data-fwd-contact-id="{{ m.fwd_quote.contact_id }}" title="Перейти к чату с {{ m.fwd_quote.name }}">{{ m.fwd_quote.name }}</a>{% else %}<span class="fwd-name">{{ m.fwd_quote.name }}</span>{% endif %}
+                                    </div>
+                                    {% endif %}
+                                    {% if m.reply_quote %}
+                                    <div class="reply-quote"
+                                         data-target-id="{{ m.reply_quote.id }}"
+                                         title="Перейти к исходному сообщению">
+                                        <span class="rq-author">{{ m.reply_quote.author }}</span>
+                                        <span class="rq-text">{{ m.reply_quote.text }}</span>
+                                    </div>
+                                    {% endif %}
                                     {% for a in m.media %}
                                         {% if a.kind == 'sticker' %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
@@ -223,19 +1284,57 @@
                                         {% elif a.kind == 'video' %}
                                         <video class="media-video" src="/attachments/{{ a.id }}"
                                                controls preload="metadata"></video>
+                                        {% elif a.kind == 'voice' or a.kind == 'audio' %}
+                                        <audio class="media-audio" src="/attachments/{{ a.id }}"
+                                               controls preload="metadata"></audio>
+                                        {% elif a.kind == 'file' %}
+                                        <a class="media-file" href="/attachments/{{ a.id }}" download>
+                                            <span class="file-ico">📎</span>
+                                            <span class="file-name">{{ a.original_name or 'Файл' }}</span>
+                                        </a>
                                         {% else %}
                                         <img class="media-img" src="/attachments/{{ a.id }}"
                                              data-full="/attachments/{{ a.id }}"
                                              loading="lazy" alt="фото">
                                         {% endif %}
                                     {% endfor %}
+                                    {% if m.visible_text %}
+                                    <div class="text">{{ m.visible_text }}</div>
+                                    {% endif %}
                                     {% if m.text and m.text|length == 1024 %}
                                     <div class="truncated-note">
                                         ⚠ Сообщение обрезано Android до 1024 символов.
                                         Откройте {{ m.messenger_name }}, чтобы прочесть целиком.
                                     </div>
                                     {% endif %}
-                                    <div class="time">{{ m.time }}</div>
+                                    <div class="time-row">
+                                        <span class="time">{{ m.time }}</span>
+                                        {% if m.tg_ttl_seconds %}
+                                        <span class="ttl-mark"
+                                              title="Одноразовое сообщение — собеседник поставил автоудаление через {{ m.tg_ttl_seconds }} с, но мы сохранили">🔥</span>
+                                        {% endif %}
+                                        {% if m.edit_history %}
+                                        <button type="button" class="edited-badge"
+                                                title="Показать историю изменений"
+                                                data-edits-btn="1">📝 ред.{% if m.edit_history|length > 1 %} ×{{ m.edit_history|length }}{% endif %}</button>
+                                        {% endif %}
+                                        {% if m.outgoing and m.tg_message_id %}
+                                        <span class="tg-tick{% if m.tg_read_at %} read{% endif %}"
+                                              title="{% if m.tg_read_at %}Прочитано{% else %}Доставлено{% endif %}">{% if m.tg_read_at %}✓✓{% else %}✓{% endif %}</span>
+                                        {% endif %}
+                                    </div>
+                                    {% if m.reactions %}
+                                    <div class="reactions-row">
+                                        {% for r in m.reactions %}
+                                        <span class="reaction-chip{% if r.mine %} mine{% endif %}"
+                                              data-emoji="{{ r.emoji }}"
+                                              title="{% if r.mine %}Моя реакция — нажмите чтобы снять{% else %}Поставить такую же{% endif %}">
+                                            <span class="rc-emoji">{{ r.emoji }}</span><span
+                                                class="rc-count{% if not r.count or r.count <= 1 %} zero{% endif %}">{{ r.count }}</span>
+                                        </span>
+                                        {% endfor %}
+                                    </div>
+                                    {% endif %}
                                 </div>
                             </div>
                             {% endfor %}
@@ -243,6 +1342,24 @@
                             <div class="empty-state">Нет сообщений.</div>
                         {% endif %}
                     </div>
+                    {% if can_reply %}
+                    <form class="composer" id="composer"
+                          data-contact-id="{{ selected.id }}"
+                          data-messenger="{{ current_messenger or '' }}"
+                          data-reply-via="{{ reply_via or '' }}">
+                        <div class="composer-reply" id="composer-reply" hidden></div>
+                        <div class="composer-preview" id="composer-preview" hidden></div>
+                        {% if reply_via == 'telegram' %}
+                        <button type="button" class="attach-btn" id="composer-attach"
+                                title="Прикрепить фото или видео">📎</button>
+                        <input type="file" id="composer-file"
+                               accept="image/*,video/*" hidden>
+                        {% endif %}
+                        <textarea id="composer-text" rows="1"
+                                  placeholder="{% if reply_via == 'notif' %}Написать в {{ current_messenger }} (через шторку телефона)…{% else %}Написать в {{ current_messenger or 'Telegram' }}…{% endif %}"></textarea>
+                        <button type="submit" class="send-btn" id="composer-send">Отправить</button>
+                    </form>
+                    {% endif %}
                 {% else %}
                     <div class="empty-state">
                         ← Выберите контакт слева, чтобы увидеть переписку.
@@ -256,6 +1373,22 @@
 <div class="lightbox" id="lightbox">
     <span class="lb-close" id="lb-close">&times;</span>
     <img id="lb-img" src="" alt="фото">
+</div>
+
+<div class="msgr-picker" id="msgr-picker">
+    <div class="msgr-picker-box">
+        <div class="msgr-picker-title">Открыть переписку</div>
+        <div id="msgr-picker-list"></div>
+    </div>
+</div>
+
+<div class="msgr-picker" id="forward-modal">
+    <div class="msgr-picker-box" style="min-width:340px;max-width:420px;">
+        <div class="msgr-picker-title">Переслать в Telegram-чат</div>
+        <input type="search" class="fwd-search" id="forward-search"
+               autocomplete="off" placeholder="Найти контакт…">
+        <div class="fwd-list" id="forward-list"></div>
+    </div>
 </div>
 
 <script>
@@ -289,8 +1422,93 @@
 (function() {
     const list = document.getElementById('contact-list');
     if (!list) return;
-    const activeId = list.dataset.activeId || '';
     let lastSig = '';
+    let notifBaseline = null;
+    let audioCtx = null;
+
+    // Разрешение на уведомления: явная кнопка справа от поиска (видна, когда
+    // permission==default). На первый клик мышки по странице тоже пробуем
+    // тихо — если браузер ещё не успел показать prompt пользователю.
+    const notifBtn = document.getElementById('enable-notif-btn');
+    function syncNotifBtn() {
+        if (!notifBtn) return;
+        if (!('Notification' in window)) { notifBtn.hidden = true; return; }
+        const perm = Notification.permission;
+        notifBtn.hidden = (perm !== 'default');
+        if (perm === 'denied') {
+            notifBtn.hidden = false;
+            notifBtn.textContent = '🔕';
+            notifBtn.title = 'Уведомления отключены в настройках браузера';
+        }
+    }
+    syncNotifBtn();
+    if (notifBtn) {
+        notifBtn.addEventListener('click', async () => {
+            if (Notification.permission === 'denied') {
+                alert('Уведомления отключены в браузере. Включите их вручную:\n'
+                    + '• Chrome/Edge — иконка замка в адресной строке → '
+                    + 'Разрешения → Уведомления → Разрешить');
+                return;
+            }
+            try { await Notification.requestPermission(); } catch (e) {}
+            syncNotifBtn();
+        });
+    }
+    if ('Notification' in window && Notification.permission === 'default') {
+        document.addEventListener('click', function ask() {
+            document.removeEventListener('click', ask);
+            try { Notification.requestPermission().then(syncNotifBtn); }
+            catch (e) {}
+        }, { once: true });
+    }
+
+    function playBeep() {
+        try {
+            audioCtx = audioCtx ||
+                new (window.AudioContext || window.webkitAudioContext)();
+            const o = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            o.connect(g); g.connect(audioCtx.destination);
+            o.type = 'sine'; o.frequency.value = 660;
+            g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+            g.gain.exponentialRampToValueAtTime(0.12, audioCtx.currentTime + 0.02);
+            g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.28);
+            o.start(); o.stop(audioCtx.currentTime + 0.3);
+        } catch (e) { /* звук недоступен */ }
+    }
+
+    function maybeNotify(contacts) {
+        const prev = notifBaseline;
+        const next = {};
+        contacts.forEach(c => { next[c.id] = c.unread_count || 0; });
+        if (prev === null) { notifBaseline = next; return; }
+        const activeId = String(list.dataset.activeId || '');
+        let fired = false;
+        contacts.forEach(c => {
+            const before = prev[c.id] || 0;
+            const now = c.unread_count || 0;
+            // Muted-контакт продолжает копить unread, но звук и нотификации
+            // для него подавляем (как в TG «без звука»).
+            if (now > before && String(c.id) !== activeId && !c.muted) {
+                fired = true;
+                if ('Notification' in window &&
+                        Notification.permission === 'granted') {
+                    try {
+                        const n = new Notification(
+                            'Новое сообщение — ' + c.display_name,
+                            {body: c.last_preview || '',
+                             tag: 'synapse-' + c.id});
+                        n.onclick = function () {
+                            window.focus();
+                            window.location = '/contacts/' + c.id;
+                        };
+                    } catch (e) { /* ignore */ }
+                }
+            }
+        });
+        if (fired) playBeep();
+        notifBaseline = next;
+    }
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -307,18 +1525,23 @@
             return;
         }
         list.innerHTML = contacts.map(c => {
-            const isActive = String(c.id) === String(activeId);
+            const isActive = String(c.id) === String(list.dataset.activeId || '');
             const badge = (c.unread_count && c.unread_count > 0)
-                ? `<span class="badge-unread">${c.unread_count}</span>` : '';
-            return `<div class="contact-row-wrap" data-contact-id="${c.id}">
+                ? `<span class="badge-unread${c.muted ? ' muted' : ''}">${c.unread_count}</span>` : '';
+            const marks = (c.pinned ? '📌' : '') + (c.muted ? '🔇' : '');
+            return `<div class="contact-row-wrap${c.pinned ? ' pinned' : ''}"
+                data-contact-id="${c.id}"
+                data-messengers="${escapeHtml((c.messengers || []).join(','))}"
+                data-pinned="${c.pinned ? '1' : '0'}"
+                data-muted="${c.muted ? '1' : '0'}">
                 <a href="/contacts/${c.id}"
                    class="contact-row${isActive ? ' active' : ''}">
-                    <span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">
-                        ${escapeHtml(c.initial)}
-                    </span>
+                    ${c.avatar_url
+                        ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
+                        : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">${escapeHtml(c.initial)}</span>`}
                     <div class="contact-meta">
                         <div class="d-flex justify-content-between">
-                            <span class="name">${escapeHtml(c.display_name)}</span>
+                            <span class="name">${escapeHtml(c.display_name)}<span class="status-marks">${marks}</span></span>
                             <span class="time">${escapeHtml(c.last_time || '')}</span>
                         </div>
                         <div class="d-flex justify-content-between align-items-center">
@@ -341,14 +1564,20 @@
             const r = await fetch('/contacts.json', {credentials: 'same-origin'});
             if (!r.ok) return;
             const data = await r.json();
+            maybeNotify(data.contacts);
             const sig = JSON.stringify(data.contacts.map(
-                c => [c.id, c.display_name, c.last_time, c.last_preview, c.unread_count]));
+                c => [c.id, c.display_name, c.last_time, c.last_preview,
+                      c.unread_count, c.pinned ? 1 : 0, c.muted ? 1 : 0]));
             if (sig !== lastSig) {
                 render(data.contacts);
                 lastSig = sig;
             }
         } catch (e) { /* network blip */ }
     }
+
+    // Доступ из меню pin/mute — чтобы порядок и значки обновились сразу,
+    // не дожидаясь 5-секундного тика.
+    window.refreshContactsNow = poll;
 
     // Первый прогон сразу — чтобы lastSig инициализировался текущим состоянием.
     poll();
@@ -357,6 +1586,21 @@
 
 // Kebab-меню для контактов: переименовать / удалить.
 (function() {
+    // ПКМ по строке контакта = тот же контекстный поповер, что и kebab.
+    // На десктопе так удобнее, чем целиться в три точки.
+    document.addEventListener('contextmenu', function(e) {
+        const wrap = e.target.closest('.contact-row-wrap');
+        if (!wrap) return;
+        // Если кликнули прямо по самой кнопке kebab — пусть отрабатывает её
+        // обычный onclick (toggle), не мешаем.
+        if (e.target.closest('.contact-kebab')) return;
+        const kebab = wrap.querySelector('.contact-kebab');
+        const cid = wrap.dataset.contactId;
+        if (!kebab || !cid) return;
+        e.preventDefault();
+        if (window.openContactMenu) window.openContactMenu(kebab, cid);
+    });
+
     let openMenu = null;
 
     function closeOpenMenu() {
@@ -383,12 +1627,31 @@
         menu.dataset.contactId = String(contactId);
         menu.style.top = (button.offsetTop + button.offsetHeight) + 'px';
         menu.style.right = '6px';
+        const isPinned = wrap.dataset.pinned === '1';
+        const isMuted = wrap.dataset.muted === '1';
         menu.innerHTML =
-            '<button class="rename-btn" type="button">Переименовать</button>' +
-            '<button class="delete-btn danger" type="button">Удалить</button>';
+            '<button class="pin-btn" type="button">'
+                + '<span class="menu-ico">📌</span>'
+                + (isPinned ? 'Открепить' : 'Закрепить') + '</button>' +
+            '<button class="mute-btn" type="button">'
+                + '<span class="menu-ico">' + (isMuted ? '🔔' : '🔇') + '</span>'
+                + (isMuted ? 'Включить звук' : 'Без звука') + '</button>' +
+            '<div class="menu-divider"></div>' +
+            '<button class="rename-btn" type="button">'
+                + '<span class="menu-ico">✏</span>Переименовать</button>' +
+            '<button class="delete-btn danger" type="button">'
+                + '<span class="menu-ico">🗑</span>Удалить</button>';
         wrap.appendChild(menu);
         openMenu = menu;
 
+        menu.querySelector('.pin-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            togglePin(contactId, wrap);
+        });
+        menu.querySelector('.mute-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleMute(contactId, wrap);
+        });
         menu.querySelector('.rename-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             startRename(menu, contactId);
@@ -398,6 +1661,66 @@
             deleteContact(contactId);
         });
     };
+
+    // Мгновенно обновляем визуальное состояние строки контакта
+    // (значки 📌/🔇 + класс pinned), не дожидаясь полла /contacts.json.
+    function applyContactStatus(wrap, pinned, muted) {
+        wrap.dataset.pinned = pinned ? '1' : '0';
+        wrap.dataset.muted = muted ? '1' : '0';
+        wrap.classList.toggle('pinned', !!pinned);
+        const marksEl = wrap.querySelector('.contact-row .status-marks');
+        if (marksEl) {
+            marksEl.textContent = (pinned ? '📌' : '') + (muted ? '🔇' : '');
+        }
+    }
+
+    async function togglePin(contactId, wrap) {
+        // Оптимистично, чтобы значок поменялся сразу под пальцем.
+        const wasPinned = wrap.dataset.pinned === '1';
+        const muted = wrap.dataset.muted === '1';
+        applyContactStatus(wrap, !wasPinned, muted);
+        closeOpenMenu();
+        try {
+            const r = await fetch('/contacts/' + contactId + '/pin', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+            });
+            if (r.ok) {
+                const d = await r.json();
+                applyContactStatus(wrap, !!d.pinned, muted);
+                // Перерисовать список сразу, чтобы pinned-контакт уехал вверх
+                // (порядок строится на сервере по pinned_at).
+                if (typeof refreshContactsNow === 'function') {
+                    refreshContactsNow();
+                }
+            } else {
+                applyContactStatus(wrap, wasPinned, muted);
+            }
+        } catch (e) {
+            applyContactStatus(wrap, wasPinned, muted);
+        }
+    }
+
+    async function toggleMute(contactId, wrap) {
+        const pinned = wrap.dataset.pinned === '1';
+        const wasMuted = wrap.dataset.muted === '1';
+        applyContactStatus(wrap, pinned, !wasMuted);
+        closeOpenMenu();
+        try {
+            const r = await fetch('/contacts/' + contactId + '/mute', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+            });
+            if (r.ok) {
+                const d = await r.json();
+                applyContactStatus(wrap, pinned, !!d.muted);
+            } else {
+                applyContactStatus(wrap, pinned, wasMuted);
+            }
+        } catch (e) {
+            applyContactStatus(wrap, pinned, wasMuted);
+        }
+    }
 
     function startRename(menu, contactId) {
         const nameEl = menu.closest('.contact-row-wrap').querySelector('.contact-row .name');
@@ -473,36 +1796,154 @@
 })();
 </script>
 
-{% if selected %}
 <script>
 // Контекстное меню для сообщений (правый клик): копировать / удалить.
+// Делегирование на document — работает всегда, в т.ч. для чатов,
+// открытых клиентской навигацией без перезагрузки.
 (function() {
     let openMenu = null;
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
 
     function closeMenu() {
         if (openMenu) { openMenu.remove(); openMenu = null; }
     }
 
-    function showMessageMenu(x, y, messageId, text) {
+    function showMessageMenu(x, y, messageId, text, outgoing, author) {
         closeMenu();
         const menu = document.createElement('div');
         menu.className = 'popover-menu';
         menu.style.position = 'fixed';
         menu.style.left = x + 'px';
         menu.style.top = y + 'px';
-        menu.innerHTML =
-            '<button class="copy-btn" type="button">Копировать</button>' +
-            '<button class="delete-msg-btn danger" type="button">Удалить сообщение</button>';
+        // «Ответить» — только в Telegram-чате, где есть поле ввода.
+        const canReply = !!document.getElementById('composer');
+        // Реакции — только для Telegram-сообщений (через Telethon).
+        const row = document.querySelector(
+            '.bubble-row[data-message-id="' + messageId + '"]');
+        const isTelegram = !!(row && row.dataset.messenger === 'Telegram');
+        const bubble = row && row.querySelector('.bubble');
+        // Удалённое в самом мессенджере: реагировать/менять/удалять нечего —
+        // оригинала уже нет. Локальную копию сохраняем; в меню — только
+        // «Копировать» и плашка-предупреждение.
+        const isDeleted = !!(bubble && bubble.classList.contains('deleted'));
+        // Подсветим эмодзи, которая уже стоит от меня (одна за раз — TG-правило).
+        const mineEmoji = isTelegram && !isDeleted
+            ? (row.querySelector('.reaction-chip.mine')
+               || {dataset: {emoji: ''}}).dataset.emoji
+            : '';
+        const items = [];
+        if (isDeleted) {
+            items.push('<div class="menu-note">🗑 В мессенджере это '
+                + 'сообщение удалено. Видна только локальная копия — '
+                + 'реакции и редактирование недоступны.</div>');
+            items.push('<div class="menu-divider"></div>');
+            items.push('<button class="copy-btn" type="button">'
+                + '<span class="menu-ico">📋</span>Копировать</button>');
+            items.push('<div class="menu-divider"></div>');
+            items.push('<button class="delete-local-btn danger" type="button">'
+                + '<span class="menu-ico">🗑</span>Удалить локальную копию</button>');
+        } else {
+            if (isTelegram) {
+                const emojiRow = '<div class="menu-reactions">' +
+                    REACTION_EMOJIS.map(e =>
+                        '<button type="button" class="rp-emoji'
+                        + (e === mineEmoji ? ' mine' : '') + '"'
+                        + ' data-emoji="' + e + '">' + e + '</button>').join('')
+                    + '</div>';
+                items.push(emojiRow);
+                items.push('<div class="menu-divider"></div>');
+            }
+            if (canReply) {
+                items.push('<button class="reply-msg-btn" type="button">'
+                    + '<span class="menu-ico">↩</span>Ответить</button>');
+            }
+            if (isTelegram) {
+                items.push('<button class="forward-msg-btn" type="button">'
+                    + '<span class="menu-ico">↪</span>Переслать…</button>');
+            }
+            items.push('<button class="copy-btn" type="button">'
+                + '<span class="menu-ico">📋</span>Копировать</button>');
+            if (outgoing) {
+                items.push('<button class="edit-msg-btn" type="button">'
+                    + '<span class="menu-ico">✏</span>Изменить</button>');
+            }
+            items.push('<div class="menu-divider"></div>');
+            items.push('<button class="delete-msg-btn danger" type="button">'
+                + '<span class="menu-ico">🗑</span>Удалить сообщение</button>');
+        }
+        menu.innerHTML = items.join('');
+
+        // Клик по эмодзи в шапке меню — toggle и сразу закрываем.
+        if (isTelegram && !isDeleted) {
+            menu.querySelectorAll('.menu-reactions .rp-emoji').forEach(btn => {
+                btn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    closeMenu();
+                    toggleReaction(messageId, btn.dataset.emoji);
+                });
+            });
+        }
+
+        // «Удалить локальную копию» — только запись в нашей БД, в Telegram
+        // ничего не дёргаем (там уже удалено).
+        const delLocal = menu.querySelector('.delete-local-btn');
+        if (delLocal) {
+            delLocal.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!confirm('Удалить только локальную копию? В мессенджере '
+                    + 'её уже нет, у нас она просто пропадёт из ленты.')) {
+                    closeMenu();
+                    return;
+                }
+                try {
+                    await fetch('/messages/' + messageId + '/delete', {
+                        method: 'POST', credentials: 'same-origin',
+                    });
+                    if (row) row.remove();
+                } catch (_) {}
+                closeMenu();
+            });
+        }
         document.body.appendChild(menu);
         openMenu = menu;
 
-        // Если меню вылазит за правый/нижний край — двигаем влево/вверх.
+        const replyBtn = menu.querySelector('.reply-msg-btn');
+        if (replyBtn) {
+            replyBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeMenu();
+                if (window.__skillwoodSetReply) {
+                    window.__skillwoodSetReply(messageId, author, text);
+                }
+            });
+        }
+
+        // Позиционирование: для своих сообщений (бабл справа) ставим меню
+        // якорем за правый край — иначе эмодзи-реакции уезжают за экран.
+        // Для входящих — как обычно, якорь слева.
         const rect = menu.getBoundingClientRect();
-        if (rect.right > window.innerWidth) {
-            menu.style.left = (window.innerWidth - rect.width - 8) + 'px';
+        if (outgoing) {
+            const left = Math.max(8, x - rect.width);
+            menu.style.left = left + 'px';
+        } else if (rect.right > window.innerWidth) {
+            menu.style.left = Math.max(8, window.innerWidth - rect.width - 8) + 'px';
         }
         if (rect.bottom > window.innerHeight) {
-            menu.style.top = (window.innerHeight - rect.height - 8) + 'px';
+            menu.style.top = Math.max(8, window.innerHeight - rect.height - 8) + 'px';
+        }
+
+        const fwdBtn = menu.querySelector('.forward-msg-btn');
+        if (fwdBtn) {
+            fwdBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeMenu();
+                openForwardModal(messageId);
+            });
         }
 
         menu.querySelector('.copy-btn').addEventListener('click', async (e) => {
@@ -524,22 +1965,255 @@
             } catch (err) {}
             closeMenu();
         });
-        menu.querySelector('.delete-msg-btn').addEventListener('click', async (e) => {
-            e.stopPropagation();
-            if (!confirm('Удалить это сообщение?')) { closeMenu(); return; }
-            try {
-                const r = await fetch('/messages/' + messageId + '/delete', {
-                    method: 'POST', credentials: 'same-origin',
-                });
-                if (r.ok) {
-                    const row = document.querySelector(
-                        '.bubble-row[data-message-id="' + messageId + '"]');
-                    if (row) row.remove();
+        const editBtn = menu.querySelector('.edit-msg-btn');
+        if (editBtn) {
+            editBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                closeMenu();
+                const next = prompt('Изменить сообщение:', text);
+                if (next == null) return;
+                const trimmed = next.trim();
+                if (!trimmed || trimmed === text) return;
+                try {
+                    const r = await fetch('/messages/' + messageId + '/edit', {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: {'X-Requested-With': 'XMLHttpRequest'},
+                        body: new URLSearchParams({text: trimmed}),
+                    });
+                    const data = await r.json().catch(() => ({}));
+                    if (r.ok && data.ok) {
+                        const row = document.querySelector(
+                            '.bubble-row[data-message-id="' + messageId + '"]');
+                        const t = row && row.querySelector('.bubble .text');
+                        if (t) t.textContent = data.text;
+                    } else {
+                        alert('Не удалось изменить: '
+                              + (data.detail || data.error || ('HTTP ' + r.status)));
+                    }
+                } catch (err) {
+                    alert('Сеть недоступна — сообщение не изменено.');
                 }
-            } catch (err) {}
-            closeMenu();
+            });
+        }
+        const delBtn = menu.querySelector('.delete-msg-btn');
+        if (delBtn) {
+            delBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                if (!confirm('Удалить это сообщение? Оно удалится и в Telegram.')) {
+                    closeMenu();
+                    return;
+                }
+                try {
+                    const r = await fetch('/messages/' + messageId + '/delete', {
+                        method: 'POST', credentials: 'same-origin',
+                    });
+                    if (r.ok) {
+                        const row = document.querySelector(
+                            '.bubble-row[data-message-id="' + messageId + '"]');
+                        if (row) row.remove();
+                    }
+                } catch (err) {}
+                closeMenu();
+            });
+        }
+    }
+
+    // --- Реакции: набор эмодзи в шапке контекстного меню сообщения ---
+    const REACTION_EMOJIS =
+        ['👍','❤️','🔥','😂','😮','😢','🙏','👏','🎉','💯','😡','👎'];
+
+    function renderReactionsForBubble(bubble, reactions) {
+        if (!bubble) return;
+        let row = bubble.querySelector('.reactions-row');
+        if (!reactions || reactions.length === 0) {
+            if (row) row.remove();
+            return;
+        }
+        const html = reactions.map(r =>
+            '<span class="reaction-chip' + (r.mine ? ' mine' : '') + '"'
+            + ' data-emoji="' + r.emoji + '"'
+            + ' title="' + (r.mine
+                ? 'Моя реакция — нажмите чтобы снять'
+                : 'Поставить такую же') + '">'
+            + '<span class="rc-emoji">' + r.emoji + '</span>'
+            + '<span class="rc-count' + (!r.count || r.count <= 1 ? ' zero' : '') + '">'
+            + (r.count || '')
+            + '</span></span>'
+        ).join('');
+        if (row) {
+            row.innerHTML = html;
+        } else {
+            row = document.createElement('div');
+            row.className = 'reactions-row';
+            row.innerHTML = html;
+            bubble.appendChild(row);
+        }
+    }
+
+    async function toggleReaction(messageId, emoji) {
+        const fd = new FormData();
+        fd.append('emoji', emoji);
+        const bubble = document.querySelector(
+            '.bubble-row[data-message-id="' + messageId + '"] .bubble');
+        try {
+            const r = await fetch('/messages/' + messageId + '/react', {
+                method: 'POST', body: fd, credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) {
+                alert('Не удалось поставить реакцию: '
+                      + (d.detail || d.error || 'HTTP ' + r.status));
+                return;
+            }
+            // Мгновенный рендер по ответу сервера — без ожидания полла.
+            // Точный апдейт от UpdateMessageReactions придёт ближайшим тиком
+            // и подтвердит/скорректирует наш snapshot.
+            renderReactionsForBubble(bubble, d.reactions || []);
+        } catch (e) {
+            alert('Сеть недоступна — реакция не отправлена.');
+        }
+    }
+
+    document.addEventListener('click', (e) => {
+        const chip = e.target.closest('.reaction-chip');
+        if (!chip) return;
+        const row = chip.closest('.bubble-row');
+        if (!row || row.dataset.messenger !== 'Telegram') return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleReaction(row.dataset.messageId, chip.dataset.emoji);
+    });
+
+    // --- Пересылка сообщения: модалка выбора Telegram-контакта ---
+    const fwdModal = document.getElementById('forward-modal');
+    const fwdSearch = document.getElementById('forward-search');
+    const fwdList = document.getElementById('forward-list');
+    let fwdAllContacts = [];
+    let fwdMessageId = null;
+
+    function closeForwardModal() {
+        if (fwdModal) fwdModal.classList.remove('open');
+        fwdMessageId = null;
+    }
+
+    function renderForwardList() {
+        if (!fwdList) return;
+        const q = (fwdSearch.value || '').trim().toLowerCase();
+        const items = q
+            ? fwdAllContacts.filter(c =>
+                (c.display_name || '').toLowerCase().includes(q))
+            : fwdAllContacts;
+        if (items.length === 0) {
+            fwdList.innerHTML =
+                '<div class="fwd-empty">' +
+                (fwdAllContacts.length === 0
+                    ? 'Нет Telegram-контактов.'
+                    : 'Никто не подходит.') + '</div>';
+            return;
+        }
+        fwdList.innerHTML = items.map(c => {
+            const avatar = c.avatar_url
+                ? '<span class="avatar"><img src="'
+                  + escapeHtml(c.avatar_url) + '" alt=""></span>'
+                : '<span class="avatar" style="background: '
+                  + escapeHtml(c.avatar_color) + '">'
+                  + escapeHtml(c.initial) + '</span>';
+            return '<div class="fwd-row" data-cid="' + c.id + '">'
+                + avatar + '<span class="name">'
+                + escapeHtml(c.display_name) + '</span></div>';
+        }).join('');
+    }
+
+    window.openForwardModal = async function(messageId) {
+        if (!fwdModal) return;
+        fwdMessageId = messageId;
+        fwdSearch.value = '';
+        fwdList.innerHTML = '<div class="fwd-empty">Загрузка…</div>';
+        fwdModal.classList.add('open');
+        setTimeout(() => fwdSearch.focus(), 30);
+        try {
+            const r = await fetch('/contacts/telegram.json',
+                                  {credentials: 'same-origin'});
+            const d = await r.json();
+            fwdAllContacts = d.contacts || [];
+            renderForwardList();
+        } catch (e) {
+            fwdList.innerHTML =
+                '<div class="fwd-empty">Не удалось загрузить список.</div>';
+        }
+    };
+
+    if (fwdSearch) fwdSearch.addEventListener('input', renderForwardList);
+    if (fwdList) {
+        fwdList.addEventListener('click', async (e) => {
+            const row = e.target.closest('.fwd-row');
+            if (!row || fwdMessageId == null) return;
+            const cid = row.dataset.cid;
+            row.style.opacity = '.5';
+            const fd = new FormData();
+            fd.append('target_contact_id', cid);
+            try {
+                const r = await fetch('/messages/' + fwdMessageId + '/forward', {
+                    method: 'POST', body: fd, credentials: 'same-origin',
+                    headers: {'X-Requested-With': 'XMLHttpRequest'},
+                });
+                const d = await r.json().catch(() => ({}));
+                if (r.ok) {
+                    closeForwardModal();
+                } else {
+                    row.style.opacity = '';
+                    alert('Не удалось переслать: '
+                          + (d.detail || d.error || 'HTTP ' + r.status));
+                }
+            } catch (err) {
+                row.style.opacity = '';
+                alert('Сеть недоступна — пересылка не отправлена.');
+            }
         });
     }
+    if (fwdModal) {
+        fwdModal.addEventListener('click', (e) => {
+            if (e.target === fwdModal) closeForwardModal();
+        });
+    }
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && fwdModal && fwdModal.classList.contains('open')) {
+            closeForwardModal();
+        }
+    });
+
+    // Клик по reply-цитате — скролл к исходному сообщению (если оно в этом
+    // же чате) + короткая подсветка. Если оригинал не загружен (за пределами
+    // отрендеренной ленты) — мягко показываем и не падаем.
+    function jumpToMessage(messageId) {
+        const c = document.getElementById('messages-container');
+        if (!c || !messageId) return false;
+        const row = c.querySelector(
+            '.bubble-row[data-message-id="' + messageId + '"]');
+        if (!row) return false;
+        row.scrollIntoView({behavior: 'smooth', block: 'center'});
+        const bubble = row.querySelector('.bubble');
+        if (bubble) {
+            bubble.classList.remove('highlight');
+            // reflow чтобы анимация заиграла заново при повторном переходе
+            void bubble.offsetWidth;
+            bubble.classList.add('highlight');
+            setTimeout(() => bubble.classList.remove('highlight'), 1700);
+        }
+        return true;
+    }
+    window.jumpToMessage = jumpToMessage;
+
+    document.addEventListener('click', (e) => {
+        const rq = e.target.closest('.reply-quote');
+        if (!rq) return;
+        const target = rq.dataset.targetId;
+        if (!target) return;
+        e.preventDefault();
+        e.stopPropagation();
+        jumpToMessage(target);
+    });
 
     document.addEventListener('contextmenu', (e) => {
         const row = e.target.closest('.bubble-row');
@@ -548,8 +2222,13 @@
         if (!messageId) return;
         const textEl = row.querySelector('.bubble .text');
         const text = textEl ? textEl.textContent : '';
+        const outgoing = row.classList.contains('outgoing');
+        const sourceEl = row.querySelector('.source');
+        const author = outgoing ? 'Вы'
+            : (sourceEl ? sourceEl.textContent.split('·').pop().trim()
+                        : 'Сообщение');
         e.preventDefault();
-        showMessageMenu(e.clientX, e.clientY, messageId, text);
+        showMessageMenu(e.clientX, e.clientY, messageId, text, outgoing, author);
     });
     document.addEventListener('click', (e) => {
         if (openMenu && !openMenu.contains(e.target)) closeMenu();
@@ -561,27 +2240,305 @@
 })();
 </script>
 <script>
+// Клиентская навигация по чатам без перезагрузки страницы:
+// клик по контакту -> подгрузка /contacts/<id>/messages.json ->
+// отрисовка шапки и ленты, обновление URL (History API).
+// Серверный рендер /contacts/<id> остаётся как есть (прямой заход / refresh).
 (function() {
     const feed = document.getElementById('feed');
-    const container = document.getElementById('messages-container');
-    const url = '/contacts/{{ selected.id }}/messages.json';
+    const list = document.getElementById('contact-list');
+    const colList = document.getElementById('col-list');
+    const colFeed = document.getElementById('col-feed');
+    if (!feed || !list) return;
+
+    let currentContactId = list.dataset.activeId || null;
+    let currentMessenger = null;
     let lastSig = '';
+    let navToken = 0;
+    let pollTimer = null;
+    let typingTimer = null;
+    let pendingFile = null;   // выбранный, но ещё не отправленный файл
+    let pendingUrl = null;    // objectURL превью (для revoke)
+    let replyTarget = null;   // сообщение, на которое отвечаем (reply)
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
 
     function isNearBottom() {
-        if (!feed) return true;
         return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
     }
+    function scrollToBottom() { feed.scrollTop = feed.scrollHeight; }
 
-    function scrollToBottom() {
-        if (feed) feed.scrollTop = feed.scrollHeight;
+    /** Скролл в самый низ + автоподтяжка пока в ленте догружаются
+     *  изображения/видео (их размеры приходят асинхронно, после первого
+     *  scrollTop = scrollHeight реальная высота продолжает расти и пол
+     *  «уезжает» вверх — как будто открыли чат на старых сообщениях).
+     *
+     *  Стратегия: первые ~2 секунды — режим force, в котором мы
+     *  скроллим вниз на ЛЮБОЕ изменение DOM/layout (через
+     *  MutationObserver + ResizeObserver), плюс таймауты для подстраховки.
+     *  После — переходим в sticky-режим: уважаем ручной скролл пользователя. */
+    function scrollToBottomSticky() {
+        const c = document.getElementById('messages-container');
+        if (!c) { scrollToBottom(); return; }
+        scrollToBottom();
+
+        let forcePeriod = true;
+        let active = true;
+
+        const forceBump = () => {
+            if (!active) return;
+            if (forcePeriod) scrollToBottom();
+            else if (isNearBottom()) scrollToBottom();
+        };
+
+        // 1) MutationObserver — на любые изменения DOM в контейнере
+        //    (картинки получили src, добавились новые ноды и т.п.).
+        let mo = null;
+        try {
+            mo = new MutationObserver(forceBump);
+            mo.observe(c, {childList: true, subtree: true,
+                            attributes: true, characterData: true});
+        } catch (e) { /* старый браузер */ }
+
+        // 2) ResizeObserver — на изменение размеров контейнера
+        //    (картинки/видео получили natural dimensions → высота выросла).
+        let ro = null;
+        try {
+            ro = new ResizeObserver(forceBump);
+            ro.observe(c);
+            // Также следим за каждым медиа-элементом — некоторые браузеры
+            // не пробрасывают resize контейнера на media.
+            c.querySelectorAll('img, video').forEach(el => {
+                try { ro.observe(el); } catch (e) {}
+            });
+        } catch (e) { /* старый браузер */ }
+
+        // 3) Подстраховочные таймауты на случай если observers не сработали.
+        [50, 150, 400, 800, 1500, 2500].forEach(t => {
+            setTimeout(forceBump, t);
+        });
+
+        // Выход из force-режима через 2с — дальше уважаем ручной скролл.
+        setTimeout(() => { forcePeriod = false; }, 2000);
+        setTimeout(() => {
+            active = false;
+            if (mo) try { mo.disconnect(); } catch (e) {}
+            if (ro) try { ro.disconnect(); } catch (e) {}
+        }, 5000);
     }
 
-    function render(messages) {
-        if (!messages.length) {
-            container.innerHTML = '<div class="empty-state">Нет сообщений.</div>';
+    // FAB «к низу» — появляется при отскролле наверх и копит счётчик новых
+    // сообщений, пришедших пока пользователь не у дна.
+    const scrollFab = document.getElementById('scroll-fab');
+    const scrollFabBadge = document.getElementById('scroll-fab-badge');
+    let unseenWhileScrolled = 0;
+    function updateScrollFab() {
+        if (!scrollFab) return;
+        const farFromBottom = feed.scrollHeight - feed.scrollTop
+                              - feed.clientHeight > 200;
+        scrollFab.classList.toggle('show', farFromBottom);
+        if (!farFromBottom) {
+            unseenWhileScrolled = 0;
+            scrollFabBadge.classList.remove('show');
+            scrollFabBadge.textContent = '0';
+        }
+    }
+    function noteNewMessages(count) {
+        if (!scrollFab) return;
+        if (isNearBottom()) return;
+        unseenWhileScrolled += count;
+        scrollFabBadge.textContent = String(unseenWhileScrolled);
+        scrollFabBadge.classList.add('show');
+        scrollFab.classList.add('show');
+    }
+    if (scrollFab) {
+        scrollFab.addEventListener('click', () => {
+            scrollToBottom();
+            updateScrollFab();
+        });
+        feed.addEventListener('scroll', updateScrollFab, {passive: true});
+    }
+
+    function renderHeader(c) {
+        const handles = Array.isArray(c.handles) ? c.handles : [];
+        const chatMessengers = Array.isArray(c.messengers) ? c.messengers : [];
+        const currentM = c.messenger
+            || (handles[0] && handles[0].messenger) || '';
+        const isGroup = !!c.is_group;
+        const multiM = chatMessengers.length > 1;
+
+        let subline;
+        if (isGroup) subline = 'Группа — нажмите, чтобы увидеть участников';
+        else if (multiM) subline =
+            escapeHtml(currentM) + ' · нажмите, чтобы сменить чат';
+        else if (currentM) subline = escapeHtml(currentM);
+        else subline = 'нет личностей';
+
+        const expandable = isGroup || multiM;
+        const chevron = expandable
+            ? '<span class="chevron" aria-hidden="true">▾</span>' : '';
+        // Раскрываемая панель — только у группы (участники).
+        const panel = isGroup
+            ? `<div class="handles-panel" id="handles-panel">
+                 <div class="handles-panel-inner">
+                   <div class="members-box" id="members-box">Загрузка участников…</div>
+                 </div>
+               </div>` : '';
+
+        // Для форумов в шапке появляется кнопка «← Темы» — вернуться к
+        // выбору темы. Если темы ещё нет, выводится только статус.
+        const isForum = !!c.is_forum;
+        const topicId = c.topic_id || null;
+        const backToTopics = (isForum && topicId)
+            ? `<button type="button" class="feed-back-btn"
+                       title="Назад к списку тем"
+                       data-back-to-topics="1">📋</button>`
+            : '';
+        if (isForum) {
+            subline = topicId
+                ? 'Тема в форуме · нажмите 📋 чтобы вернуться к списку'
+                : 'Форум — выберите тему';
+        }
+
+        return `<div class="feed-header${expandable ? ' expandable' : ''}"
+                     id="feed-header" data-contact-id="${c.id}"
+                     data-is-group="${isGroup ? '1' : ''}"
+                     data-is-forum="${isForum ? '1' : ''}"
+                     data-topic-id="${topicId ? topicId : ''}"
+                     data-messengers="${escapeHtml(chatMessengers.join(','))}">
+            <div class="feed-header-top">
+                <button type="button" class="feed-back-btn d-md-none"
+                        aria-label="Назад" data-feed-back="1">←</button>
+                ${backToTopics}
+                ${c.avatar_url
+                    ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
+                    : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">${escapeHtml(c.initial)}</span>`}
+                <div class="flex-fill" style="min-width:0;">
+                    <div class="fw-semibold text-truncate">${escapeHtml(c.display_name)}</div>
+                    <div class="text-muted small text-truncate">${subline}</div>
+                </div>
+                <button type="button" class="topics-btn" data-topics-btn="1"
+                        title="📑 Темы чата (анализирует Ollama)">📑</button>
+                ${chevron}
+            </div>
+            ${panel}
+        </div>`;
+    }
+
+    function renderForumPicker(contact) {
+        return '<div class="forum-picker" id="forum-picker">'
+            + '<div class="fp-title">📋 Темы форума</div>'
+            + '<input type="search" class="fp-search" id="fp-search"'
+            +        ' placeholder="Поиск по темам…">'
+            + '<div class="fp-status">Загружаю список тем…</div>'
+            + '<div class="fp-list" id="forum-picker-list"></div>'
+            + '</div>';
+    }
+
+    // Палитра для значков тем — те же цвета что и у Telegram-аватаров.
+    const FP_COLORS = [
+        '#ef4444','#f59e0b','#10b981','#3b82f6',
+        '#8b5cf6','#ec4899','#14b8a6','#f97316'];
+    function fpColor(id) {
+        return FP_COLORS[(Math.abs(parseInt(id, 10) || 0))
+                         % FP_COLORS.length];
+    }
+    function fpInitial(title) {
+        const t = (title || '').trim();
+        if (!t) return '#';
+        // Первый символ заглавной буквой; emoji-первые остаются как есть.
+        const c = t.charAt(0);
+        return /[a-zа-яё]/i.test(c) ? c.toUpperCase() : c;
+    }
+
+    let _forumTopicsAll = [];  // последний загруженный список (для поиска)
+
+    function renderForumList(topics) {
+        const list = document.getElementById('forum-picker-list');
+        if (!list) return;
+        if (!topics || topics.length === 0) {
+            list.innerHTML = '<div class="fp-status">Ничего не найдено.</div>';
             return;
         }
-        const html = messages.map(m => {
+        list.innerHTML = topics.map(t => {
+            const ico = '<span class="fp-ico" style="background:'
+                + fpColor(t.id) + ';">'
+                + escapeHtml(fpInitial(t.title)) + '</span>';
+            const time = t.last_time
+                ? '<span class="fp-time">' + escapeHtml(t.last_time) + '</span>'
+                : '';
+            const unread = (t.unread && t.unread > 0)
+                ? '<span class="fp-unread">'
+                  + (t.unread > 99 ? '99+' : t.unread) + '</span>'
+                : '';
+            const preview = t.last_preview
+                ? '<div class="fp-preview">' + escapeHtml(t.last_preview) + '</div>'
+                : (t.message_count
+                   ? '<div class="fp-preview">' + t.message_count
+                     + ' сообщ.</div>'
+                   : '<div class="fp-preview">пусто</div>');
+            return '<div class="fp-item" data-topic-id="' + t.id + '">'
+                + ico
+                + '<div class="fp-body">'
+                +   '<div class="fp-row">'
+                +     '<span class="fp-name">' + escapeHtml(t.title) + '</span>'
+                +     time
+                +   '</div>'
+                +   preview
+                + '</div>'
+                + '<div class="fp-side">' + unread + '</div>'
+                + '</div>';
+        }).join('');
+    }
+
+    function filterForumTopics(q) {
+        const query = (q || '').trim().toLowerCase();
+        if (!query) { renderForumList(_forumTopicsAll); return; }
+        const filtered = _forumTopicsAll.filter(t =>
+            (t.title || '').toLowerCase().includes(query));
+        renderForumList(filtered);
+    }
+
+    async function loadForumTopics(contactId) {
+        const list = document.getElementById('forum-picker-list');
+        const status = document.querySelector('#forum-picker .fp-status');
+        const search = document.getElementById('fp-search');
+        if (!list) return;
+        try {
+            const r = await fetch('/contacts/' + contactId + '/forum-topics.json',
+                                  {credentials: 'same-origin'});
+            const d = await r.json();
+            if (String(contactId) !== String(currentContactId)) return;
+            if (d.status !== 'ok') {
+                if (status) status.textContent = 'Не удалось получить темы.';
+                return;
+            }
+            if (!d.topics || d.topics.length === 0) {
+                if (status) status.textContent =
+                    'В этом форуме пока нет тем. Если он только создан — '
+                    + 'подождите первого сообщения.';
+                return;
+            }
+            if (status) status.remove();
+            _forumTopicsAll = d.topics;
+            renderForumList(_forumTopicsAll);
+            if (search && !search._wired) {
+                search.addEventListener('input', () =>
+                    filterForumTopics(search.value));
+                search._wired = true;
+            }
+        } catch (e) {
+            if (status) status.textContent = 'Сеть недоступна.';
+        }
+    }
+
+    function renderMessages(messages) {
+        if (!messages.length) return '<div class="empty-state">Нет сообщений.</div>';
+        return messages.map(m => {
             const truncated = (m.text || '').length === 1024
                 ? `<div class="truncated-note">
                     ⚠ Сообщение обрезано Android до 1024 символов.
@@ -594,47 +2551,1351 @@
                         return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`;
                     if (a.kind === 'video')
                         return `<video class="media-video" src="/attachments/${a.id}" controls preload="metadata"></video>`;
+                    if (a.kind === 'voice' || a.kind === 'audio')
+                        return `<audio class="media-audio" src="/attachments/${a.id}" controls preload="metadata"></audio>`;
+                    if (a.kind === 'file')
+                        return `<a class="media-file" href="/attachments/${a.id}" download>`
+                            + `<span class="file-ico">📎</span>`
+                            + `<span class="file-name">${escapeHtml(a.name || 'Файл')}</span></a>`;
                     return `<img class="media-img" src="/attachments/${a.id}" data-full="/attachments/${a.id}" loading="lazy" alt="фото">`;
                 })
                 .join('');
-            return `<div class="bubble-row" data-message-id="${m.id}">
-                <span class="source">${escapeHtml(m.messenger_name)} · ${escapeHtml(m.display_author || m.sender)}</span>
-                <div class="bubble">
-                    <div class="text">${escapeHtml(m.text)}</div>
+            const source = m.outgoing
+                ? 'Вы'
+                : escapeHtml(m.messenger_name) + ' · '
+                  + escapeHtml(m.display_author || m.sender);
+            const reply = m.reply_to
+                ? `<div class="reply-quote" data-target-id="${m.reply_to.id}"
+                       title="Перейти к исходному сообщению">`
+                  + `<span class="rq-author">${escapeHtml(m.reply_to.author)}</span>`
+                  + `<span class="rq-text">${escapeHtml(m.reply_to.text)}</span>`
+                  + `</div>`
+                : '';
+            // Шапка «↪ Переслано от …». Ник кликабельный, если у нас есть
+            // контакт оригинального автора (contact_id) — клик ведёт в его
+            // чат через SPA-навигацию. Если нет (скрытый отправитель или
+            // мы с ним не переписываемся) — просто текст без перехода.
+            const fwdHtml = m.fwd_from
+                ? `<div class="fwd-header"
+                        title="Это сообщение переслано">`
+                  + `<span class="fwd-ico">↪</span>`
+                  + `<span class="fwd-label">Переслано от </span>`
+                  + (m.fwd_from.contact_id
+                      ? `<a class="fwd-name fwd-link" href="/contacts/${m.fwd_from.contact_id}"
+                              data-fwd-contact-id="${m.fwd_from.contact_id}"
+                              title="Перейти к чату с ${escapeHtml(m.fwd_from.name)}"
+                          >${escapeHtml(m.fwd_from.name)}</a>`
+                      : `<span class="fwd-name">${escapeHtml(m.fwd_from.name)}</span>`)
+                  + `</div>`
+                : '';
+            const tick = (m.outgoing && m.tg_read !== null && m.tg_read !== undefined)
+                ? `<span class="tg-tick${m.tg_read ? ' read' : ''}"
+                         title="${m.tg_read ? 'Прочитано' : 'Доставлено'}"
+                   >${m.tg_read ? '✓✓' : '✓'}</span>`
+                : '';
+            const ttl = m.ttl_seconds
+                ? `<span class="ttl-mark"
+                         title="Одноразовое сообщение — собеседник поставил автоудаление через ${m.ttl_seconds} с, но мы сохранили">🔥</span>`
+                : '';
+            const delBanner = m.deleted
+                ? `<div class="deleted-banner"
+                          title="Сообщение удалили в мессенджере, но мы успели сохранить"
+                   >🗑 ${m.outgoing ? 'Вы удалили это сообщение' : 'Удалено собеседником'}</div>`
+                : '';
+            const textHtml = m.text
+                ? `<div class="text">${escapeHtml(m.text)}</div>` : '';
+            // «📝 ред. ×N» — кнопка показа истории редактирований.
+            // Полный список версий клеим как JSON в атрибут bubble, popover
+            // читает оттуда — отдельный fetch не нужен.
+            const editsCount = (m.edits && m.edits.length) || 0;
+            const editsBadge = editsCount > 0
+                ? `<button type="button" class="edited-badge"
+                          title="Показать историю изменений (${editsCount} прошлая версия${editsCount === 1 ? '' : ''})"
+                          data-edits-btn="1"
+                   >📝 ред.${editsCount > 1 ? ' ×' + editsCount : ''}</button>`
+                : '';
+            const editsJson = editsCount > 0
+                ? ` data-edits-json='${escapeHtml(JSON.stringify(m.edits))}'`
+                : '';
+            const reactionsHtml = (m.reactions && m.reactions.length)
+                ? '<div class="reactions-row">'
+                  + m.reactions.map(r =>
+                      '<span class="reaction-chip' + (r.mine ? ' mine' : '') + '"'
+                      + ' data-emoji="' + escapeHtml(r.emoji) + '"'
+                      + ' title="' + (r.mine
+                          ? 'Моя реакция — нажмите чтобы снять'
+                          : 'Поставить такую же') + '">'
+                      + '<span class="rc-emoji">' + escapeHtml(r.emoji) + '</span>'
+                      + '<span class="rc-count' + (!r.count || r.count <= 1 ? ' zero' : '') + '">'
+                      + escapeHtml(String(r.count || ''))
+                      + '</span></span>'
+                    ).join('')
+                  + '</div>'
+                : '';
+            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}"
+                data-message-id="${m.id}"
+                data-messenger="${escapeHtml(m.messenger_name || '')}"${editsJson}>
+                <span class="source">${source}</span>
+                <div class="bubble${m.deleted ? ' deleted' : ''}">
+                    ${delBanner}
+                    ${fwdHtml}
+                    ${reply}
                     ${media}
+                    ${textHtml}
                     ${truncated}
-                    <div class="time">${escapeHtml(m.time)}</div>
+                    <div class="time-row">
+                        <span class="time">${escapeHtml(m.time)}</span>
+                        ${ttl}
+                        ${editsBadge}
+                        ${tick}
+                    </div>
+                    ${reactionsHtml}
                 </div>
             </div>`;
         }).join('');
-        container.innerHTML = html;
     }
 
-    function escapeHtml(s) {
-        return String(s).replace(/[&<>"']/g, c => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[c]));
+    function renderComposer(contact) {
+        if (!contact || !contact.can_reply) return '';
+        const messenger = contact.messenger || 'Telegram';
+        const isTg = (contact.reply_via || 'telegram') === 'telegram';
+        const placeholder = isTg
+            ? 'Написать в ' + messenger + '…'
+            : 'Написать в ' + messenger + ' (через шторку телефона)…';
+        const attach = isTg
+            ? `<button type="button" class="attach-btn" id="composer-attach"
+                       title="Прикрепить фото или видео">📎</button>
+               <input type="file" id="composer-file" accept="image/*,video/*" hidden>`
+            : '';
+        return `<form class="composer" id="composer"
+                      data-contact-id="${contact.id}"
+                      data-messenger="${escapeHtml(contact.messenger || '')}"
+                      data-reply-via="${escapeHtml(contact.reply_via || '')}">
+            <div class="composer-reply" id="composer-reply" hidden></div>
+            <div class="composer-preview" id="composer-preview" hidden></div>
+            ${attach}
+            <textarea id="composer-text" rows="1"
+                      placeholder="${escapeHtml(placeholder)}"></textarea>
+            <button type="submit" class="send-btn" id="composer-send">Отправить</button>
+        </form>`;
     }
 
-    async function poll() {
+    function paint(contact, messages) {
+        // Форум-чат без выбранной темы → рисуем список тем вместо ленты.
+        // В этом режиме composer и messages-container не нужны.
+        const isForum = !!contact.is_forum;
+        const hasTopic = !!contact.topic_id;
+        if (isForum && !hasTopic) {
+            feed.innerHTML = renderHeader(contact)
+                + renderForumPicker(contact);
+            loadForumTopics(contact.id);
+        } else {
+            feed.innerHTML = renderHeader(contact)
+                + '<div id="messages-container">' + renderMessages(messages) + '</div>'
+                + renderComposer(contact);
+        }
+        // Дальнейшее «вкручивание» вниз делает scrollToBottomSticky из
+        // openContact (он подписывается на image-load и подталкивает).
+    }
+
+    function setActiveRow(id) {
+        list.dataset.activeId = id == null ? '' : String(id);
+        list.querySelectorAll('.contact-row.active').forEach(
+            a => a.classList.remove('active'));
+        if (id == null) return;
+        const wrap = list.querySelector(
+            '.contact-row-wrap[data-contact-id="' + id + '"]');
+        if (!wrap) return;
+        const a = wrap.querySelector('.contact-row');
+        if (a) a.classList.add('active');
+        // Бэйдж «непрочитано» убираем сразу — сервер пометит чат прочитанным
+        // в messages.json, поллинг списка подтвердит это в течение 5 c.
+        const b = wrap.querySelector('.badge-unread');
+        if (b) b.remove();
+    }
+
+    function setMobileView(view) {
+        if (!colList || !colFeed) return;
+        // d-md-flex (а не d-md-block!) — иначе на md+ bootstrap-овский
+        // `display: block !important` перебьёт наш `display: flex` на
+        // #col-list / #col-feed, и внутренний скролл .contact-list / .feed
+        // перестанет работать.
+        if (view === 'feed') {
+            colList.classList.add('d-none', 'd-md-flex');
+            colFeed.classList.remove('d-none');
+            colFeed.classList.add('d-md-flex');
+        } else {
+            colFeed.classList.add('d-none', 'd-md-flex');
+            colList.classList.remove('d-none');
+            colList.classList.add('d-md-flex');
+        }
+    }
+
+    function stopPolling() {
+        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+    }
+    function startPolling() {
+        stopPolling();
+        pollTimer = setInterval(pollMessages, 5000);
+        typingTimer = setInterval(pollTyping, 3000);
+    }
+
+    function setTyping(on) {
+        const sub = feed.querySelector('.feed-header .text-muted');
+        if (!sub) return;
+        if (on) {
+            if (sub.dataset.orig == null) sub.dataset.orig = sub.textContent;
+            sub.textContent = 'печатает…';
+            sub.classList.add('is-typing');
+        } else if (sub.dataset.orig != null) {
+            sub.textContent = sub.dataset.orig;
+            delete sub.dataset.orig;
+            sub.classList.remove('is-typing');
+        }
+    }
+
+    async function pollTyping() {
+        if (currentContactId == null) return;
+        const idAtStart = currentContactId;
         try {
-            const r = await fetch(url, {credentials: 'same-origin'});
+            const r = await fetch('/contacts/' + idAtStart + '/typing.json',
+                                  {credentials: 'same-origin'});
             if (!r.ok) return;
             const data = await r.json();
-            const sig = JSON.stringify(data.messages.map(m => m.id || (m.time + m.text)));
+            if (String(idAtStart) !== String(currentContactId)) return;
+            setTyping(!!data.typing);
+        } catch (e) { /* network blip */ }
+    }
+
+    function messengerQuery() {
+        const parts = [];
+        if (currentMessenger) parts.push('m=' + encodeURIComponent(currentMessenger));
+        if (currentTopicId) parts.push('topic_id=' + encodeURIComponent(currentTopicId));
+        return parts.length ? '?' + parts.join('&') : '';
+    }
+
+    async function pollMessages() {
+        if (currentContactId == null) return;
+        const idAtStart = currentContactId;
+        try {
+            const r = await fetch('/contacts/' + idAtStart + '/messages.json'
+                                  + messengerQuery(),
+                                  {credentials: 'same-origin'});
+            if (!r.ok) return;
+            const data = await r.json();
+            if (String(idAtStart) !== String(currentContactId)) return;
+            // В сигнатуру кладём не только id/text/time, но и tg_read,
+            // deleted, reactions — иначе перерисовки не будет когда
+            // собеседник прочитал (✓→✓✓), удалил или поставил реакцию.
+            const sigItems = data.messages.map(m => [
+                m.id || (m.time + m.text), m.text, m.time,
+                m.tg_read ? 1 : 0, m.deleted ? 1 : 0,
+                (m.reactions || []).map(r =>
+                    r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
+                ).join(','),
+            ]);
+            const sig = JSON.stringify(sigItems);
             if (sig !== lastSig) {
-                const stickToBottom = isNearBottom();
-                render(data.messages);
+                const stick = isNearBottom();
+                // ID-сет «что уже было» — для бэйджа FAB и анимации новых.
+                let prevIds = new Set();
+                try {
+                    if (lastSig) JSON.parse(lastSig).forEach(it => {
+                        prevIds.add(Array.isArray(it) ? it[0] : it);
+                    });
+                } catch (e) {}
+                const added = data.messages.filter(
+                    m => !prevIds.has(m.id || (m.time + m.text))).length;
+                const c = document.getElementById('messages-container');
+                if (c) {
+                    c.innerHTML = renderMessages(data.messages);
+                    // Анимируем только bubble тех сообщений, которых не было
+                    // в прошлом тике (а не вся лента при каждой перерисовке).
+                    if (prevIds.size > 0) {
+                        data.messages.forEach(m => {
+                            const key = m.id || (m.time + m.text);
+                            if (prevIds.has(key)) return;
+                            const row = c.querySelector(
+                                '.bubble-row[data-message-id="' + m.id + '"]');
+                            if (row) row.classList.add('new-msg');
+                        });
+                    }
+                    reapplyTopicHighlight();
+                }
                 lastSig = sig;
-                if (stickToBottom) scrollToBottom();
+                if (stick) scrollToBottom();
+                else if (added > 0) noteNewMessages(added);
+                updateScrollFab();
             }
         } catch (e) { /* network blip */ }
     }
 
-    // Сразу прыгнуть в конец, чтобы пользователь видел свежие сообщения.
-    scrollToBottom();
-    setInterval(poll, 5000);
+    let currentTopicId = null;  // выбранная тема форум-чата (null = «все темы / не форум»)
+
+    async function openContact(id, messenger, opts) {
+        opts = opts || {};
+        const token = ++navToken;
+        currentContactId = String(id);
+        currentMessenger = messenger || null;
+        currentTopicId = opts.topicId
+            ? String(opts.topicId) : null;
+        lastSig = '';
+        clearPreview();  // сбрасываем выбранный файл при смене чата
+        clearReply();    // и отменяем начатый ответ
+        setActiveRow(id);
+        setMobileView('feed');
+        const qsParts = [];
+        if (currentMessenger) qsParts.push('m=' + encodeURIComponent(currentMessenger));
+        if (currentTopicId) qsParts.push('topic_id=' + encodeURIComponent(currentTopicId));
+        const qs = qsParts.length ? '?' + qsParts.join('&') : '';
+        try {
+            const r = await fetch('/contacts/' + id + '/messages.json' + qs,
+                                  {credentials: 'same-origin'});
+            if (token !== navToken) return;
+            if (!r.ok) { window.location = '/contacts/' + id; return; }
+            const data = await r.json();
+            if (token !== navToken) return;
+            // Сервер мог выбрать мессенджер по умолчанию.
+            currentMessenger = data.contact.messenger || null;
+            paint(data.contact, data.messages);
+            // Закреплённые «темы чата» — если уже анализировались, сразу
+            // показываем пин-бар сверху. Сервер их хранит в БД.
+            setPinnedTopics(data.topics || []);
+            // Сигнатура — та же что в pollMessages: id+text+time+tg_read+
+            // deleted+reactions. Иначе первый же tick пересоберёт ленту впустую.
+            lastSig = JSON.stringify(data.messages.map(m => [
+                m.id || (m.time + m.text), m.text, m.time,
+                m.tg_read ? 1 : 0, m.deleted ? 1 : 0,
+                (m.reactions || []).map(r =>
+                    r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
+                ).join(','),
+            ]));
+            document.title = data.contact.display_name;
+            if (opts.scrollToMessageId) {
+                // Ждём один кадр, чтобы DOM реально появился, потом скроллим
+                // к найденному сообщению вместо обычного «в самый низ».
+                requestAnimationFrame(() => {
+                    if (!window.jumpToMessage ||
+                            !window.jumpToMessage(opts.scrollToMessageId)) {
+                        scrollToBottomSticky();
+                    }
+                });
+            } else {
+                // RAF — чтобы scrollHeight уже отражал реальный layout
+                // (paint только что заменил innerHTML, синхронный вызов
+                // мог промахнуться, и потом sticky-bump'ы запускались с
+                // scrollTop=0, оставляя ленту наверху).
+                requestAnimationFrame(scrollToBottomSticky);
+            }
+            startPolling();
+            if (opts.push !== false) {
+                const hash = opts.scrollToMessageId
+                    ? '#msg-' + opts.scrollToMessageId : '';
+                const urlParts = [];
+                if (currentMessenger) urlParts.push('m=' + encodeURIComponent(currentMessenger));
+                if (currentTopicId) urlParts.push('topic_id=' + encodeURIComponent(currentTopicId));
+                const url = '/contacts/' + id
+                    + (urlParts.length ? '?' + urlParts.join('&') : '')
+                    + hash;
+                history.pushState(
+                    {contactId: String(id),
+                     messenger: currentMessenger,
+                     topicId: currentTopicId},
+                    '', url);
+            }
+        } catch (e) {
+            window.location = '/contacts/' + id;
+        }
+    }
+
+    function showList(opts) {
+        opts = opts || {};
+        currentContactId = null;
+        lastSig = '';
+        stopPolling();
+        setActiveRow(null);
+        setMobileView('list');
+        feed.innerHTML =
+            '<div class="empty-state">← Выберите контакт слева, ' +
+            'чтобы увидеть переписку.</div>';
+        document.title = 'Контакты';
+        if (opts.push !== false) {
+            history.pushState({contactId: null}, '', '/contacts');
+        }
+    }
+
+    // Загрузка списка участников группы в раскрытую панель шапки.
+    async function loadMembers(header) {
+        const box = header.querySelector('#members-box');
+        if (!box || box.dataset.loaded) return;
+        box.dataset.loaded = '1';
+        const cid = header.dataset.contactId;
+        try {
+            const r = await fetch('/contacts/' + cid + '/members.json',
+                                  {credentials: 'same-origin'});
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || !data.is_group) {
+                box.innerHTML = '<span class="members-status">'
+                    + 'Участники недоступны (мост не подключён?)</span>';
+                return;
+            }
+            if (!data.members.length) {
+                box.innerHTML = '<span class="members-status">Участников нет</span>';
+                return;
+            }
+            box.innerHTML = data.members.map(m =>
+                '<span class="member-chip">' + escapeHtml(m.name)
+                + (m.username
+                    ? ' <span class="member-username">' + escapeHtml(m.username)
+                      + '</span>'
+                    : '')
+                + '</span>').join('');
+        } catch (e) {
+            box.dataset.loaded = '';  // позволить повторить
+            box.innerHTML = '<span class="members-status">Ошибка загрузки</span>';
+        }
+    }
+
+    document.addEventListener('click', function(e) {
+        if (!e.target.closest) return;
+        const back = e.target.closest('.feed-back-btn');
+        if (back && feed.contains(back)) {
+            e.preventDefault();
+            showList();
+            return;
+        }
+        // Клик по шапке чата: группа — раскрыть участников;
+        // контакт-«папка» — попап выбора мессенджера.
+        const top = e.target.closest('.feed-header.expandable .feed-header-top');
+        if (top && feed.contains(top)) {
+            const header = top.closest('.feed-header');
+            if (header.dataset.isGroup) {
+                header.classList.toggle('open');
+                if (header.classList.contains('open')) loadMembers(header);
+            } else {
+                const msgrs = (header.dataset.messengers || '')
+                    .split(',').filter(Boolean);
+                if (msgrs.length > 1) {
+                    showMessengerPicker(header.dataset.contactId, msgrs);
+                }
+            }
+            return;
+        }
+        // Клик вне шапки — закрыть раскрытую панель личностей.
+        const insideHeader = e.target.closest('.feed-header');
+        if (!insideHeader) {
+            const fh = feed.querySelector('.feed-header.open');
+            if (fh) fh.classList.remove('open');
+        }
+        const row = e.target.closest('a.contact-row');
+        if (row && list.contains(row)) {
+            e.preventDefault();
+            const wrap = row.closest('.contact-row-wrap');
+            const id = wrap && wrap.dataset.contactId;
+            if (!id) return;
+            const msgrs = (wrap.dataset.messengers || '')
+                .split(',').filter(Boolean);
+            // Контакт-«папка»: несколько мессенджеров — спросить какой открыть.
+            if (msgrs.length > 1) {
+                showMessengerPicker(id, msgrs);
+            } else {
+                openContact(id, msgrs[0] || null);
+            }
+        }
+    });
+
+    function showMessengerPicker(contactId, messengers) {
+        const picker = document.getElementById('msgr-picker');
+        const listEl = document.getElementById('msgr-picker-list');
+        if (!picker || !listEl) return;
+        listEl.innerHTML = messengers.map(function(m) {
+            const reply = m === 'Telegram';
+            return '<button type="button" class="msgr-pick-btn" data-pick-id="'
+                + contactId + '" data-pick-m="' + escapeHtml(m) + '">'
+                + '<span class="m-tag">' + escapeHtml(m) + '</span>'
+                + '<span class="m-hint">'
+                + (reply ? '✉ можно отвечать' : 'только чтение')
+                + '</span></button>';
+        }).join('');
+        picker.classList.add('open');
+    }
+
+    (function() {
+        const picker = document.getElementById('msgr-picker');
+        if (!picker) return;
+        picker.addEventListener('click', function(e) {
+            const btn = e.target.closest('.msgr-pick-btn');
+            if (btn) {
+                picker.classList.remove('open');
+                openContact(btn.dataset.pickId, btn.dataset.pickM);
+                return;
+            }
+            if (e.target === picker) picker.classList.remove('open');
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') picker.classList.remove('open');
+        });
+    })();
+
+    function messengerFromUrl() {
+        const m = location.search.match(/[?&]m=([^&]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    function topicIdFromUrl() {
+        const m = location.search.match(/[?&]topic_id=([^&]+)/);
+        return m ? decodeURIComponent(m[1]) : null;
+    }
+
+    window.addEventListener('popstate', function(e) {
+        const st = e.state;
+        if (st && st.contactId) {
+            openContact(st.contactId, st.messenger || null,
+                        {push: false, topicId: st.topicId || null});
+            return;
+        }
+        const m = location.pathname.match(/^\/contacts\/(\d+)/);
+        if (m) openContact(m[1], messengerFromUrl(),
+                           {push: false, topicId: topicIdFromUrl()});
+        else showList({push: false});
+    });
+
+    // Доступ из поиска и других скриптов для перехода к чату+сообщению.
+    window.openContactSPA = openContact;
+
+    // При первичной загрузке с #msg-<id> — попытка проскроллить к нему,
+    // когда серверный рендер уже отрисовал ленту.
+    (function() {
+        const h = (location.hash || '').match(/^#msg-(\d+)$/);
+        if (!h) return;
+        const mid = h[1];
+        requestAnimationFrame(() => {
+            if (window.jumpToMessage) window.jumpToMessage(mid);
+        });
+    })();
+
+    // --- Отправка ответа в Telegram из ленты чата ---
+    async function sendMessage(form) {
+        // Есть прикреплённый файл — отправляем его (текст пойдёт подписью).
+        if (pendingFile) { sendFile(form, pendingFile); return; }
+        const ta = form.querySelector('#composer-text');
+        const btn = form.querySelector('#composer-send');
+        if (!ta || !btn) return;
+        const text = ta.value.trim();
+        if (!text) return;
+        const cid = form.dataset.contactId;
+        btn.disabled = true;
+        try {
+            const params = {text: text};
+            const m = form.dataset.messenger;
+            if (m) params.messenger = m;
+            if (replyTarget) params.reply_to = replyTarget.id;
+            const r = await fetch('/contacts/' + cid + '/send', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: new URLSearchParams(params),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.ok) {
+                // queued (notif-путь) — реальное сообщение прилетит поллингом
+                // как только Android отчитается; не дорисовываем оптимистично.
+                if (!data.queued
+                        && String(cid) === String(currentContactId)) {
+                    const c = document.getElementById('messages-container');
+                    if (c) {
+                        const empty = c.querySelector('.empty-state');
+                        if (empty) c.innerHTML = '';
+                        c.insertAdjacentHTML('beforeend', renderMessages([{
+                            id: data.id, text: data.text, time: data.time,
+                            outgoing: true,
+                            // Telegram-исходящее сразу с одной галочкой;
+                            // двойную поставит read-history-апдейт через
+                            // обычный пуллинг ленты.
+                            tg_read: false,
+                            messenger_name: data.messenger_name || 'Telegram',
+                            reply_to: data.reply_to || null,
+                            attachments: [],
+                        }]));
+                        // Анимация появления свежей bubble
+                        const fresh = c.lastElementChild;
+                        if (fresh) fresh.classList.add('new-msg');
+                    }
+                    scrollToBottom();
+                }
+                ta.value = '';
+                ta.style.height = '';
+                clearReply();
+                if (data.queued && data.pending_id) {
+                    watchPendingReply(data.pending_id);
+                }
+            } else {
+                alert('Не удалось отправить: '
+                      + (data.detail || data.error || ('HTTP ' + r.status)));
+            }
+        } catch (e) {
+            alert('Сеть недоступна — сообщение не отправлено.');
+        } finally {
+            btn.disabled = false;
+            ta.focus();
+        }
+    }
+
+    // Notif-путь: ответ ставится в очередь, Android её отрабатывает.
+    // Опрашиваем статус 30 c — если failed, говорим пользователю причину.
+    function explainReplyError(code) {
+        switch (code) {
+            case 'no_active_notification':
+            case 'no_cached_reply':
+                return 'мы пока не видели уведомлений от этого чата. '
+                     + 'Дождись нового сообщения собеседника.';
+            case 'pending_intent_dead':
+            case 'pending_intent_canceled':
+                return 'мессенджер закрыл канал ответа (был перезапущен). '
+                     + 'Дождись нового сообщения собеседника.';
+            case 'no_reply_action':
+            case 'no_remote_input':
+                return 'этот мессенджер не показал кнопку «Ответить» '
+                     + 'в уведомлении (например, групповой канал без права писать).';
+            default:
+                if (code && code.startsWith('send_exception:')) {
+                    return 'ошибка отправки на стороне Android (' + code + ').';
+                }
+                return code || 'неизвестная причина.';
+        }
+    }
+
+    async function watchPendingReply(id) {
+        for (let i = 0; i < 12; i++) {
+            await new Promise(res => setTimeout(res, 2500));
+            try {
+                const r = await fetch('/api/pending_replies/' + id + '/status',
+                                      {credentials: 'same-origin'});
+                if (!r.ok) continue;
+                const data = await r.json();
+                if (data.status === 'sent') return;
+                if (data.status === 'failed') {
+                    alert('Ответ через шторку не отправлен: '
+                          + explainReplyError(data.error));
+                    return;
+                }
+            } catch (e) { /* сетевой сбой */ }
+        }
+    }
+
+    // Отправка файла (фото/видео) в Telegram. Текст из поля — подпись.
+    async function sendFile(form, file) {
+        const cid = form.dataset.contactId;
+        const ta = form.querySelector('#composer-text');
+        const btn = form.querySelector('#composer-send');
+        const attach = form.querySelector('#composer-attach');
+        if (btn) btn.disabled = true;
+        if (attach) attach.disabled = true;
+        const fd = new FormData();
+        fd.append('file', file);
+        fd.append('text', ta ? ta.value.trim() : '');
+        if (form.dataset.messenger) fd.append('messenger', form.dataset.messenger);
+        if (replyTarget) fd.append('reply_to', replyTarget.id);
+        try {
+            const r = await fetch('/contacts/' + cid + '/send', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: fd,
+            });
+            const data = await r.json().catch(() => ({}));
+            if (r.ok && data.ok) {
+                // Медиа-сообщение появится в ленте в течение ~5 c (поллинг).
+                if (ta) { ta.value = ''; ta.style.height = ''; }
+                clearPreview();
+                clearReply();
+            } else {
+                alert('Не удалось отправить файл: '
+                      + (data.detail || data.error || ('HTTP ' + r.status)));
+            }
+        } catch (e) {
+            alert('Сеть недоступна — файл не отправлен.');
+        } finally {
+            if (btn) btn.disabled = false;
+            if (attach) attach.disabled = false;
+        }
+    }
+
+    feed.addEventListener('submit', function(e) {
+        const form = e.target.closest('#composer');
+        if (form) { e.preventDefault(); sendMessage(form); }
+    });
+    function showPreview(file) {
+        const box = feed.querySelector('#composer-preview');
+        if (!box) return;
+        if (pendingUrl) { URL.revokeObjectURL(pendingUrl); pendingUrl = null; }
+        let thumb;
+        if (file.type && file.type.indexOf('image/') === 0) {
+            pendingUrl = URL.createObjectURL(file);
+            thumb = '<img class="cp-thumb" src="' + pendingUrl + '" alt="">';
+        } else {
+            thumb = '<span class="cp-ico">🎬</span>';
+        }
+        box.innerHTML = thumb
+            + '<span class="cp-name">' + escapeHtml(file.name) + '</span>'
+            + '<button type="button" class="cp-remove" title="Убрать">×</button>';
+        box.hidden = false;
+    }
+
+    function clearPreview() {
+        pendingFile = null;
+        if (pendingUrl) { URL.revokeObjectURL(pendingUrl); pendingUrl = null; }
+        const box = feed.querySelector('#composer-preview');
+        if (box) { box.hidden = true; box.innerHTML = ''; }
+    }
+
+    // --- Ответ на конкретное сообщение (reply) ---
+    function renderReplyBanner() {
+        const box = feed.querySelector('#composer-reply');
+        if (!box) return;
+        if (!replyTarget) { box.hidden = true; box.innerHTML = ''; return; }
+        box.innerHTML =
+            '<div class="cr-body">'
+            + '<span class="cr-author">В ответ · '
+            + escapeHtml(replyTarget.author) + '</span>'
+            + '<span class="cr-text">' + escapeHtml(replyTarget.text) + '</span>'
+            + '</div>'
+            + '<button type="button" class="cr-remove" '
+            + 'title="Отменить ответ">×</button>';
+        box.hidden = false;
+    }
+    function setReply(messageId, author, text) {
+        replyTarget = {
+            id: messageId,
+            author: author || 'сообщение',
+            text: (text || '').slice(0, 200) || '📎 Вложение',
+        };
+        renderReplyBanner();
+        const ta = feed.querySelector('#composer-text');
+        if (ta) ta.focus();
+    }
+    function clearReply() {
+        replyTarget = null;
+        renderReplyBanner();
+    }
+    // Вызывается из меню сообщения (отдельный IIFE).
+    window.__skillwoodSetReply = setReply;
+
+    // Кнопка «прикрепить» открывает выбор файла; «×» убирает выбранное.
+    feed.addEventListener('click', function(e) {
+        if (e.target.closest('#composer-attach')) {
+            const inp = feed.querySelector('#composer-file');
+            if (inp) inp.click();
+        } else if (e.target.closest('.cp-remove')) {
+            clearPreview();
+        } else if (e.target.closest('.cr-remove')) {
+            clearReply();
+        }
+    });
+    // Клик по «Переслано от …» — SPA-переход в чат с оригинальным автором.
+    feed.addEventListener('click', function(e) {
+        const link = e.target.closest('.fwd-link');
+        if (!link) return;
+        const cid = link.dataset.fwdContactId;
+        if (!cid) return;
+        e.preventDefault();
+        e.stopPropagation();
+        openContact(cid, null);
+    });
+    // Клик по «📝 ред.» — popover с историей всех версий сообщения.
+    let editsPopover = null;
+    function closeEditsPopover() {
+        if (editsPopover) { editsPopover.remove(); editsPopover = null; }
+    }
+    function showEditsPopover(btn) {
+        closeEditsPopover();
+        const row = btn.closest('.bubble-row');
+        const bubble = row && row.querySelector('.bubble');
+        if (!row || !bubble) return;
+        let edits = [];
+        try {
+            edits = JSON.parse(row.dataset.editsJson || '[]');
+        } catch (e) { edits = []; }
+        const currentTextEl = bubble.querySelector('.text');
+        const currentText = currentTextEl ? currentTextEl.textContent : '';
+        const versions = edits.slice();
+        // Финальная (текущая) версия в payload отсутствует — показываем её
+        // отдельно с пометкой «сейчас»; жирный шрифт даёт визуальный якорь.
+        const parts = ['<div class="ep-title">История изменений</div>'];
+        versions.forEach((v, i) => {
+            const label = i === 0 ? 'Изначально' : 'Версия ' + (i + 1);
+            const when = v.edited_at ? (' · до ' + escapeHtml(v.edited_at)) : '';
+            const empty = !v.text;
+            parts.push(
+                '<div class="ep-version">'
+                + '<div class="ep-when">' + label + when + '</div>'
+                + '<div class="ep-text' + (empty ? ' empty' : '') + '">'
+                + (empty ? '(пусто)' : escapeHtml(v.text))
+                + '</div></div>'
+            );
+        });
+        parts.push(
+            '<div class="ep-version">'
+            + '<div class="ep-when">Сейчас</div>'
+            + '<div class="ep-text current' + (!currentText ? ' empty' : '') + '">'
+            + (currentText ? escapeHtml(currentText) : '(пусто)')
+            + '</div></div>'
+        );
+        const pop = document.createElement('div');
+        pop.className = 'edits-popover';
+        pop.innerHTML = parts.join('');
+        document.body.appendChild(pop);
+        // Позиция: над кнопкой, по горизонтали ограничиваем краями вьюпорта.
+        const rect = btn.getBoundingClientRect();
+        const pw = pop.offsetWidth;
+        const ph = pop.offsetHeight;
+        let left = rect.left + rect.width / 2 - pw / 2;
+        left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+        let top = rect.top - ph - 8;
+        if (top < 8) top = rect.bottom + 8;  // не лезет вверх — открываем вниз
+        pop.style.left = left + 'px';
+        pop.style.top = top + 'px';
+        editsPopover = pop;
+    }
+    feed.addEventListener('click', function(e) {
+        const btn = e.target.closest('[data-edits-btn]');
+        if (btn) {
+            e.preventDefault();
+            e.stopPropagation();
+            showEditsPopover(btn);
+            return;
+        }
+        if (editsPopover && !editsPopover.contains(e.target)) {
+            closeEditsPopover();
+        }
+    });
+    document.addEventListener('click', function(e) {
+        if (editsPopover && !editsPopover.contains(e.target)
+                && !e.target.closest('[data-edits-btn]')) {
+            closeEditsPopover();
+        }
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeEditsPopover();
+    });
+    feed.addEventListener('scroll', closeEditsPopover, {passive: true});
+
+    // --- «📑 Темы чата» — анализ через локальную Ollama ---
+    let topicsPanel = null;
+    let topicsLimit = 200;  // дефолт; пользователь может переключить
+    let topicsWarmedUp = false;  // первый запрос за сессию — модель грузится в VRAM
+
+    // Закрепы тем чата + текущий индекс активной темы. Хранятся для
+    // текущего контакта; при переключении openContact заменит на свежие.
+    let pinnedTopics = [];     // [{title, start_id, message_ids, time, date}]
+    let pinnedIndex = 0;       // какая тема сейчас «висит» в баре
+    let pinnedHidden = false;  // user закрыл пин-бар крестиком? (на этот заход)
+    // ID сообщений последней «выбранной» темы — нужны чтобы перевесить
+    // подсветку после перерисовки ленты (polling, paint). Иначе после
+    // тика сообщения пересоздадутся и .topic-hl слетит.
+    let activeHighlightIds = [];
+
+    function clearTopicHighlight() {
+        activeHighlightIds = [];
+        const c = document.getElementById('messages-container');
+        if (!c) return;
+        c.querySelectorAll('.bubble-row.topic-hl').forEach(
+            r => r.classList.remove('topic-hl'));
+    }
+    function reapplyTopicHighlight() {
+        // После innerHTML-перерисовки заново ставим .topic-hl на bubbles,
+        // которые были подсвечены — иначе подсветка теряется на polling-тиках.
+        const c = document.getElementById('messages-container');
+        if (!c || !activeHighlightIds.length) return;
+        activeHighlightIds.forEach(id => {
+            const row = c.querySelector(
+                '.bubble-row[data-message-id="' + id + '"]');
+            if (row) row.classList.add('topic-hl');
+        });
+    }
+    function applyTopicHighlight(messageIds) {
+        activeHighlightIds = Array.isArray(messageIds)
+            ? messageIds.slice() : [];
+        const c = document.getElementById('messages-container');
+        if (!c) return;
+        c.querySelectorAll('.bubble-row.topic-hl').forEach(
+            r => r.classList.remove('topic-hl'));
+        if (!activeHighlightIds.length) return;
+        activeHighlightIds.forEach(id => {
+            const row = c.querySelector(
+                '.bubble-row[data-message-id="' + id + '"]');
+            if (row) row.classList.add('topic-hl');
+        });
+    }
+    function renderTopicsPin() {
+        // Удаляем старый пин-бар если есть.
+        const old = feed.querySelector('.topics-pin');
+        if (old) old.remove();
+        if (pinnedHidden) return;
+        if (!pinnedTopics.length) return;
+        // На «обзорной» странице форум-чата (без выбранной темы) ленты
+        // нет — пин-бар закрепов не имеет смысла. Закрепы относятся к
+        // конкретной теме / обычному чату.
+        const header = feed.querySelector('.feed-header');
+        if (header && header.dataset.isForum === '1'
+                && !header.dataset.topicId) return;
+        // Защита от выхода за пределы (после смены контакта / пересчёта).
+        if (pinnedIndex < 0) pinnedIndex = pinnedTopics.length - 1;
+        if (pinnedIndex >= pinnedTopics.length) pinnedIndex = 0;
+        const cur = pinnedTopics[pinnedIndex];
+        const bars = pinnedTopics.map((_, i) =>
+            '<div class="tp-bar' + (i === pinnedIndex ? ' active' : '')
+            + '"></div>').join('');
+        const meta = (cur.date ? cur.date + ' · ' : '')
+                     + (cur.time || '');
+        const pin = document.createElement('div');
+        pin.className = 'topics-pin';
+        pin.dataset.startId = cur.start_id;
+        pin.innerHTML =
+            '<span class="tp-ico">📌</span>'
+            + '<div class="tp-bars">' + bars + '</div>'
+            + '<div class="tp-content">'
+            +   '<div class="tp-label">'
+            +     'Закреплённые темы · ' + (pinnedIndex + 1)
+            +     ' из ' + pinnedTopics.length
+            +   '</div>'
+            +   '<div class="tp-cur-title" title="'
+            +     escapeHtml(cur.title) + ' (' + escapeHtml(meta) + ')">'
+            +     escapeHtml(cur.title)
+            +   '</div>'
+            + '</div>'
+            + '<button type="button" class="tp-close"'
+            +         ' data-pin-close="1" title="Скрыть до перезахода">×</button>';
+        // Вставляем сразу после feed-header (если есть), иначе в начало feed.
+        if (header && header.nextSibling) {
+            feed.insertBefore(pin, header.nextSibling);
+        } else if (header) {
+            header.parentNode.appendChild(pin);
+        } else {
+            feed.insertBefore(pin, feed.firstChild);
+        }
+    }
+    function setPinnedTopics(topics) {
+        pinnedTopics = Array.isArray(topics) ? topics : [];
+        // Свежий заход — показываем самую первую тему. Начнётся
+        // циклическое продвижение при кликах.
+        pinnedIndex = 0;
+        pinnedHidden = false;
+        clearTopicHighlight();
+        renderTopicsPin();
+    }
+    function advancePin() {
+        if (!pinnedTopics.length) return;
+        pinnedIndex = (pinnedIndex + 1) % pinnedTopics.length;
+        renderTopicsPin();
+    }
+    function onPinClick(pin) {
+        const cur = pinnedTopics[pinnedIndex];
+        if (!cur) return;
+        applyTopicHighlight(cur.message_ids);
+        if (window.jumpToMessage) window.jumpToMessage(cur.start_id);
+        // После клика — продвигаем «стек» закрепов: следующий тап
+        // покажет уже предыдущую тему (как в Telegram).
+        advancePin();
+    }
+    // Делегированный handler — pin элемент пересоздаётся при каждом
+    // продвижении, на него вешать addEventListener нельзя.
+    feed.addEventListener('click', function(e) {
+        if (e.target.closest('[data-pin-close]')) {
+            e.preventDefault(); e.stopPropagation();
+            pinnedHidden = true;
+            const pin = feed.querySelector('.topics-pin');
+            if (pin) pin.remove();
+            return;
+        }
+        const pin = e.target.closest('.topics-pin');
+        if (pin) {
+            e.preventDefault(); e.stopPropagation();
+            onPinClick(pin);
+        }
+    });
+    function closeTopicsPanel() {
+        if (topicsPanel) { topicsPanel.remove(); topicsPanel = null; }
+    }
+    function positionTopicsPanel(btn) {
+        if (!topicsPanel) return;
+        const rect = btn.getBoundingClientRect();
+        const pw = topicsPanel.offsetWidth;
+        const ph = topicsPanel.offsetHeight;
+        let left = rect.right - pw;
+        left = Math.max(8, Math.min(left, window.innerWidth - pw - 8));
+        let top = rect.bottom + 8;
+        if (top + ph > window.innerHeight - 8) {
+            top = Math.max(8, window.innerHeight - ph - 8);
+        }
+        topicsPanel.style.left = left + 'px';
+        topicsPanel.style.top = top + 'px';
+    }
+    function renderTopicsStatus(text, isError) {
+        if (!topicsPanel) return;
+        const body = topicsPanel.querySelector('.tp-body');
+        if (body) body.innerHTML =
+            '<div class="tp-status' + (isError ? ' error' : '') + '">'
+            + escapeHtml(text) + '</div>';
+    }
+    function renderTopicsList(topics, analyzed, cached) {
+        if (!topicsPanel) return;
+        const body = topicsPanel.querySelector('.tp-body');
+        if (!topics || topics.length === 0) {
+            body.innerHTML =
+                '<div class="tp-status">LLM не выделила тем — попробуйте '
+                + 'увеличить количество сообщений.</div>';
+            return;
+        }
+        body.innerHTML = topics.map(t =>
+            '<div class="tp-item" data-jump-id="' + t.start_id + '">'
+            + '<div class="tp-item-title">' + escapeHtml(t.title) + '</div>'
+            + '<div class="tp-item-meta">'
+            + (t.date ? escapeHtml(t.date) + ' · ' : '')
+            + escapeHtml(t.time || '')
+            + '</div></div>'
+        ).join('');
+        const footer = topicsPanel.querySelector('.tp-footer');
+        if (footer) {
+            footer.textContent = 'Проанализировано: ' + (analyzed || 0)
+                + ' сообщений' + (cached ? ' (из кэша)' : '');
+        }
+    }
+    async function loadTopics(btn) {
+        if (currentContactId == null) return;
+        const cid = currentContactId;
+        const warmHint = topicsWarmedUp
+            ? ''
+            : '\n\nПервый раз за сессию: модель загружается в видеопамять, '
+              + 'это до 1-2 минут. Дальше будет быстро.';
+        renderTopicsStatus('Анализирую ' + topicsLimit + ' сообщений…'
+                           + warmHint);
+        try {
+            const r = await fetch('/contacts/' + cid + '/topics.json?limit='
+                                  + topicsLimit, {credentials: 'same-origin'});
+            const d = await r.json();
+            topicsWarmedUp = true;  // даже при ошибке модель уже подгрузилась
+            if (d.status === 'ok' && Array.isArray(d.topics)) {
+                // Свежие темы — обновляем пин-бар сверху чата.
+                setPinnedTopics(d.topics);
+            }
+            // Контакт могли успеть переключить пока шёл fetch — игнорим.
+            if (String(cid) !== String(currentContactId)) return;
+            if (d.status === 'ok') {
+                renderTopicsList(d.topics, d.analyzed, d.cached);
+            } else if (d.status === 'no_ollama') {
+                renderTopicsStatus(
+                    '🦙 Ollama не запущена.\n\n' + (d.detail || ''),
+                    true);
+            } else if (d.status === 'no_model') {
+                renderTopicsStatus(
+                    '⚠ Модель не скачана.\n\n' + (d.detail || ''),
+                    true);
+            } else if (d.status === 'no_messages') {
+                renderTopicsStatus('В чате нет текстовых сообщений.');
+            } else if (d.status === 'llm_error') {
+                renderTopicsStatus(
+                    '❌ Ошибка LLM:\n' + (d.detail || ''),
+                    true);
+            } else {
+                renderTopicsStatus('Не удалось получить темы.', true);
+            }
+            // Перепозиционируем — высота попапа поменялась.
+            positionTopicsPanel(btn);
+        } catch (e) {
+            renderTopicsStatus('Сеть недоступна.', true);
+        }
+    }
+    function openTopicsPanel(btn) {
+        closeTopicsPanel();
+        const pop = document.createElement('div');
+        pop.className = 'topics-panel';
+        pop.innerHTML =
+            '<div class="tp-head">'
+            +   '<div class="tp-title">📑 Темы чата</div>'
+            +   '<button type="button" class="tp-limit" data-tp-limit="1">'
+            +     'последние ' + topicsLimit + ' ▾'
+            +   '</button>'
+            + '</div>'
+            + '<div class="tp-body"></div>'
+            + '<div class="tp-footer"></div>';
+        document.body.appendChild(pop);
+        topicsPanel = pop;
+        positionTopicsPanel(btn);
+        loadTopics(btn);
+    }
+    function cycleLimit() {
+        // 200 → 500 → 1000 → 2000 → 200 …
+        topicsLimit = (
+            topicsLimit === 200 ? 500 :
+            topicsLimit === 500 ? 1000 :
+            topicsLimit === 1000 ? 2000 : 200);
+        if (!topicsPanel) return;
+        const btnLimit = topicsPanel.querySelector('[data-tp-limit]');
+        if (btnLimit) btnLimit.textContent =
+            'последние ' + topicsLimit + ' ▾';
+        // Перезапускаем анализ для нового объёма.
+        const headerBtn = feed.querySelector('[data-topics-btn]');
+        if (headerBtn) loadTopics(headerBtn);
+    }
+    feed.addEventListener('click', function(e) {
+        const tbtn = e.target.closest('[data-topics-btn]');
+        if (tbtn) {
+            e.preventDefault();
+            e.stopPropagation();
+            openTopicsPanel(tbtn);
+            return;
+        }
+        // Клик по теме в forum-picker → открываем ленту этой темы.
+        const item = e.target.closest('.fp-item');
+        if (item) {
+            e.preventDefault();
+            e.stopPropagation();
+            const tid = item.dataset.topicId;
+            if (tid && currentContactId != null) {
+                openContact(currentContactId, currentMessenger, {topicId: tid});
+            }
+            return;
+        }
+        // «📋» в шапке форум-чата → возврат к списку тем.
+        if (e.target.closest('[data-back-to-topics]')) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (currentContactId != null) {
+                openContact(currentContactId, currentMessenger, {topicId: null});
+            }
+            return;
+        }
+    });
+    document.addEventListener('click', function(e) {
+        if (!topicsPanel) return;
+        if (topicsPanel.contains(e.target)) {
+            // Внутри панели: либо лимит, либо клик по теме.
+            const lim = e.target.closest('[data-tp-limit]');
+            if (lim) {
+                e.preventDefault(); e.stopPropagation();
+                cycleLimit();
+                return;
+            }
+            const item = e.target.closest('[data-jump-id]');
+            if (item) {
+                const id = item.dataset.jumpId;
+                closeTopicsPanel();
+                if (window.jumpToMessage) window.jumpToMessage(id);
+                return;
+            }
+            return;
+        }
+        // Клик вне панели и не по кнопке «📑» — закрываем.
+        if (!e.target.closest('[data-topics-btn]')) closeTopicsPanel();
+    });
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape') closeTopicsPanel();
+    });
+
+    // Файл выбран — показываем превью; отправка только по кнопке «Отправить».
+    feed.addEventListener('change', function(e) {
+        const inp = e.target.closest('#composer-file');
+        if (inp && inp.files && inp.files[0]) {
+            pendingFile = inp.files[0];
+            showPreview(pendingFile);
+            inp.value = '';
+        }
+    });
+    // Авторост поля ввода под текст.
+    feed.addEventListener('input', function(e) {
+        const ta = e.target.closest('#composer-text');
+        if (!ta) return;
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    });
+    // Enter — отправить, Shift+Enter — перенос строки.
+    feed.addEventListener('keydown', function(e) {
+        const ta = e.target.closest('#composer-text');
+        if (ta && e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            const form = ta.closest('#composer');
+            if (form) sendMessage(form);
+        }
+    });
+
+    // Инициализация. Если сервер отрисовал чат (прямой заход /contacts/<id>) —
+    // подхватываем его: фиксируем состояние истории и запускаем поллинг.
+    if (currentContactId) {
+        currentMessenger = messengerFromUrl();
+        currentTopicId = topicIdFromUrl();
+        history.replaceState(
+            {contactId: String(currentContactId),
+             messenger: currentMessenger,
+             topicId: currentTopicId},
+            '', location.pathname + location.search);
+        scrollToBottomSticky();
+        startPolling();
+        // Подгружаем сохранённые «темы чата» (если уже анализировались)
+        // для прямого захода /contacts/<id>. cached_only=1 — НЕ дёргаем
+        // LLM, просто читаем БД; если тем нет — pin-бар не появится.
+        fetch('/contacts/' + currentContactId + '/topics.json?cached_only=1',
+              {credentials: 'same-origin'})
+            .then(r => r.ok ? r.json() : null)
+            .then(d => {
+                if (d && d.status === 'ok' && Array.isArray(d.topics)) {
+                    setPinnedTopics(d.topics);
+                }
+            })
+            .catch(() => {});
+    } else {
+        history.replaceState({contactId: null}, '', location.pathname);
+    }
 })();
 </script>
-{% endif %}
+
+<script>
+// Поиск по контактам и сообщениям. По имени/превью — мгновенно на клиенте;
+// по полному тексту сообщений — серверный /contacts/search.json
+// (текст в БД зашифрован, ищется расшифровкой на сервере).
+(function() {
+    const input = document.getElementById('contact-search-input');
+    const list = document.getElementById('contact-list');
+    if (!input || !list) return;
+
+    let query = '';
+    let serverIds = null;
+    let token = 0;
+    let debounce = null;
+
+    function applyFilter() {
+        const q = query;
+        list.querySelectorAll('.contact-row-wrap').forEach(w => {
+            if (!q) { w.style.display = ''; return; }
+            const cid = parseInt(w.dataset.contactId, 10);
+            const row = w.querySelector('.contact-row');
+            const txt = (row ? row.textContent : '').toLowerCase();
+            const hit = txt.indexOf(q) !== -1 ||
+                        (serverIds && serverIds.has(cid));
+            w.style.display = hit ? '' : 'none';
+        });
+    }
+
+    const resultsBox = document.getElementById('search-results');
+
+    function escHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function highlightSnippet(snippet, q) {
+        // Подсвечиваем все вхождения q (регистронезависимо), не ломая HTML.
+        if (!q) return escHtml(snippet);
+        const esc = escHtml(snippet);
+        const lowerS = esc.toLowerCase();
+        const lowerQ = q.toLowerCase();
+        let out = '';
+        let i = 0;
+        while (i < esc.length) {
+            const idx = lowerS.indexOf(lowerQ, i);
+            if (idx < 0) { out += esc.slice(i); break; }
+            out += esc.slice(i, idx);
+            out += '<mark>' + esc.slice(idx, idx + lowerQ.length) + '</mark>';
+            i = idx + lowerQ.length;
+        }
+        return out;
+    }
+
+    function closeResults() {
+        if (resultsBox) {
+            resultsBox.classList.remove('open');
+            resultsBox.innerHTML = '';
+        }
+    }
+
+    function renderResults(matches, q) {
+        if (!resultsBox) return;
+        if (!matches.length) {
+            resultsBox.innerHTML =
+                '<div class="sr-empty">Ничего не нашлось</div>';
+            resultsBox.classList.add('open');
+            return;
+        }
+        resultsBox.innerHTML = matches.map(m => {
+            const meta = (m.messenger || '') + (m.time ? ' · ' + escHtml(m.time) : '');
+            return '<div class="search-result"'
+                 + ' data-contact-id="' + m.contact_id + '"'
+                 + ' data-message-id="' + m.message_id + '"'
+                 + ' data-messenger="' + escHtml(m.messenger || '') + '">'
+                 + '<div class="sr-head">'
+                 +   '<span class="sr-name">' + escHtml(m.contact_name) + '</span>'
+                 +   '<span class="sr-meta">' + meta + '</span>'
+                 + '</div>'
+                 + '<div class="sr-snippet">' + highlightSnippet(m.snippet, q) + '</div>'
+                 + '</div>';
+        }).join('');
+        resultsBox.classList.add('open');
+    }
+
+    async function runSearch() {
+        const q = input.value.trim().toLowerCase();
+        query = q;
+        if (!q) { serverIds = null; closeResults(); applyFilter(); return; }
+        const my = ++token;
+        try {
+            const r = await fetch(
+                '/contacts/search.json?q=' + encodeURIComponent(q),
+                {credentials: 'same-origin'});
+            if (my !== token) return;
+            if (r.ok) {
+                const data = await r.json();
+                serverIds = new Set(data.contact_ids || []);
+                renderResults(data.matches || [], q);
+            }
+        } catch (e) { /* остаётся клиентская фильтрация */ }
+        if (my === token) applyFilter();
+    }
+
+    input.addEventListener('input', function() {
+        query = input.value.trim().toLowerCase();
+        applyFilter();
+        if (!query) closeResults();
+        clearTimeout(debounce);
+        debounce = setTimeout(runSearch, 250);
+    });
+
+    // Клик по результату — открыть нужный чат и проскроллить к сообщению.
+    if (resultsBox) {
+        resultsBox.addEventListener('click', (e) => {
+            const row = e.target.closest('.search-result');
+            if (!row) return;
+            const cid = row.dataset.contactId;
+            const mid = row.dataset.messageId;
+            const messenger = row.dataset.messenger || null;
+            closeResults();
+            input.value = '';
+            query = '';
+            serverIds = null;
+            applyFilter();
+            if (window.openContactSPA) {
+                window.openContactSPA(cid, messenger, {scrollToMessageId: mid});
+            } else {
+                window.location = '/contacts/' + cid
+                    + (messenger ? '?m=' + encodeURIComponent(messenger) : '')
+                    + '#msg-' + mid;
+            }
+        });
+    }
+    // Закрытие при клике вне.
+    document.addEventListener('click', (e) => {
+        if (!resultsBox) return;
+        if (resultsBox.contains(e.target) || e.target === input) return;
+        closeResults();
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') closeResults();
+    });
+
+    // Поллинг перерисовывает список (innerHTML) — переналожить фильтр.
+    new MutationObserver(() => { if (query) applyFilter(); })
+        .observe(list, { childList: true });
+})();
+</script>
 {% endblock %}

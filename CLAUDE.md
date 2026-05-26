@@ -52,12 +52,12 @@ User
                        └─ 1:N → Messages   ← сообщение, привязано к handle
 ```
 
-`POST /add` ищет `MessengerHandle` по `(user_id, messenger_name, sender_raw)`. Не нашёл — создаёт новый `Contact` с `display_name = sender` и привязывает handle. После создания нового handle [data/matching.py](data/matching.py) сравнивает `sender_normalized` с другими handles того же `user_id`: при сходстве ≥ `MATCH_THRESHOLD = 0.7` создаётся `MergeSuggestion(status='pending')` для подсказки в UI.
+`POST /add` ищет `MessengerHandle` по `(user_id, messenger_name, sender_raw)`. Не нашёл — создаёт новый `Contact` с `display_name = sender` и привязывает handle. Объединение и перенос контактов — только вручную (см. `/contacts/manage`); автоматических подсказок слияния в проекте нет.
 
 UI:
 - `/contacts` — двухпанельный лейаут (список / переписка).
 - `/contacts/<id>` — переписка с контактом, агрегирует сообщения всех его handles.
-- `/contacts/manage` — управление связями: переименование, перемещение handle между контактами, объединение контактов, принятие/скрытие подсказок.
+- `/contacts/manage` — управление связями: переименование, перемещение handle между контактами, объединение контактов.
 
 Старый `/messages` редиректит на `/contacts`.
 
@@ -67,8 +67,8 @@ UI:
 - Engine создаётся с `check_same_thread=False`. Сессия — **per-request** через `flask.g`: `get_db()` создаёт сессию при первом обращении в обработчике, `teardown_appcontext` закрывает.
 - Модели:
   - [data/users.py](data/users.py) — `User`, `Messages`. У `Messages` поля `handle_id` (FK) и `created_at` добавлены под контакты; `sender`/`messenger_name` остаются как исторический снимок.
-  - [data/contacts.py](data/contacts.py) — `Contact`, `MessengerHandle`, `MergeSuggestion`, плюс сервисные функции `find_or_create_handle`, `record_message`, `merge_contacts`.
-- [data/matching.py](data/matching.py) — `normalize`, `similarity_score`, `MATCH_THRESHOLD`, `suggest_merges_for_handle`. Использует `difflib` (stdlib), без новых зависимостей.
+  - [data/contacts.py](data/contacts.py) — `Contact`, `MessengerHandle`, плюс сервисные функции `find_or_create_handle`, `record_message`, `merge_contacts`.
+- [data/matching.py](data/matching.py) — `normalize`, `split_group_sender`, `display_author` (нормализация имён и разбор групповых отправителей вида «группа: имя»).
 - Новые модели должны импортироваться в [data/__all_models.py](data/__all_models.py).
 - `data/db_sessions.py` экспортирует `global_init`, `create_session`, `_reset_for_tests` (последняя — только для pytest-фикстур).
 
@@ -84,7 +84,6 @@ UI:
 - `/download`, `/download/skillwood.apk` — страница и раздача APK Android-клиента.
 - `/contacts`, `/contacts/<id>`, `/contacts/manage` — UI.
 - `/contacts/<id>/rename`, `/contacts/<id>/delete`, `/contacts/merge`, `/contacts/handles/<id>/move` — управление связями.
-- `/contacts/suggestions/<id>/accept`, `.../dismiss` — действия по подсказкам.
 - `/messages/<id>/delete` — удаление одного сообщения.
 
 ### Миграция исторических данных

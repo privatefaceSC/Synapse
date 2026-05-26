@@ -18,6 +18,17 @@ Thumbs.db
 db/*.db
 db/*.backup-*
 
+# Telethon-сессия Telegram (полный доступ к аккаунту — НИКОГДА в репо)
+db/*.session
+db/*.session-journal
+tg.session*
+
+# Локальные секреты Telegram (api_id / api_hash) — НИКОГДА в репо
+tg_credentials.bat
+
+# Локальные настройки Telegram-моста (фильтрация) — у каждого свои
+db/tg_settings.json
+
 # Build artifacts
 dist/
 
@@ -28,6 +39,13 @@ media/
 screen.png
 *.log
 _dump.txt
+intents_dump.txt
+notif_dump*.txt
+
+# Локальные заметки по проекту (не код)
+Аннотация.txt
+Описание проекта.txt
+Техническое задание.txt
 
 # Тесты держим только локально, в репозиторий не кладём
 tests/

@@ -3,18 +3,108 @@
 {% block title %}Synapse — добро пожаловать{% endblock %}
 
 {% block body %}
-<div class="container" style="max-width: 720px;">
-    <div class="card shadow-sm border-0">
-        <div class="card-body p-5 text-center">
-            <h1 class="mb-3">Synapse</h1>
-            <p class="text-muted mb-4">
-                Все уведомления из мессенджеров на одном устройстве -
-                собранные по контактам, а не одной кучей.
-            </p>
-            <div class="d-flex justify-content-center gap-2">
-                <a href="/login" class="btn btn-primary px-4">Вход</a>
-                <a href="/register" class="btn btn-outline-primary px-4">Регистрация</a>
+<style>
+    .lp-wrap { max-width: 720px; }
+    @keyframes lpFadeUp {
+        from { opacity: 0; transform: translateY(18px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .lp-card { opacity: 0; animation: lpFadeUp 0.55s cubic-bezier(.22,1,.36,1) forwards; }
+    .lp-hero {
+        position: relative; overflow: hidden; border: 0; border-radius: 22px;
+        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%);
+        color: #fff; box-shadow: 0 14px 38px rgba(59,130,246,.30);
+        padding: 48px 40px; text-align: center;
+    }
+    .lp-hero::after {
+        content: ""; position: absolute; right: -70px; top: -70px;
+        width: 240px; height: 240px; border-radius: 50%;
+        background: rgba(255,255,255,.10);
+    }
+    .lp-hero::before {
+        content: ""; position: absolute; left: -50px; bottom: -80px;
+        width: 200px; height: 200px; border-radius: 50%;
+        background: rgba(255,255,255,.08);
+    }
+    .lp-hero .inner { position: relative; z-index: 1; }
+    .lp-logo {
+        font-size: 2.6rem; font-weight: 800; letter-spacing: -.02em;
+        margin-bottom: 10px;
+    }
+    .lp-sub { font-size: 1.05rem; opacity: .92; margin-bottom: 28px;
+        line-height: 1.5; }
+    .lp-btn {
+        border-radius: 13px; padding: 12px 28px; font-weight: 600;
+        font-size: 1rem; transition: transform 0.15s ease, box-shadow 0.2s ease;
+    }
+    .lp-btn-light {
+        background: #fff; color: #1d4ed8; border: 0;
+        box-shadow: 0 6px 16px rgba(0,0,0,.18);
+    }
+    .lp-btn-light:hover { transform: translateY(-2px); color: #1d4ed8;
+        box-shadow: 0 10px 24px rgba(0,0,0,.24); }
+    .lp-btn-ghost {
+        background: rgba(255,255,255,.14); color: #fff;
+        border: 1px solid rgba(255,255,255,.45);
+    }
+    .lp-btn-ghost:hover { transform: translateY(-2px);
+        background: rgba(255,255,255,.22); color: #fff; }
+
+    .lp-feat { display: flex; gap: 14px; margin-top: 18px; }
+    .lp-feat .card-soft {
+        flex: 1; background: #fff; border: 1px solid #ecedf1;
+        border-radius: 16px; padding: 18px; text-align: center;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06);
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .lp-feat .ic { font-size: 1.6rem; }
+    .lp-feat .ttl { font-weight: 600; font-size: .95rem; margin-top: 6px;
+        color: #1a2230; }
+    .lp-feat .ds { font-size: .82rem; color: #6b7280; margin-top: 2px; }
+
+    [data-bs-theme="dark"] .lp-feat .card-soft {
+        background: #1a1d24; border-color: #262b34;
+    }
+    [data-bs-theme="dark"] .lp-feat .ttl { color: #e5e7eb; }
+    [data-bs-theme="dark"] .lp-feat .ds { color: #9ca3af; }
+
+    @media (max-width: 560px) { .lp-feat { flex-direction: column; } }
+    @media (prefers-reduced-motion: reduce) {
+        .lp-card { opacity: 1; animation: none; }
+        .lp-btn, .lp-feat .card-soft { transition: none; }
+    }
+</style>
+
+<div class="container lp-wrap">
+    <div class="lp-card lp-hero">
+        <div class="inner">
+            <div class="lp-logo">Synapse</div>
+            <div class="lp-sub">
+                Все уведомления из мессенджеров на одном экране —<br>
+                собранные по людям, а не одной кучей.
             </div>
+            <div class="d-flex justify-content-center gap-3 flex-wrap">
+                <a href="/login" class="btn lp-btn lp-btn-light">Вход</a>
+                <a href="/register" class="btn lp-btn lp-btn-ghost">Регистрация</a>
+            </div>
+        </div>
+    </div>
+
+    <div class="lp-card lp-feat" style="animation-delay:.12s;">
+        <div class="card-soft">
+            <div class="ic">📥</div>
+            <div class="ttl">Всё в одном месте</div>
+            <div class="ds">Telegram, WhatsApp, Max, VK — единая лента</div>
+        </div>
+        <div class="card-soft">
+            <div class="ic">👤</div>
+            <div class="ttl">По людям</div>
+            <div class="ds">Сообщения сгруппированы по контактам</div>
+        </div>
+        <div class="card-soft">
+            <div class="ic">🔒</div>
+            <div class="ttl">Зашифровано</div>
+            <div class="ds">Тексты и медиа хранятся в шифре</div>
         </div>
     </div>
 </div>

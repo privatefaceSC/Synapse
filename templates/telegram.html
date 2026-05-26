@@ -1,0 +1,222 @@
+{% extends 'base.html' %}
+
+{% block title %}Telegram{% endblock %}
+
+{% block body %}
+<style>
+    .tg-wrap { max-width: 520px; }
+    @keyframes tgFadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .tg-card {
+        opacity: 0; animation: tgFadeUp 0.5s cubic-bezier(.22,1,.36,1) forwards;
+        background: #fff; border: 1px solid #ecedf1; border-radius: 18px;
+        box-shadow: 0 6px 24px rgba(16,24,40,.08), 0 1px 2px rgba(16,24,40,.04);
+        padding: 30px 28px;
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .tg-head { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .tg-logo {
+        width: 42px; height: 42px; border-radius: 12px; flex: 0 0 auto;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 1.4rem; background: #e0f0ff; color: #0088cc;
+    }
+    .tg-title { font-weight: 700; font-size: 1.35rem; color: #1a2230; }
+    .tg-sub { color: #6b7280; font-size: .9rem; margin-bottom: 20px; }
+    .tg-card .form-label { font-size: .85rem; font-weight: 600;
+        color: #4b5563; margin-bottom: 4px; }
+    .tg-card .form-control {
+        border-radius: 11px; padding: 11px 13px; border: 1px solid #d6dae2;
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .tg-card .form-control:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .tg-btn { border-radius: 12px; padding: 11px; font-weight: 600;
+        transition: transform .15s ease; }
+    .tg-btn:active { transform: scale(.98); }
+    .tg-status {
+        display: inline-flex; align-items: center; gap: 8px;
+        font-weight: 600; font-size: .95rem;
+    }
+    .tg-dot { width: 9px; height: 9px; border-radius: 50%; }
+    .tg-dot.on  { background: #22c55e; box-shadow: 0 0 0 4px rgba(34,197,94,.2); }
+    .tg-dot.off { background: #9ca3af; }
+    .tg-warn {
+        background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;
+        border-radius: 10px; padding: 10px 13px; font-size: .82rem;
+        line-height: 1.4; margin-top: 16px;
+    }
+    .tg-note { font-size: .82rem; color: #6b7280; margin-top: 14px;
+        line-height: 1.45; }
+    .tg-note code { background: #f1f3f5; padding: 1px 5px; border-radius: 5px; }
+    .tg-filters {
+        margin-top: 18px; padding: 14px 16px;
+        border: 1px solid #ecedf1; border-radius: 12px; background: #f9fafb;
+    }
+    .tg-filters-title {
+        font-size: .85rem; font-weight: 700; color: #4b5563; margin-bottom: 9px;
+    }
+    .tg-filters .form-check { margin-bottom: 5px; }
+    .tg-filters .form-check:last-child { margin-bottom: 0; }
+    .tg-filters .form-check-label { font-size: .87rem; color: #4b5563; }
+
+    [data-bs-theme="dark"] .tg-card {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 6px 24px rgba(0,0,0,.45);
+    }
+    [data-bs-theme="dark"] .tg-title { color: #e5e7eb; }
+    [data-bs-theme="dark"] .tg-card .form-control {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .tg-logo { background: #0a2a3d; color: #4cc2f1; }
+    [data-bs-theme="dark"] .tg-warn {
+        background: #2a1c0c; border-color: #5b3a17; color: #fcd9a8;
+    }
+    [data-bs-theme="dark"] .tg-note code { background: #232831; }
+    [data-bs-theme="dark"] .tg-filters {
+        background: #232831; border-color: #2f3540;
+    }
+    [data-bs-theme="dark"] .tg-filters-title,
+    [data-bs-theme="dark"] .tg-filters .form-check-label { color: #cbd5e1; }
+    @media (prefers-reduced-motion: reduce) {
+        .tg-card { opacity: 1; animation: none; }
+        .tg-btn, .tg-card .form-control { transition: none; }
+    }
+</style>
+
+<div class="container tg-wrap">
+    <div class="tg-card">
+        <div class="tg-head">
+            <span class="tg-logo">✈️</span>
+            <span class="tg-title">Telegram</span>
+        </div>
+        <div class="tg-sub">
+            Приём сообщений напрямую из Telegram, без Android-устройства.
+        </div>
+
+        {% if error %}
+        <div class="alert alert-danger py-2">{{ error }}</div>
+        {% elif tg.error %}
+        <div class="alert alert-warning py-2">{{ tg.error }}</div>
+        {% endif %}
+
+        {% if not tg.available %}
+            <div class="tg-status"><span class="tg-dot off"></span>
+                Библиотека Telethon не установлена</div>
+            <div class="tg-note">
+                Установите зависимости:
+                <code>pip install -r requirements.txt</code>, затем
+                перезапустите сервер.
+            </div>
+        {% elif not tg.configured %}
+            <div class="tg-status"><span class="tg-dot off"></span>
+                Не настроены ключи API</div>
+            <div class="tg-note">
+                Получите <code>api_id</code> и <code>api_hash</code> на
+                <a href="https://my.telegram.org" target="_blank"
+                   rel="noopener">my.telegram.org</a> и задайте переменные
+                окружения перед запуском:<br>
+                <code>TELEGRAM_API_ID</code>, <code>TELEGRAM_API_HASH</code>,
+                <code>TELEGRAM_OWNER_USER_ID</code> (id вашего аккаунта на сайте).
+            </div>
+        {% elif tg.authorized %}
+            <div class="tg-status"><span class="tg-dot on"></span>
+                Подключено{% if tg.phone %} ({{ tg.phone }}){% endif %}</div>
+            <div class="tg-note">
+                Входящие сообщения Telegram теперь попадают в ленту контактов
+                автоматически — Android-клиент для Telegram не нужен.
+            </div>
+
+            <div class="tg-filters">
+                <div class="tg-filters-title">Фильтрация входящих</div>
+                <form method="post" action="/telegram/settings"
+                      class="form-check form-switch m-0">
+                    <input type="hidden" name="field" value="skip_muted">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           name="skip_muted" id="sw-muted"
+                           onchange="this.form.submit()"
+                           {% if tg.skip_muted %}checked{% endif %}>
+                    <label class="form-check-label" for="sw-muted">
+                        Не принимать из чатов с выключенными уведомлениями
+                    </label>
+                </form>
+                <form method="post" action="/telegram/settings"
+                      class="form-check form-switch m-0">
+                    <input type="hidden" name="field" value="skip_archived">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           name="skip_archived" id="sw-archived"
+                           onchange="this.form.submit()"
+                           {% if tg.skip_archived %}checked{% endif %}>
+                    <label class="form-check-label" for="sw-archived">
+                        Не принимать из архивированных чатов
+                    </label>
+                </form>
+                <form method="post" action="/telegram/settings"
+                      class="form-check form-switch mt-3 pt-3 border-top">
+                    <input type="hidden" name="field" value="ghost_mode">
+                    <input class="form-check-input" type="checkbox" role="switch"
+                           name="ghost_mode" id="sw-ghost"
+                           onchange="this.form.submit()"
+                           {% if tg.ghost_mode %}checked{% endif %}>
+                    <label class="form-check-label" for="sw-ghost">
+                        <strong>👻 Режим призрак</strong> —
+                        не сообщать собеседникам, что мы прочитали их сообщения,
+                        не показывать им «печатает…», не пинговать «онлайн».
+                        Telegram не узнает, что мы открыли чат.
+                    </label>
+                </form>
+            </div>
+
+            <form method="post" action="/telegram/logout" class="mt-3"
+                  onsubmit="return confirm('Отключить Telegram? Сессия будет удалена.');">
+                <button class="btn btn-outline-danger tg-btn">Отключить</button>
+            </form>
+        {% elif tg.needs_password %}
+            <form method="post" action="/telegram/password">
+                <div class="mb-3">
+                    <label class="form-label">Пароль двухфакторной защиты</label>
+                    <input type="password" name="password"
+                           class="form-control" required autofocus>
+                </div>
+                <div class="d-grid">
+                    <button class="btn btn-primary tg-btn">Подтвердить</button>
+                </div>
+            </form>
+        {% elif tg.phone %}
+            <form method="post" action="/telegram/code">
+                <div class="mb-3">
+                    <label class="form-label">Код из Telegram</label>
+                    <input type="text" name="code" inputmode="numeric"
+                           class="form-control" placeholder="12345"
+                           required autofocus autocomplete="one-time-code">
+                </div>
+                <div class="d-grid">
+                    <button class="btn btn-primary tg-btn">Войти</button>
+                </div>
+            </form>
+            <div class="tg-note">
+                Код отправлен в приложение Telegram на номер {{ tg.phone }}.
+            </div>
+        {% else %}
+            <form method="post" action="/telegram/connect">
+                <div class="mb-3">
+                    <label class="form-label">Номер телефона</label>
+                    <input type="tel" name="phone" class="form-control"
+                           placeholder="+79991234567" required autofocus>
+                </div>
+                <div class="d-grid">
+                    <button class="btn btn-primary tg-btn">Получить код</button>
+                </div>
+            </form>
+        {% endif %}
+
+        <div class="tg-warn">
+            ⚠️ Сессия Telegram = полный доступ к аккаунту. Это PoC для
+            локального запуска с личным аккаунтом. Файл сессии хранится
+            в <code>db/</code> (не попадает в репозиторий).
+        </div>
+    </div>
+</div>
+{% endblock %}

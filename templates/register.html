@@ -1,62 +1,136 @@
 {% extends 'base.html' %}
 
-{% block title %}
-Регистрация
-{% endblock %}
+{% block title %}Регистрация{% endblock %}
+
 {% block body %}
-<div class="container">
-  <h1><b>Регистрация</b></h1>
-      {% if message %}
-        <div class="alert alert-danger" role="alert">
-        {{ message }}
-        </div>
-      {% endif %}
+<style>
+    .auth-wrap { max-width: 540px; }
+    @keyframes authFadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .auth-card {
+        opacity: 0; animation: authFadeUp 0.5s cubic-bezier(.22,1,.36,1) forwards;
+        background: #fff; border: 1px solid #ecedf1; border-radius: 18px;
+        box-shadow: 0 6px 24px rgba(16,24,40,.08), 0 1px 2px rgba(16,24,40,.04);
+        padding: 32px 30px;
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .auth-title { font-weight: 700; font-size: 1.5rem; margin-bottom: 4px;
+        color: #1a2230; }
+    .auth-sub { color: #6b7280; font-size: .9rem; margin-bottom: 22px; }
+    .auth-card .form-label { font-size: .85rem; font-weight: 600;
+        color: #4b5563; margin-bottom: 4px; }
+    .auth-card .form-control {
+        border-radius: 11px; padding: 11px 13px; border: 1px solid #d6dae2;
+        transition: border-color .15s ease, box-shadow .15s ease;
+    }
+    .auth-card .form-control:focus {
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .auth-btn {
+        border-radius: 12px; padding: 12px; font-weight: 600; font-size: 1rem;
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+        box-shadow: 0 6px 16px rgba(59,130,246,.26);
+    }
+    .auth-btn:hover { transform: translateY(-2px);
+        box-shadow: 0 10px 24px rgba(59,130,246,.34); }
+    .auth-foot { text-align: center; font-size: .88rem; color: #6b7280;
+        margin-top: 18px; }
 
-  <form class="needs-validation" method="POST">
-    <div class="row g-3">
-        <div class="col-sm-6">
-            <label for="name" class="form-label">Имя</label>
-            <input type="text" class="form-control" id="name" name="name" required>
-        </div>
+    [data-bs-theme="dark"] .auth-card {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 6px 24px rgba(0,0,0,.45);
+    }
+    [data-bs-theme="dark"] .auth-title { color: #e5e7eb; }
+    [data-bs-theme="dark"] .auth-card .form-control {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .auth-card { opacity: 1; animation: none; }
+        .auth-btn, .auth-card .form-control { transition: none; }
+    }
+</style>
 
-        <div class="col-sm-6">
-            <label for="surname" class="form-label">Фамилия</label>
-            <input type="text" class="form-control" id="surname" name="surname" required>
-        </div>
+<div class="container auth-wrap">
+    <div class="auth-card">
+        <div class="auth-title">Создать аккаунт</div>
+        <div class="auth-sub">Пара полей — и вы в Synapse</div>
 
-        <div class="col-12">
-            <label for="email" class="form-label">Email</label>
-            <input type="email" class="form-control" id="email" name="email" required>
-        </div>
+        {% if message %}
+        <div class="alert alert-danger py-2" role="alert">{{ message }}</div>
+        {% endif %}
 
-        <div class="col-12">
-            <label for="password" class="form-label">Пароль</label>
-            <input type="password" class="form-control" id="password" name="password" required>
-        </div>
-
-        <div class="col-12">
-            <label for="confirm_password" class="form-label">Подтверждение пароля</label>
-            <input type="password" class="form-control" id="confirm_password" name="confirm_password" required>
-        </div>
-
-        <div class="col-12">
-            <label class="form-label">Пол</label>
-            <div class="mt-2">
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="radio" name="sex" id="male" value="male" checked>
-                    <label class="form-check-label" for="male">Мужской</label>
+        {% set v = values or {} %}
+        <form method="POST">
+            <div class="row g-3">
+                <div class="col-sm-6">
+                    <label for="name" class="form-label">Имя</label>
+                    <input type="text" class="form-control" id="name"
+                           name="name" value="{{ v.get('name', '') }}" required>
                 </div>
-                <div class="form-check form-check-inline">
-                    <input class="form-check-input" type="radio" name="sex" id="female" value="female">
-                    <label class="form-check-label" for="female">Женский</label>
+                <div class="col-sm-6">
+                    <label for="surname" class="form-label">Фамилия</label>
+                    <input type="text" class="form-control" id="surname"
+                           name="surname" value="{{ v.get('surname', '') }}" required>
+                </div>
+                <div class="col-12">
+                    <label for="email" class="form-label">Email</label>
+                    <input type="email" class="form-control" id="email"
+                           name="email" value="{{ v.get('email', '') }}" required>
+                </div>
+                <div class="col-12">
+                    <label for="username" class="form-label">User ID</label>
+                    <input type="text" class="form-control" id="username"
+                           name="username" value="{{ v.get('username', '') }}"
+                           required minlength="3" maxlength="33"
+                           pattern="@?[A-Za-z0-9_]{3,32}" autocomplete="off"
+                           placeholder="например, Private или ivan_petrov">
+                    <div class="form-text">
+                        Латинские буквы, цифры и «_», 3–32 символа.
+                        Цифры не обязательны, «@» можно не писать.
+                        По нему вас найдут во внутреннем мессенджере.
+                    </div>
+                </div>
+                <div class="col-12">
+                    <label for="password" class="form-label">Пароль</label>
+                    <input type="password" class="form-control" id="password"
+                           name="password" required>
+                </div>
+                <div class="col-12">
+                    <label for="confirm_password" class="form-label">
+                        Подтверждение пароля</label>
+                    <input type="password" class="form-control"
+                           id="confirm_password" name="confirm_password" required>
+                </div>
+                <div class="col-12">
+                    <label class="form-label">Пол</label>
+                    <div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio"
+                                   name="sex" id="male" value="male"
+                                   {% if v.get('sex', 'male') != 'female' %}checked{% endif %}>
+                            <label class="form-check-label" for="male">Мужской</label>
+                        </div>
+                        <div class="form-check form-check-inline">
+                            <input class="form-check-input" type="radio"
+                                   name="sex" id="female" value="female"
+                                   {% if v.get('sex') == 'female' %}checked{% endif %}>
+                            <label class="form-check-label" for="female">Женский</label>
+                        </div>
+                    </div>
                 </div>
             </div>
+
+            <div class="d-grid mt-4">
+                <button class="btn btn-primary auth-btn" type="submit">
+                    Зарегистрироваться</button>
+            </div>
+        </form>
+
+        <div class="auth-foot">
+            Уже есть аккаунт? <a href="/login">Войти</a>
         </div>
     </div>
-
-    <hr class="my-4">
-
-    <button class="w-100 btn btn-primary btn-lg" type="submit">Зарегистрироваться</button>
-  </form>
 </div>
 {% endblock %}

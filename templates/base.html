@@ -25,7 +25,9 @@
             width: 44px; height: 44px; border-radius: 50%;
             display: inline-flex; align-items: center; justify-content: center;
             color: #fff; font-weight: 600; flex: 0 0 auto;
+            overflow: hidden;
         }
+        .avatar img { width: 100%; height: 100%; object-fit: cover; }
         #theme-toggle { width: 36px; padding: 0; }
     </style>
 </head>
@@ -36,7 +38,10 @@
             <div class="ms-auto d-flex gap-2 align-items-center">
                 {% if session.get('user_id') %}
                     <a class="btn btn-sm btn-primary" href="/contacts">Контакты</a>
+                    <a class="btn btn-sm btn-outline-primary" href="/messenger">Сообщения</a>
                     <a class="btn btn-sm btn-outline-secondary" href="/contacts/manage">Связи</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="/devices">Устройства</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="/telegram">Telegram</a>
                     {% if session.get('user_id') == 1 %}
                         <a class="btn btn-sm btn-outline-secondary" href="/users">Пользователи</a>
                     {% endif %}

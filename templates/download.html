@@ -3,37 +3,101 @@
 {% block title %}Скачать клиент Synapse{% endblock %}
 
 {% block body %}
-<div class="container" style="max-width: 720px;">
-    <div class="card shadow-sm border-0 mb-3">
-        <div class="card-body">
-            <h2 class="mb-3">Клиент Synapse для Android</h2>
-            <p class="text-muted">
-                Маленькое приложение, которое слушает уведомления вашего планшета и
-                пересылает их на сайт Synapse. Один установочный файл, никаких
-                настроек триггеров и фильтров.
+<style>
+    .dl-wrap { max-width: 720px; }
+    @keyframes dlFadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .dl-card {
+        opacity: 0; animation: dlFadeUp 0.5s cubic-bezier(.22,1,.36,1) forwards;
+        border-radius: 18px;
+        transition: background .25s ease, border-color .25s ease;
+    }
+    .dl-card:nth-child(2) { animation-delay: .1s; }
+    .dl-hero {
+        position: relative; overflow: hidden; border: 0; color: #fff;
+        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+        box-shadow: 0 12px 32px rgba(59,130,246,.28);
+        padding: 32px 30px;
+    }
+    .dl-hero::after {
+        content: ""; position: absolute; right: -60px; top: -60px;
+        width: 200px; height: 200px; border-radius: 50%;
+        background: rgba(255,255,255,.10);
+    }
+    .dl-hero .inner { position: relative; z-index: 1; }
+    .dl-hero h2 { font-weight: 700; margin-bottom: 8px; }
+    .dl-hero p { opacity: .92; margin-bottom: 22px; line-height: 1.5; }
+    .dl-btn {
+        background: #fff; color: #1d4ed8; border: 0; border-radius: 13px;
+        padding: 13px 26px; font-weight: 700; font-size: 1.05rem;
+        box-shadow: 0 6px 16px rgba(0,0,0,.18);
+        transition: transform 0.15s ease, box-shadow 0.2s ease;
+    }
+    .dl-btn:hover { transform: translateY(-2px); color: #1d4ed8;
+        box-shadow: 0 10px 24px rgba(0,0,0,.24); }
+
+    .dl-steps {
+        background: #fff; border: 1px solid #ecedf1; border-radius: 18px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06); padding: 26px 28px;
+    }
+    .dl-steps h5 { font-weight: 700; margin-bottom: 16px; }
+    .dl-step { display: flex; gap: 14px; margin-bottom: 14px; }
+    .dl-step:last-child { margin-bottom: 0; }
+    .dl-step .n {
+        flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%;
+        background: #e0edff; color: #2563eb; font-weight: 700;
+        font-size: .9rem; display: inline-flex;
+        align-items: center; justify-content: center;
+    }
+    .dl-step .tx { color: #374151; line-height: 1.45; padding-top: 2px; }
+
+    [data-bs-theme="dark"] .dl-steps {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .dl-step .n { background: #1c2c44; color: #93c5fd; }
+    [data-bs-theme="dark"] .dl-step .tx { color: #c9ccd3; }
+
+    @media (prefers-reduced-motion: reduce) {
+        .dl-card { opacity: 1; animation: none; }
+        .dl-btn { transition: none; }
+    }
+</style>
+
+<div class="container dl-wrap">
+    <div class="dl-card dl-hero mb-3">
+        <div class="inner">
+            <h2>Клиент Synapse для Android</h2>
+            <p>
+                Маленькое приложение, которое слушает уведомления вашего
+                планшета и пересылает их на сайт. Один установочный файл,
+                никаких настроек триггеров и фильтров.
             </p>
-            <div class="d-grid mb-3">
-                <a href="/download/skillwood.apk" class="btn btn-primary btn-lg">
-                    Скачать APK
-                </a>
-            </div>
+            <a href="/download/skillwood.apk" class="btn dl-btn">⬇ Скачать APK</a>
         </div>
     </div>
 
-    <div class="card shadow-sm border-0">
-        <div class="card-body">
-            <h5>Как установить</h5>
-            <ol>
-                <li>Откройте эту страницу с планшета (или скопируйте APK на него).</li>
-                <li>Нажмите «Скачать APK» и подтвердите загрузку.</li>
-                <li>Откройте скачанный файл - Android спросит разрешение
-                    «Установка из неизвестных источников». Дайте разрешение.</li>
-                <li>Запустите Synapse-клиент. Введите адрес сервера, ваш код
-                    подключения (8 цифр с сайта) и имя устройства.</li>
-                <li>Согласитесь на запрос «Доступ к уведомлениям».</li>
-                <li>Готово - на главной странице сайта появятся ваши контакты.</li>
-            </ol>
-        </div>
+    <div class="dl-card dl-steps">
+        <h5>Как установить</h5>
+        <div class="dl-step"><span class="n">1</span>
+            <span class="tx">Откройте эту страницу с планшета
+                (или скопируйте APK на него).</span></div>
+        <div class="dl-step"><span class="n">2</span>
+            <span class="tx">Нажмите «Скачать APK» и подтвердите загрузку.</span></div>
+        <div class="dl-step"><span class="n">3</span>
+            <span class="tx">Откройте скачанный файл — Android спросит
+                разрешение «Установка из неизвестных источников».
+                Дайте разрешение.</span></div>
+        <div class="dl-step"><span class="n">4</span>
+            <span class="tx">Запустите Synapse-клиент. Введите адрес сервера,
+                ваш код подключения (8 цифр с сайта) и имя устройства.</span></div>
+        <div class="dl-step"><span class="n">5</span>
+            <span class="tx">Согласитесь на запрос «Доступ к уведомлениям».</span></div>
+        <div class="dl-step"><span class="n">6</span>
+            <span class="tx">Готово — на главной странице сайта появятся
+                ваши контакты.</span></div>
     </div>
 </div>
 {% endblock %}

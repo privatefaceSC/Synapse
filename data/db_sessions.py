@@ -31,6 +31,50 @@ def global_init(db_file):
     from . import __all_models
 
     SqlAlchemyBase.metadata.create_all(engine)
+    _apply_light_migrations(engine)
+
+
+def _apply_light_migrations(engine):
+    """Идемпотентно добавляет недостающие nullable-колонки в уже
+    существующую БД. `create_all` создаёт только отсутствующие таблицы,
+    но не дописывает новые колонки в старые — поэтому ALTER вручную.
+    Только аддитивные изменения, данные не трогаются."""
+    wanted = {
+        "messenger_handles": [("tg_chat_id", "BIGINT"),
+                              ("tg_chat_type", "VARCHAR"),
+                              ("package_name", "VARCHAR"),
+                              ("tg_is_forum", "BOOLEAN")],
+        "messages": [("outgoing", "BOOLEAN"), ("tg_message_id", "BIGINT"),
+                     ("reply_to_message_id", "INTEGER"),
+                     ("tg_read_at", "DATETIME"),
+                     ("deleted_at", "DATETIME"),
+                     ("tg_ttl_seconds", "INTEGER"),
+                     ("fwd_from_name", "VARCHAR"),
+                     ("fwd_from_tg_chat_id", "BIGINT"),
+                     ("tg_topic_id", "BIGINT"),
+                     ("tg_topic_title", "VARCHAR")],
+        "contacts": [("avatar_path", "VARCHAR"),
+                     ("pinned_at", "DATETIME"),
+                     ("muted", "BOOLEAN")],
+        "users": [("username", "VARCHAR")],
+    }
+    with engine.begin() as conn:
+        for table, cols in wanted.items():
+            info = conn.exec_driver_sql(f"PRAGMA table_info({table})").fetchall()
+            existing = {row[1] for row in info}
+            for name, sqltype in cols:
+                if name not in existing:
+                    conn.exec_driver_sql(
+                        f"ALTER TABLE {table} ADD COLUMN {name} {sqltype}")
+        # User ID нельзя добавить как UNIQUE-колонку через ALTER в SQLite,
+        # поэтому проставляем существующим пользователям значение по умолчанию
+        # (user<id>) и навешиваем уникальный индекс отдельно.
+        conn.exec_driver_sql(
+            "UPDATE users SET username = 'user' || id "
+            "WHERE username IS NULL OR username = ''")
+        conn.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username "
+            "ON users(username)")
 
 
 def create_session() -> Session:

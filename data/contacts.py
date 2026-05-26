@@ -14,6 +14,14 @@ class Contact(SqlAlchemyBase):
     display_name = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     created_at = sqlalchemy.Column(sqlalchemy.DateTime, default=datetime.datetime.now, nullable=False)
     last_read_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    # Относительный путь к зашифрованному фото профиля (из Telegram).
+    avatar_path = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # Закреплённый сверху списка: NULL = не закреплён, иначе момент закрепления
+    # (по нему сортируем — более свежие pin'ы выше).
+    pinned_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    # Беззвучный режим: True = не показывать браузерные уведомления и не пищать.
+    # Бэйдж непрочитанного всё равно остаётся — это «выключить звук», не «не следить».
+    muted = sqlalchemy.Column(sqlalchemy.Boolean, default=False, nullable=True)
 
     handles = orm.relationship("MessengerHandle", back_populates="contact",
                                foreign_keys="MessengerHandle.contact_id")
@@ -29,6 +37,20 @@ class MessengerHandle(SqlAlchemyBase):
     sender_raw = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     sender_normalized = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     created_at = sqlalchemy.Column(sqlalchemy.DateTime, default=datetime.datetime.now, nullable=False)
+    # Telegram chat_id (peer) — заполняется мостом, нужен для отправки
+    # ответов из веб-панели. У не-Telegram личностей остаётся NULL.
+    tg_chat_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
+    # Тип Telegram-чата: 'private' / 'group' / 'channel'.
+    tg_chat_type = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # True — Telegram-форум (одна супергруппа с множеством «тем-разделов»).
+    # В UI такие чаты показываются особо: при выборе контакта сначала
+    # открывается список тем, и только после клика — лента темы.
+    tg_is_forum = sqlalchemy.Column(sqlalchemy.Boolean, nullable=True,
+                                    default=False)
+    # Android-пакет мессенджера (ru.oneme.app, com.whatsapp и т.п.) — нужен,
+    # чтобы Android-клиент мог найти соответствующее уведомление в шторке
+    # и ответить через RemoteInput. У Telegram-личностей не используется.
+    package_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
 
     __table_args__ = (
         sqlalchemy.UniqueConstraint('user_id', 'messenger_name', 'sender_raw',
@@ -38,29 +60,8 @@ class MessengerHandle(SqlAlchemyBase):
     contact = orm.relationship("Contact", back_populates="handles", foreign_keys=[contact_id])
 
 
-class MergeSuggestion(SqlAlchemyBase):
-    __tablename__ = 'merge_suggestions'
-
-    id = sqlalchemy.Column(sqlalchemy.Integer, primary_key=True, autoincrement=True)
-    user_id = sqlalchemy.Column(sqlalchemy.Integer, sqlalchemy.ForeignKey("users.id"), nullable=False)
-    source_handle_id = sqlalchemy.Column(sqlalchemy.Integer,
-                                         sqlalchemy.ForeignKey("messenger_handles.id"), nullable=False)
-    target_contact_id = sqlalchemy.Column(sqlalchemy.Integer,
-                                          sqlalchemy.ForeignKey("contacts.id"), nullable=False)
-    score = sqlalchemy.Column(sqlalchemy.Float, nullable=False)
-    status = sqlalchemy.Column(sqlalchemy.String, nullable=False, default="pending")
-    created_at = sqlalchemy.Column(sqlalchemy.DateTime, default=datetime.datetime.now, nullable=False)
-
-    __table_args__ = (
-        sqlalchemy.UniqueConstraint('source_handle_id', 'target_contact_id',
-                                    name='uq_suggestion_handle_contact'),
-    )
-
-    source_handle = orm.relationship("MessengerHandle", foreign_keys=[source_handle_id])
-    target_contact = orm.relationship("Contact", foreign_keys=[target_contact_id])
-
-
-def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str):
+def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str,
+                          tg_chat_id=None, tg_chat_type=None, package_name=None):
     from .matching import normalize, split_group_sender
 
     handle = (
@@ -73,6 +74,17 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
         .first()
     )
     if handle:
+        # Дозаполняем chat_id/тип/package_name, если личность была создана
+        # раньше (до появления соответствующей функциональности).
+        if tg_chat_id is not None and handle.tg_chat_id != tg_chat_id:
+            handle.tg_chat_id = tg_chat_id
+            db.flush()
+        if tg_chat_type is not None and handle.tg_chat_type != tg_chat_type:
+            handle.tg_chat_type = tg_chat_type
+            db.flush()
+        if package_name is not None and handle.package_name != package_name:
+            handle.package_name = package_name
+            db.flush()
         return handle
 
     parsed = split_group_sender(sender_raw)
@@ -108,27 +120,17 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
                 else:
                     group_contact_id = existing_group.id
 
-                moved_handle_ids = []
                 old_contact_ids = set()
                 for h in siblings:
                     if h.contact_id != group_contact_id:
                         old_contact_ids.add(h.contact_id)
                         h.contact_id = group_contact_id
-                        moved_handle_ids.append(h.id)
                 db.flush()
 
                 for old_id in old_contact_ids:
                     remaining = (db.query(MessengerHandle)
                                  .filter(MessengerHandle.contact_id == old_id).count())
                     if remaining == 0:
-                        conditions = [MergeSuggestion.target_contact_id == old_id]
-                        if moved_handle_ids:
-                            conditions.append(MergeSuggestion.source_handle_id.in_(moved_handle_ids))
-                        db.query(MergeSuggestion).filter(
-                            MergeSuggestion.status == "pending",
-                            sqlalchemy.or_(*conditions),
-                        ).update({MergeSuggestion.status: "dismissed"},
-                                 synchronize_session=False)
                         db.query(Contact).filter(Contact.id == old_id).delete(
                             synchronize_session=False)
                 db.flush()
@@ -139,6 +141,9 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
                 messenger_name=messenger_name,
                 sender_raw=sender_raw,
                 sender_normalized=normalize(sender_raw),
+                tg_chat_id=tg_chat_id,
+                tg_chat_type=tg_chat_type,
+                package_name=package_name,
             )
             db.add(handle)
             db.flush()
@@ -153,27 +158,70 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
         messenger_name=messenger_name,
         sender_raw=sender_raw,
         sender_normalized=normalize(sender_raw),
+        tg_chat_id=tg_chat_id,
+        tg_chat_type=tg_chat_type,
+        package_name=package_name,
     )
     db.add(handle)
     db.flush()
     return handle
 
 
-def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text: str):
+def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text: str,
+                    tg_chat_id=None, author=None, outgoing=False, tg_chat_type=None,
+                    tg_message_id=None, reply_to_tg_id=None, package_name=None,
+                    tg_ttl_seconds=None, fwd_from_name=None,
+                    fwd_from_tg_chat_id=None, tg_topic_id=None,
+                    tg_topic_title=None, tg_is_forum=None):
+    """Записывает сообщение.
+
+    `sender_raw` — ключ личности (контакта): для лички это имя
+    собеседника, для группы/канала — название чата.
+    `author` — кто именно написал (для подписи над сообщением). Если
+    не задан, совпадает с `sender_raw` — поведение для лички и Android.
+    `outgoing` — True, если сообщение отправлено владельцем аккаунта.
+    `tg_chat_type` — 'private'/'group'/'channel' для Telegram.
+    `reply_to_tg_id` — telegram-id сообщения, на которое это ответ; по
+    нему в том же чате ищется наша запись Messages для цитаты.
+    """
     import datetime as _dt
 
     from .users import Messages
 
-    handle = find_or_create_handle(db, user_id, messenger_name, sender_raw)
+    handle = find_or_create_handle(db, user_id, messenger_name, sender_raw,
+                                   tg_chat_id=tg_chat_id,
+                                   tg_chat_type=tg_chat_type,
+                                   package_name=package_name)
+    # Если мост только что узнал, что чат — форум-канал, отметим
+    # это на handle. Делается лениво — при первом сообщении.
+    if tg_is_forum is not None and bool(handle.tg_is_forum) != bool(tg_is_forum):
+        handle.tg_is_forum = bool(tg_is_forum)
+
+    reply_to_message_id = None
+    if reply_to_tg_id is not None:
+        prior = (db.query(Messages)
+                 .filter(Messages.handle_id == handle.id,
+                         Messages.tg_message_id == reply_to_tg_id).first())
+        if prior is not None:
+            reply_to_message_id = prior.id
+
     now = _dt.datetime.now()
     msg = Messages(
-        sender=sender_raw,
+        sender=author if author is not None else sender_raw,
         text=text,
         messenger_name=messenger_name,
         time=now.strftime("%H:%M"),
         user_id=user_id,
         handle_id=handle.id,
         created_at=now,
+        outgoing=outgoing,
+        tg_message_id=tg_message_id,
+        reply_to_message_id=reply_to_message_id,
+        tg_ttl_seconds=tg_ttl_seconds,
+        fwd_from_name=fwd_from_name,
+        fwd_from_tg_chat_id=fwd_from_tg_chat_id,
+        tg_topic_id=tg_topic_id,
+        tg_topic_title=tg_topic_title,
     )
     db.add(msg)
     db.commit()
@@ -188,20 +236,9 @@ def merge_contacts(db, user_id: int, source_id: int, target_id: int) -> None:
     if not src or not tgt:
         raise LookupError()
 
-    src_handle_ids = [h.id for h in
-                      db.query(MessengerHandle).filter(MessengerHandle.contact_id == source_id).all()]
-
     db.query(MessengerHandle).filter(MessengerHandle.contact_id == source_id).update(
         {MessengerHandle.contact_id: target_id}, synchronize_session=False
     )
-
-    conditions = [MergeSuggestion.target_contact_id == source_id]
-    if src_handle_ids:
-        conditions.append(MergeSuggestion.source_handle_id.in_(src_handle_ids))
-    db.query(MergeSuggestion).filter(
-        MergeSuggestion.status == "pending",
-        sqlalchemy.or_(*conditions),
-    ).update({MergeSuggestion.status: "dismissed"}, synchronize_session=False)
 
     db.delete(src)
     db.commit()

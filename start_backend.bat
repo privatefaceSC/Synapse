@@ -47,6 +47,16 @@ if errorlevel 1 (
     )
 )
 
+rem --- Подгрузить локальные секреты (Telegram api_id/api_hash и т.п.) ---
+rem  Файл tg_credentials.bat не входит в репозиторий. Если его нет —
+rem  Telegram-мост просто молчит, остальное приложение работает как обычно.
+if exist "tg_credentials.bat" (
+    call "tg_credentials.bat"
+    echo Telegram-мост: креды загружены из tg_credentials.bat
+) else (
+    echo Telegram-мост: tg_credentials.bat не найден, мост отключён
+)
+
 rem --- Запуск сервера ---
 echo.
 echo Сервер Synapse запускается на http://localhost:5000

@@ -3,95 +3,332 @@
 {% block title %}Главная — {{ user.name }}{% endblock %}
 
 {% block body %}
-<div class="container" style="max-width: 720px;">
-    <div class="card shadow-sm border-0 mb-3">
-        <div class="card-body">
-            <h2 class="mb-1">Привет, {{ user.name }}!</h2>
-            <p class="text-muted mb-0">
-                {% if device_connected %}
-                    Устройство подключено. Уведомления приходят автоматически.
-                {% else %}
-                    Устройство ещё не подключено —
-                    <a href="/code">введите код в Synapse</a>.
-                {% endif %}
-            </p>
-        </div>
-    </div>
+<style>
+    .home-wrap { max-width: 760px; }
 
-    <div class="card shadow-sm border-0 mb-3">
-        <div class="card-body d-flex align-items-center gap-3 flex-wrap">
-            {% if has_avatar %}
-                <img src="/home/avatar" alt="Аватар"
-                     class="rounded-circle border"
-                     style="width:96px;height:96px;object-fit:cover;">
-            {% else %}
-                <div class="rounded-circle border d-flex align-items-center justify-content-center"
-                     style="width:96px;height:96px;background:#dee2e6;font-size:2.2rem;font-weight:600;">
-                    {{ user.name[0]|upper if user.name else '?' }}
-                </div>
-            {% endif %}
+    /* Появление блоков с лёгким каскадом. */
+    @keyframes homeFadeUp {
+        from { opacity: 0; transform: translateY(16px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .home-card {
+        opacity: 0;
+        animation: homeFadeUp 0.5s cubic-bezier(.22,1,.36,1) forwards;
+    }
+    .home-card:nth-child(1) { animation-delay: .02s; }
+    .home-card:nth-child(2) { animation-delay: .10s; }
+    .home-card:nth-child(3) { animation-delay: .18s; }
+    .home-card:nth-child(4) { animation-delay: .26s; }
+    .home-card:nth-child(5) { animation-delay: .34s; }
+
+    .card-soft {
+        background: #fff; border: 1px solid #ecedf1; border-radius: 18px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background 0.25s ease, border-color 0.25s ease,
+                    box-shadow 0.2s ease, transform 0.2s ease;
+    }
+
+    /* Hero: приветствие + аватар. */
+    .hero {
+        position: relative; overflow: hidden; border: 0;
+        background: linear-gradient(135deg, #3b82f6 0%, #6366f1 55%, #8b5cf6 100%);
+        color: #fff; border-radius: 20px;
+        box-shadow: 0 10px 30px rgba(59,130,246,.28);
+    }
+    .hero::after {
+        content: ""; position: absolute; right: -60px; top: -60px;
+        width: 220px; height: 220px; border-radius: 50%;
+        background: rgba(255,255,255,.10);
+    }
+    .hero .inner {
+        position: relative; z-index: 1; padding: 26px 28px;
+        display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+    }
+    .avatar-edit {
+        position: relative; width: 96px; height: 96px; flex: 0 0 auto;
+        cursor: pointer; border-radius: 50%; display: block;
+    }
+    .avatar-edit img, .avatar-edit .ph {
+        width: 96px; height: 96px; border-radius: 50%; object-fit: cover;
+        border: 3px solid rgba(255,255,255,.65);
+        box-shadow: 0 6px 18px rgba(16,24,40,.30);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 2.4rem; font-weight: 700; color: #fff;
+        background: rgba(255,255,255,.18);
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    .avatar-edit:hover img, .avatar-edit:hover .ph { transform: scale(1.04); }
+    .avatar-edit .overlay {
+        position: absolute; inset: 0; border-radius: 50%;
+        background: rgba(0,0,0,.45); color: #fff;
+        display: flex; align-items: center; justify-content: center;
+        font-size: .8rem; font-weight: 600; text-align: center;
+        opacity: 0; transition: opacity 0.18s ease;
+    }
+    .avatar-edit:hover .overlay { opacity: 1; }
+    .hero h2 { font-weight: 700; margin: 0 0 6px; }
+    .status-pill {
+        display: inline-flex; align-items: center; gap: 7px;
+        background: rgba(255,255,255,.18); backdrop-filter: blur(4px);
+        padding: 6px 13px; border-radius: 999px; font-size: .86rem;
+        font-weight: 500;
+    }
+    .status-pill .dot {
+        width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
+    }
+    .status-pill .dot.on  { background: #4ade80; box-shadow: 0 0 0 4px rgba(74,222,128,.25); }
+    .status-pill .dot.off { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251,191,36,.25); }
+    .status-pill a { color: #fff; text-decoration: underline; }
+
+    /* Статистика. */
+    .stat { padding: 20px; height: 100%; }
+    .stat:hover { transform: translateY(-4px);
+        box-shadow: 0 8px 22px rgba(16,24,40,.10); }
+    .stat .ico {
+        width: 42px; height: 42px; border-radius: 12px; font-size: 1.2rem;
+        display: inline-flex; align-items: center; justify-content: center;
+        margin-bottom: 10px;
+    }
+    .stat .ico.c1 { background: #e0edff; color: #2563eb; }
+    .stat .ico.c2 { background: #e7f9f0; color: #059669; }
+    .stat .ico.c3 { background: #fdeede; color: #d97706; }
+    .stat .label { color: #6b7280; font-size: .82rem; margin-bottom: 2px; }
+    .stat .num { font-size: 2.1rem; font-weight: 700; line-height: 1;
+        color: #1a2230; }
+
+    /* Код подключения. */
+    .code-box {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 14px; flex-wrap: wrap;
+        background: #f6f8fc; border: 1px dashed #c7d2e3;
+        border-radius: 14px; padding: 14px 18px; margin-top: 8px;
+    }
+    .code-box .code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 1.7rem; font-weight: 700; letter-spacing: .22em;
+        color: #1d4ed8;
+    }
+    .copy-btn {
+        border: 1px solid #c7d2e3; background: #fff; color: #1d4ed8;
+        border-radius: 10px; padding: 7px 14px; font-size: .88rem;
+        font-weight: 600; cursor: pointer;
+        transition: background 0.15s ease, transform 0.1s ease;
+    }
+    .copy-btn:hover { background: #eef4ff; }
+    .copy-btn:active { transform: scale(.96); }
+    .copy-btn.done { background: #e7f9f0; border-color: #a7e8c8; color: #059669; }
+
+    .btn-cta {
+        border-radius: 14px; padding: 14px; font-size: 1.05rem;
+        font-weight: 600; transition: transform 0.15s ease, box-shadow 0.2s ease;
+        box-shadow: 0 6px 18px rgba(59,130,246,.28);
+    }
+    .btn-cta:hover { transform: translateY(-2px);
+        box-shadow: 0 10px 26px rgba(59,130,246,.36); }
+
+    /* Тёмная тема. */
+    [data-bs-theme="dark"] .card-soft {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .stat .num { color: #e5e7eb; }
+    [data-bs-theme="dark"] .stat .label { color: #9ca3af; }
+    [data-bs-theme="dark"] .stat:hover { box-shadow: 0 8px 22px rgba(0,0,0,.5); }
+    [data-bs-theme="dark"] .stat .ico.c1 { background: #1c2c44; color: #93c5fd; }
+    [data-bs-theme="dark"] .stat .ico.c2 { background: #15301f; color: #6ee7b7; }
+    [data-bs-theme="dark"] .stat .ico.c3 { background: #3a2a14; color: #fcd34d; }
+    [data-bs-theme="dark"] .code-box {
+        background: #14171d; border-color: #344155;
+    }
+    [data-bs-theme="dark"] .code-box .code { color: #93c5fd; }
+    [data-bs-theme="dark"] .copy-btn {
+        background: #232831; border-color: #344155; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .copy-btn:hover { background: #1c2c44; }
+    [data-bs-theme="dark"] .copy-btn.done {
+        background: #15301f; border-color: #2f6b48; color: #6ee7b7;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+        .home-card { opacity: 1; animation: none; }
+        .card-soft, .stat, .btn-cta, .avatar-edit img,
+        .avatar-edit .ph, .copy-btn { transition: none; }
+    }
+</style>
+
+<div class="container home-wrap">
+    <form id="avatar-form" method="post" action="/home/avatar"
+          enctype="multipart/form-data" class="d-none">
+        <input id="avatar-input" type="file" name="avatar"
+               accept="image/*" required>
+    </form>
+
+    <div class="home-card hero mb-3">
+        <div class="inner">
+            <label for="avatar-input" class="avatar-edit" title="Изменить фото">
+                {% if has_avatar %}
+                    <img src="/home/avatar" alt="Аватар">
+                {% else %}
+                    <span class="ph">{{ user.name[0]|upper if user.name else '?' }}</span>
+                {% endif %}
+                <span class="overlay">✎ Изменить</span>
+            </label>
             <div class="flex-grow-1">
-                <div class="fw-semibold mb-1">Аватар профиля</div>
-                <form method="post" action="/home/avatar" enctype="multipart/form-data"
-                      class="d-flex gap-2 align-items-center flex-wrap">
-                    <input type="file" name="avatar" accept="image/*"
-                           class="form-control" style="max-width:320px;" required>
-                    <button type="submit" class="btn btn-primary">Загрузить</button>
-                </form>
-            </div>
-        </div>
-    </div>
-
-    <div class="row g-3">
-        <div class="col-md-4">
-            <div class="card shadow-sm border-0 h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Контакты</div>
-                    <div class="display-6 fw-semibold">{{ contacts_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card shadow-sm border-0 h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Сообщения</div>
-                    <div class="display-6 fw-semibold">{{ messages_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-md-4">
-            <div class="card shadow-sm border-0 h-100">
-                <div class="card-body">
-                    <div class="text-muted small">Подсказки слияния</div>
-                    <div class="display-6 fw-semibold">{{ pending_suggestions }}</div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="card shadow-sm border-0 mt-3">
-        <div class="card-body">
-            <div class="d-flex justify-content-between align-items-center mb-3">
-                <strong>Клиент для Android</strong>
-                <a href="/download" class="btn btn-outline-primary">Скачать</a>
-            </div>
-            <div class="text-muted small">Код подключения (введите в приложении)</div>
-            <div class="d-flex align-items-center gap-2 mt-1">
-                <span class="fs-3 fw-bold font-monospace"
-                      style="letter-spacing:.2em;">{{ connect_code }}</span>
-            </div>
-            <div class="form-text">
+                <h2>Привет, {{ user.name }}!</h2>
                 {% if device_connected %}
-                    Устройство уже привязано.
+                    <span class="status-pill">
+                        <span class="dot on"></span>
+                        Устройство подключено — уведомления приходят автоматически
+                    </span>
                 {% else %}
-                    Откройте Synapse на телефоне и введите этот код.
+                    <span class="status-pill">
+                        <span class="dot off"></span>
+                        Устройство не подключено —
+                        <a href="/code">введите код</a>
+                    </span>
                 {% endif %}
+                <div class="mt-2">
+                    <span class="status-pill">
+                        🆔 <span id="uid-value">@{{ username }}</span>
+                        <a href="#" id="uid-edit" title="Изменить User ID"
+                           style="margin-left:2px;">✎</a>
+                    </span>
+                </div>
             </div>
         </div>
     </div>
 
-    <div class="d-grid mt-4">
-        <a href="/contacts" class="btn btn-primary btn-lg">Открыть переписку</a>
+    <div class="home-card row g-3 mb-3">
+        <div class="col-md-6">
+            <div class="card-soft stat">
+                <div class="ico c1">👤</div>
+                <div class="label">Контакты</div>
+                <div class="num" data-count="{{ contacts_count }}">{{ contacts_count }}</div>
+            </div>
+        </div>
+        <div class="col-md-6">
+            <div class="card-soft stat">
+                <div class="ico c2">💬</div>
+                <div class="label">Сообщения</div>
+                <div class="num" data-count="{{ messages_count }}">{{ messages_count }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="home-card card-soft mb-3" style="padding: 20px;">
+        <div class="d-flex justify-content-between align-items-center mb-1">
+            <strong>Клиент для Android</strong>
+            <a href="/download" class="btn btn-outline-primary btn-sm">Скачать</a>
+        </div>
+        <div class="text-muted small">Код подключения — введите в приложении Synapse</div>
+        <div class="code-box">
+            <span class="code" id="connect-code">{{ connect_code }}</span>
+            <button type="button" class="copy-btn" id="copy-code">Копировать</button>
+        </div>
+        <div class="form-text mt-2">
+            {% if device_connected %}
+                Устройство уже привязано.
+            {% else %}
+                Откройте Synapse на телефоне и введите этот код.
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="home-card d-grid gap-2">
+        <a href="/contacts" class="btn btn-primary btn-cta">Открыть портал мессенджеров</a>
+        <a href="/messenger" class="btn btn-primary btn-cta">Открыть мессенджер Synapse</a>
     </div>
 </div>
+
+<script>
+// Аватар: выбор файла сразу отправляет форму — без отдельной кнопки.
+(function() {
+    var input = document.getElementById('avatar-input');
+    var form = document.getElementById('avatar-form');
+    if (input && form) {
+        input.addEventListener('change', function() {
+            if (input.files && input.files.length) form.submit();
+        });
+    }
+})();
+
+// Плавный счёт чисел статистики от 0 до значения.
+(function() {
+    if (window.matchMedia &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    document.querySelectorAll('.num[data-count]').forEach(function(el) {
+        var target = parseInt(el.dataset.count, 10) || 0;
+        if (target <= 0) return;
+        var dur = 800, start = null;
+        el.textContent = '0';
+        function step(ts) {
+            if (start === null) start = ts;
+            var p = Math.min((ts - start) / dur, 1);
+            var eased = 1 - Math.pow(1 - p, 3);
+            el.textContent = Math.round(eased * target);
+            if (p < 1) requestAnimationFrame(step);
+            else el.textContent = target;
+        }
+        requestAnimationFrame(step);
+    });
+})();
+
+// Копирование кода подключения с обратной связью.
+(function() {
+    var btn = document.getElementById('copy-code');
+    var code = document.getElementById('connect-code');
+    if (!btn || !code) return;
+    btn.addEventListener('click', function() {
+        var text = code.textContent.trim();
+        function done() {
+            btn.textContent = 'Скопировано ✓';
+            btn.classList.add('done');
+            setTimeout(function() {
+                btn.textContent = 'Копировать';
+                btn.classList.remove('done');
+            }, 1600);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(done);
+        } else {
+            var ta = document.createElement('textarea');
+            ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+            document.body.appendChild(ta); ta.select();
+            try { document.execCommand('copy'); } catch (e) {}
+            ta.remove(); done();
+        }
+    });
+})();
+
+// Изменение User ID — по нему пользователя находят во внутреннем мессенджере.
+(function() {
+    var edit = document.getElementById('uid-edit');
+    var value = document.getElementById('uid-value');
+    if (!edit || !value) return;
+    edit.addEventListener('click', async function(e) {
+        e.preventDefault();
+        var current = value.textContent.replace(/^@/, '');
+        var next = prompt(
+            'Новый User ID (латиница, цифры, «_», 3–32 символа):', current);
+        if (next == null) return;
+        next = next.trim().toLowerCase();
+        if (!next || next === current) return;
+        try {
+            var r = await fetch('/home/username', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: new URLSearchParams({username: next}),
+            });
+            var data = await r.json().catch(function() { return {}; });
+            if (r.ok && data.ok) {
+                value.textContent = '@' + data.username;
+            } else {
+                alert(data.error || 'Не удалось изменить User ID');
+            }
+        } catch (err) {
+            alert('Сеть недоступна — User ID не изменён.');
+        }
+    });
+})();
+</script>
 {% endblock %}

@@ -8,3 +8,6 @@ SQLAlchemy==2.0.49
 sqlalchemy-serializer==1.6.3
 Werkzeug==3.1.8
 WTForms==3.2.1
+# Опционально: интеграция с Telegram (PoC). Без неё приложение работает
+# как раньше, /telegram показывает «не настроено».
+Telethon==1.41.2

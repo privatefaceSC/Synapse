@@ -4,128 +4,705 @@
 
 {% block body %}
 <style>
-    .suggestion-card {
-        border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px 16px;
-        background: #fff; margin-bottom: 10px;
+    .mng-wrap { max-width: 960px; }
+
+    @keyframes mngFadeUp {
+        from { opacity: 0; transform: translateY(14px); }
+        to   { opacity: 1; transform: translateY(0); }
     }
-    .suggestion-card .merge-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-    .suggestion-card .chip {
-        display: inline-flex; align-items: center; gap: 6px;
-        background: #f1f3f5; padding: 4px 10px; border-radius: 999px;
-        font-size: 13px;
-    }
-    .suggestion-card .score { font-size: 12px; color: #6b7280; }
-    .contact-card {
-        border: 1px solid #e5e7eb; border-radius: 12px; padding: 14px 16px;
-        background: #fff; margin-bottom: 10px;
-    }
-    .contact-card .header { display: flex; align-items: center; gap: 12px; }
-    .handle-row {
-        display: flex; align-items: center; gap: 10px; padding: 8px 12px;
-        background: #f8f9fb; border-radius: 8px; margin-top: 8px;
-        flex-wrap: wrap;
-    }
-    .handle-row .messenger {
-        font-size: 12px; color: #6b7280; padding: 2px 8px; border-radius: 999px;
-        background: #fff; border: 1px solid #e5e7eb;
+    @keyframes mngFadeOut {
+        to { opacity: 0; transform: scale(.96); }
     }
 
-    /* Тёмная тема */
-    [data-bs-theme="dark"] .suggestion-card,
-    [data-bs-theme="dark"] .contact-card {
-        background: #1a1d24; border-color: #2a2f3a;
+    .contact-card {
+        position: relative;
+        opacity: 0; animation: mngFadeUp 0.45s cubic-bezier(.22,1,.36,1) forwards;
+        border: 1px solid #ecedf1; border-radius: 16px; padding: 16px 18px;
+        background: #fff; margin-bottom: 12px;
+        box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
+        transition: background .25s ease, border-color .2s ease,
+                    box-shadow .2s ease, transform .2s ease;
     }
-    [data-bs-theme="dark"] .suggestion-card .chip { background: #2a2f3a; color: #e5e7eb; }
-    [data-bs-theme="dark"] .suggestion-card .score { color: #9ca3af; }
-    [data-bs-theme="dark"] .handle-row { background: #232831; }
-    [data-bs-theme="dark"] .handle-row .messenger {
+    .contact-card:hover { box-shadow: 0 6px 18px rgba(16,24,40,.09); }
+    .contact-card.removing { animation: mngFadeOut .25s ease forwards; }
+
+    .contact-card.drop-target {
+        border-color: #3b82f6;
+        background: #eff6ff;
+        transform: scale(1.01);
+        box-shadow: 0 0 0 3px rgba(59,130,246,.18);
+    }
+
+    .contact-card .header { display: flex; align-items: center; gap: 12px; }
+    .contact-card .name-input {
+        flex: 1 1 auto; border: 1px solid transparent; background: transparent;
+        font-weight: 600; font-size: 16px; color: #1a2230;
+        padding: 6px 10px; border-radius: 10px;
+        transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .contact-card .name-input:hover { background: #f6f8fc; }
+    .contact-card .name-input:focus {
+        outline: none; background: #fff;
+        border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+
+    .card-actions { display: flex; gap: 6px; align-items: center; }
+    .icon-btn {
+        width: 34px; height: 34px; border: 1px solid #e6e8ee; background: #fff;
+        border-radius: 10px; display: inline-flex; align-items: center;
+        justify-content: center; color: #475569;
+        transition: background .15s ease, color .15s ease, border-color .15s ease;
+        cursor: pointer; font-size: 14px;
+    }
+    .icon-btn:hover { background: #f6f8fc; color: #1a2230; }
+    .icon-btn.danger:hover { background: #fee2e2; color: #b91c1c; border-color: #fecaca; }
+    .icon-btn.primary:hover { background: #dbeafe; color: #1d4ed8; border-color: #bfdbfe; }
+
+    .meta-row {
+        margin-top: 10px; font-size: 13px; color: #6b7280;
+        display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    }
+    .meta-row .dot { color: #cbd5e1; }
+    .meta-row .messengers { display: flex; gap: 4px; flex-wrap: wrap; }
+    .meta-row .messenger-tag {
+        font-size: 11px; color: #475569; background: #f1f5f9;
+        padding: 2px 8px; border-radius: 999px; font-weight: 500;
+    }
+
+    .handles-list { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+    .handle-chip {
+        display: flex; align-items: center; gap: 10px; padding: 9px 13px;
+        background: #f6f8fc; border-radius: 11px; cursor: grab;
+        border: 1px solid transparent;
+        transition: background .15s ease, border-color .15s ease,
+                    box-shadow .15s ease, transform .15s ease;
+    }
+    .handle-chip:hover {
+        background: #eef2ff; border-color: #c7d2fe;
+        transform: translateX(2px);
+    }
+    .handle-chip:active { cursor: grabbing; }
+    .handle-chip.dragging {
+        opacity: .4; transform: scale(.98);
+    }
+    .handle-chip .messenger {
+        font-size: 12px; color: #2563eb; padding: 3px 10px; border-radius: 999px;
+        background: #e0edff; font-weight: 600;
+    }
+    .handle-chip .grip {
+        color: #9ca3af; font-size: 14px; line-height: 1; user-select: none;
+    }
+    .handle-chip .sender {
+        color: #1a2230; font-size: 14px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        flex: 1 1 auto; min-width: 0;
+    }
+    .handle-chip .extract-btn {
+        flex: 0 0 auto; width: 26px; height: 26px;
+        border: 1px solid transparent; background: transparent;
+        border-radius: 7px; color: #94a3b8;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 13px; line-height: 1; cursor: pointer;
+        transition: background .15s ease, color .15s ease, border-color .15s ease;
+    }
+    .handle-chip:hover .extract-btn { color: #475569; }
+    .handle-chip .extract-btn:hover {
+        background: #e0edff; color: #1d4ed8; border-color: #bfdbfe;
+    }
+    [data-bs-theme="dark"] .handle-chip:hover .extract-btn { color: #cbd5e1; }
+    [data-bs-theme="dark"] .handle-chip .extract-btn:hover {
+        background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
+    }
+
+    .empty-handles {
+        color: #9ca3af; font-size: 13px; padding: 10px 0;
+        font-style: italic;
+    }
+
+    /* Модалки */
+    .mng-modal-backdrop {
+        position: fixed; inset: 0; background: rgba(15,23,42,.55);
+        display: none; align-items: center; justify-content: center;
+        z-index: 1080; padding: 20px;
+        animation: mngFadeUp .2s ease;
+    }
+    .mng-modal-backdrop.open { display: flex; }
+    .mng-modal {
+        background: #fff; border-radius: 16px;
+        box-shadow: 0 24px 48px rgba(15,23,42,.25);
+        width: 100%; max-width: 460px; padding: 22px 24px;
+    }
+    .mng-modal h5 { margin: 0 0 10px; font-weight: 600; }
+    .mng-modal .hint { color: #6b7280; font-size: 14px; margin-bottom: 14px; }
+    .mng-modal .form-control { border-radius: 10px; }
+    .mng-modal-actions {
+        display: flex; gap: 8px; justify-content: flex-end; margin-top: 16px;
+    }
+
+    .merge-pick-list {
+        max-height: 240px; overflow-y: auto; margin-top: 10px;
+        border: 1px solid #ecedf1; border-radius: 10px;
+    }
+    .merge-pick-row {
+        display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+        cursor: pointer; border-bottom: 1px solid #f1f2f5;
+        transition: background .12s ease;
+    }
+    .merge-pick-row:last-child { border-bottom: none; }
+    .merge-pick-row:hover { background: #f6f8fc; }
+    .merge-pick-row .avatar { width: 32px; height: 32px; font-size: 13px; }
+    .merge-pick-row .who { font-weight: 500; color: #1a2230; }
+    .merge-pick-row .small-meta { color: #6b7280; font-size: 12px; }
+    .merge-pick-empty {
+        text-align: center; color: #9ca3af; padding: 18px;
+        font-size: 13px; font-style: italic;
+    }
+
+    /* Тосты */
+    .toast-stack {
+        position: fixed; right: 18px; bottom: 18px; z-index: 1100;
+        display: flex; flex-direction: column; gap: 8px;
+        pointer-events: none;
+    }
+    @keyframes toastIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to   { opacity: 1; transform: translateY(0); }
+    }
+    .mng-toast {
+        background: #1f2937; color: #fff; padding: 11px 16px;
+        border-radius: 11px; font-size: 14px; min-width: 200px;
+        box-shadow: 0 6px 18px rgba(0,0,0,.25);
+        animation: toastIn .2s ease;
+        pointer-events: auto;
+    }
+    .mng-toast.error { background: #b91c1c; }
+    .mng-toast.success { background: #047857; }
+
+    /* Тёмная тема */
+    [data-bs-theme="dark"] .contact-card {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .contact-card:hover { box-shadow: 0 6px 18px rgba(0,0,0,.5); }
+    [data-bs-theme="dark"] .contact-card.drop-target {
+        background: #1c2c44; border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59,130,246,.32);
+    }
+    [data-bs-theme="dark"] .contact-card .name-input { color: #e5e7eb; }
+    [data-bs-theme="dark"] .contact-card .name-input:hover { background: #232831; }
+    [data-bs-theme="dark"] .contact-card .name-input:focus { background: #1a1d24; }
+    [data-bs-theme="dark"] .icon-btn {
         background: #1a1d24; border-color: #2a2f3a; color: #9ca3af;
+    }
+    [data-bs-theme="dark"] .icon-btn:hover { background: #232831; color: #e5e7eb; }
+    [data-bs-theme="dark"] .icon-btn.danger:hover {
+        background: #3a1f1f; color: #fca5a5; border-color: #5b2727;
+    }
+    [data-bs-theme="dark"] .icon-btn.primary:hover {
+        background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
+    }
+    [data-bs-theme="dark"] .handle-chip {
+        background: #232831; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .handle-chip:hover {
+        background: #1c2c44; border-color: #2c3f5e;
+    }
+    [data-bs-theme="dark"] .handle-chip .sender { color: #e5e7eb; }
+    [data-bs-theme="dark"] .handle-chip .messenger {
+        background: #1c2c44; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .meta-row { color: #9ca3af; }
+    [data-bs-theme="dark"] .meta-row .messenger-tag {
+        background: #232831; color: #cbd5e1;
+    }
+    [data-bs-theme="dark"] .empty-handles { color: #6b7280; }
+    [data-bs-theme="dark"] .mng-modal {
+        background: #1a1d24; color: #e5e7eb;
+        box-shadow: 0 24px 48px rgba(0,0,0,.6);
+    }
+    [data-bs-theme="dark"] .mng-modal .hint { color: #9ca3af; }
+    [data-bs-theme="dark"] .merge-pick-list { border-color: #262b34; }
+    [data-bs-theme="dark"] .merge-pick-row { border-bottom-color: #232831; }
+    [data-bs-theme="dark"] .merge-pick-row:hover { background: #232831; }
+    [data-bs-theme="dark"] .merge-pick-row .who { color: #e5e7eb; }
+    [data-bs-theme="dark"] .merge-pick-row .small-meta { color: #9ca3af; }
+    [data-bs-theme="dark"] .merge-pick-empty { color: #6b7280; }
+
+    @media (prefers-reduced-motion: reduce) {
+        .contact-card, .handle-chip, .mng-modal-backdrop, .mng-toast {
+            animation: none; transition: none;
+        }
+        .contact-card { opacity: 1; }
+        .handle-chip:hover { transform: none; }
     }
 </style>
 
-<div class="container" style="max-width: 900px;">
-    <div class="d-flex justify-content-between align-items-center mb-3">
+<div class="container mng-wrap">
+    <div class="d-flex justify-content-between align-items-center mb-2">
         <h3 class="mb-0">Связи между контактами</h3>
         <a href="/contacts" class="btn btn-outline-secondary btn-sm">← К контактам</a>
     </div>
 
-    <p class="text-muted">
-        Один и тот же человек может быть в нескольких мессенджерах под разными именами.
-        Здесь можно их связать, переименовать контакт или передвинуть «личность» к другому контакту.
+    <p class="text-muted mb-4">
+        Один и тот же человек может быть в нескольких мессенджерах под разными
+        именами. Перетащите личность на другой контакт, нажмите
+        «Объединить с…», чтобы склеить два контакта целиком,
+        или «✕», чтобы удалить контакт со всеми его сообщениями.
     </p>
 
-    {% if suggestions %}
-    <div class="mb-4">
-        <h5 class="mb-2">Возможно, это один человек</h5>
-        <p class="text-muted small mb-3">
-            Программа нашла похожие имена. Решение — за вами.
-        </p>
-        {% for s in suggestions %}
-        <div class="suggestion-card">
-            <div class="merge-line">
-                <span class="chip">
-                    <strong>{{ s.source_handle.sender_raw }}</strong>
-                    <span class="text-muted">{{ s.source_handle.messenger_name }}</span>
-                </span>
-                <span>≈</span>
-                <span class="chip">
-                    <strong>{{ s.target_contact.display_name }}</strong>
-                </span>
-                <span class="score ms-2">сходство {{ "%.0f"|format(s.score * 100) }}%</span>
-                <span class="ms-auto d-flex gap-2">
-                    <form method="post" action="/contacts/suggestions/{{ s.id }}/accept" class="d-inline">
-                        <button class="btn btn-sm btn-success">Это один человек</button>
-                    </form>
-                    <form method="post" action="/contacts/suggestions/{{ s.id }}/dismiss" class="d-inline">
-                        <button class="btn btn-sm btn-outline-secondary">Разные</button>
-                    </form>
-                </span>
-            </div>
-        </div>
-        {% endfor %}
-    </div>
-    {% endif %}
-
-    <h5 class="mb-2">Контакты</h5>
+    <div id="cards-host">
     {% if all_contacts %}
         {% for c in all_contacts %}
-        <div class="contact-card">
+        <div class="contact-card" data-contact-id="{{ c.id }}"
+             data-display-name="{{ c.display_name }}"
+             data-avatar-url="{{ c.avatar_url or '' }}">
             <div class="header">
+                {% if c.avatar_url %}
+                <span class="avatar"><img src="{{ c.avatar_url }}" alt=""></span>
+                {% else %}
                 <span class="avatar" style="background: {{ c.avatar_color }};">{{ c.initial }}</span>
-                <form method="post" action="/contacts/{{ c.id }}/rename" class="flex-fill d-flex gap-2">
-                    <input name="display_name" class="form-control form-control-sm"
-                           value="{{ c.display_name }}">
-                    <button class="btn btn-sm btn-outline-primary">Переименовать</button>
-                </form>
+                {% endif %}
+                <input type="text" class="name-input" value="{{ c.display_name }}"
+                       data-original="{{ c.display_name }}"
+                       aria-label="Имя контакта">
+                <div class="card-actions">
+                    <button type="button" class="icon-btn primary"
+                            data-action="merge"
+                            title="Объединить с другим контактом"
+                            aria-label="Объединить">⇄</button>
+                    <button type="button" class="icon-btn danger"
+                            data-action="delete"
+                            title="Удалить контакт со всеми сообщениями"
+                            aria-label="Удалить">✕</button>
+                </div>
             </div>
 
-            {% if contact_handles[c.id] %}
-                {% for h in contact_handles[c.id] %}
-                <div class="handle-row">
-                    <span class="messenger">{{ h.messenger_name }}</span>
-                    <span>{{ h.sender_raw }}</span>
-                    {% if all_contacts|length > 1 %}
-                    <form method="post" action="/contacts/handles/{{ h.id }}/move"
-                          class="d-flex gap-2 ms-auto">
-                        <select name="target_contact_id" class="form-select form-select-sm" style="width:auto;">
-                            {% for other in all_contacts %}
-                                {% if other.id != c.id %}
-                                    <option value="{{ other.id }}">→ {{ other.display_name }}</option>
-                                {% endif %}
-                            {% endfor %}
-                        </select>
-                        <button class="btn btn-sm btn-outline-secondary">Переместить</button>
-                    </form>
-                    {% endif %}
-                </div>
-                {% endfor %}
-            {% else %}
-                <div class="text-muted small mt-2">У этого контакта нет личностей.</div>
-            {% endif %}
+            <div class="meta-row">
+                <span class="msg-count">
+                    {% if c.msg_count %}{{ c.msg_count }} сообщ.{% else %}нет сообщений{% endif %}
+                </span>
+                {% if c.last_at %}
+                    <span class="dot">·</span>
+                    <span title="{{ c.last_at.strftime('%Y-%m-%d %H:%M') }}">
+                        посл. {{ c.last_at.strftime('%d.%m %H:%M') }}
+                    </span>
+                {% endif %}
+                {% if c.messengers %}
+                    <span class="dot">·</span>
+                    <div class="messengers">
+                        {% for m in c.messengers %}
+                            <span class="messenger-tag">{{ m }}</span>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            </div>
+
+            <div class="handles-list" data-drop-zone>
+                {% if contact_handles[c.id] %}
+                    {% set chs = contact_handles[c.id] %}
+                    {% for h in chs %}
+                    <div class="handle-chip" draggable="true"
+                         data-handle-id="{{ h.id }}"
+                         data-messenger="{{ h.messenger_name }}"
+                         data-sender="{{ h.sender_raw }}">
+                        <span class="grip">⋮⋮</span>
+                        <span class="messenger">{{ h.messenger_name }}</span>
+                        <span class="sender">{{ h.sender_raw }}</span>
+                        {% if chs|length > 1 %}
+                        <button type="button" class="extract-btn"
+                                data-action="extract"
+                                title="Вынести в отдельный контакт"
+                                aria-label="Вынести в отдельный контакт">↗</button>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                {% else %}
+                    <div class="empty-handles">Без личностей — можно удалить.</div>
+                {% endif %}
+            </div>
         </div>
         {% endfor %}
     {% else %}
         <p class="text-muted">Контактов пока нет.</p>
     {% endif %}
+    </div>
 </div>
+
+<!-- Модалка: объединить с... -->
+<div class="mng-modal-backdrop" id="merge-modal">
+    <div class="mng-modal">
+        <h5>Объединить «<span id="merge-source-name"></span>» с другим контактом</h5>
+        <div class="hint">
+            Все личности и сообщения «<span id="merge-source-name-2"></span>»
+            переедут в выбранный контакт. Исходный контакт удалится.
+        </div>
+        <input type="search" class="form-control" id="merge-search"
+               autocomplete="off" placeholder="Поиск по имени…">
+        <div class="merge-pick-list" id="merge-pick-list"></div>
+        <div class="mng-modal-actions">
+            <button type="button" class="btn btn-outline-secondary" data-close>Отмена</button>
+        </div>
+    </div>
+</div>
+
+<!-- Модалка: подтверждение удаления -->
+<div class="mng-modal-backdrop" id="delete-modal">
+    <div class="mng-modal">
+        <h5>Удалить контакт «<span id="delete-name"></span>»?</h5>
+        <div class="hint">
+            Будут удалены все его личности и <strong id="delete-msg-count">0</strong>
+            сообщений. Действие нельзя отменить.
+        </div>
+        <div class="mng-modal-actions">
+            <button type="button" class="btn btn-outline-secondary" data-close>Отмена</button>
+            <button type="button" class="btn btn-danger" id="delete-confirm">Удалить</button>
+        </div>
+    </div>
+</div>
+
+<div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+
+<script>
+(function() {
+    'use strict';
+
+    const host = document.getElementById('cards-host');
+
+    // ---------- Тосты ----------
+    function toast(text, kind) {
+        const stack = document.getElementById('toast-stack');
+        const t = document.createElement('div');
+        t.className = 'mng-toast' + (kind ? ' ' + kind : '');
+        t.textContent = text;
+        stack.appendChild(t);
+        setTimeout(() => {
+            t.style.transition = 'opacity .3s ease';
+            t.style.opacity = '0';
+            setTimeout(() => t.remove(), 300);
+        }, 2600);
+    }
+
+    // ---------- Сетевой helper ----------
+    async function postForm(url, data) {
+        const fd = new FormData();
+        Object.entries(data).forEach(([k, v]) => fd.append(k, v));
+        const r = await fetch(url, {
+            method: 'POST',
+            body: fd,
+            headers: { 'X-Requested-With': 'XMLHttpRequest' },
+        });
+        let payload = null;
+        try { payload = await r.json(); } catch (e) { /* ignore */ }
+        if (!r.ok) {
+            const err = new Error(payload && payload.error ? payload.error : 'http_' + r.status);
+            err.status = r.status;
+            throw err;
+        }
+        return payload || {};
+    }
+
+    // ---------- Карточки: helpers ----------
+    function card(id) { return host.querySelector('.contact-card[data-contact-id="' + id + '"]'); }
+    function removeCard(id) {
+        const el = card(id);
+        if (!el) return;
+        el.classList.add('removing');
+        setTimeout(() => el.remove(), 240);
+    }
+    function refreshHandlesEmptyState(zone) {
+        const empty = zone.querySelector('.empty-handles');
+        const chips = zone.querySelectorAll('.handle-chip');
+        if (chips.length === 0 && !empty) {
+            const div = document.createElement('div');
+            div.className = 'empty-handles';
+            div.textContent = 'Без личностей — можно удалить.';
+            zone.appendChild(div);
+        } else if (chips.length > 0 && empty) {
+            empty.remove();
+        }
+    }
+
+    // ---------- Переименование (inline blur/Enter) ----------
+    function bindRename(card) {
+        const input = card.querySelector('.name-input');
+        if (!input) return;
+        async function commit() {
+            const newName = input.value.trim();
+            const original = input.dataset.original || '';
+            if (!newName) { input.value = original; return; }
+            if (newName === original) return;
+            try {
+                const res = await postForm(
+                    '/contacts/' + card.dataset.contactId + '/rename',
+                    { display_name: newName });
+                input.dataset.original = res.display_name || newName;
+                card.dataset.displayName = res.display_name || newName;
+                toast('Переименовано', 'success');
+            } catch (e) {
+                input.value = original;
+                toast('Не удалось переименовать', 'error');
+            }
+        }
+        input.addEventListener('blur', commit);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+            if (e.key === 'Escape') { input.value = input.dataset.original || ''; input.blur(); }
+        });
+    }
+
+    // ---------- Drag-and-drop хэндлов ----------
+    let dragHandleId = null;
+    let dragSourceCardId = null;
+
+    function bindChip(chip) {
+        chip.addEventListener('dragstart', (e) => {
+            // Если тащат за кнопку extract — не считаем это драгом chip-а
+            if (e.target.closest('[data-action="extract"]')) {
+                e.preventDefault();
+                return;
+            }
+            dragHandleId = chip.dataset.handleId;
+            const srcCard = chip.closest('.contact-card');
+            dragSourceCardId = srcCard ? srcCard.dataset.contactId : null;
+            chip.classList.add('dragging');
+            try {
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', dragHandleId);
+            } catch (_) { /* ignore */ }
+        });
+        chip.addEventListener('dragend', () => {
+            chip.classList.remove('dragging');
+            dragHandleId = null;
+            dragSourceCardId = null;
+            document.querySelectorAll('.contact-card.drop-target').forEach(c => {
+                c.classList.remove('drop-target');
+            });
+        });
+    }
+
+    function bindCardDropZone(cardEl) {
+        cardEl.addEventListener('dragover', (e) => {
+            if (!dragHandleId) return;
+            if (cardEl.dataset.contactId === dragSourceCardId) return;
+            e.preventDefault();
+            try { e.dataTransfer.dropEffect = 'move'; } catch (_) { /* ignore */ }
+            cardEl.classList.add('drop-target');
+        });
+        cardEl.addEventListener('dragleave', (e) => {
+            // dragleave срабатывает и при заходе в дочерний элемент — проверяем границы
+            if (!cardEl.contains(e.relatedTarget)) {
+                cardEl.classList.remove('drop-target');
+            }
+        });
+        cardEl.addEventListener('drop', async (e) => {
+            if (!dragHandleId) return;
+            if (cardEl.dataset.contactId === dragSourceCardId) return;
+            e.preventDefault();
+            cardEl.classList.remove('drop-target');
+
+            const handleId = dragHandleId;
+            const targetId = cardEl.dataset.contactId;
+            const srcCardId = dragSourceCardId;
+            try {
+                const res = await postForm(
+                    '/contacts/handles/' + handleId + '/move',
+                    { target_contact_id: targetId });
+                // Перемещаем chip в DOM целевой карточки
+                const chip = document.querySelector(
+                    '.handle-chip[data-handle-id="' + handleId + '"]');
+                const targetZone = cardEl.querySelector('[data-drop-zone]');
+                if (chip && targetZone) {
+                    const srcZone = chip.parentElement;
+                    targetZone.appendChild(chip);
+                    if (srcZone) refreshHandlesEmptyState(srcZone);
+                    refreshHandlesEmptyState(targetZone);
+                }
+                if (res.source_deleted && srcCardId) {
+                    removeCard(srcCardId);
+                }
+                toast('Личность перенесена', 'success');
+            } catch (err) {
+                toast('Не удалось перенести', 'error');
+            }
+        });
+    }
+
+    // ---------- Модалка удаления ----------
+    let deleteTargetId = null;
+    const deleteModal = document.getElementById('delete-modal');
+    const deleteNameEl = document.getElementById('delete-name');
+    const deleteCountEl = document.getElementById('delete-msg-count');
+    const deleteConfirmBtn = document.getElementById('delete-confirm');
+
+    function openDeleteModal(cardEl) {
+        deleteTargetId = cardEl.dataset.contactId;
+        deleteNameEl.textContent = cardEl.dataset.displayName;
+        const countText = cardEl.querySelector('.msg-count').textContent.trim();
+        const m = countText.match(/(\d+)/);
+        deleteCountEl.textContent = m ? m[1] : '0';
+        deleteModal.classList.add('open');
+    }
+    deleteConfirmBtn.addEventListener('click', async () => {
+        if (!deleteTargetId) return;
+        const id = deleteTargetId;
+        deleteModal.classList.remove('open');
+        try {
+            await postForm('/contacts/' + id + '/delete', {});
+            removeCard(id);
+            toast('Контакт удалён', 'success');
+        } catch (e) {
+            toast('Не удалось удалить', 'error');
+        }
+        deleteTargetId = null;
+    });
+
+    // ---------- Модалка merge ----------
+    let mergeSourceId = null;
+    const mergeModal = document.getElementById('merge-modal');
+    const mergeSearch = document.getElementById('merge-search');
+    const mergePickList = document.getElementById('merge-pick-list');
+
+    function snapshotContacts() {
+        return Array.from(host.querySelectorAll('.contact-card')).map(el => ({
+            id: el.dataset.contactId,
+            name: el.dataset.displayName,
+            initial: (el.dataset.displayName || '?').trim()[0] || '?',
+            color: (el.querySelector('.avatar') || {}).style
+                ? el.querySelector('.avatar').style.background : '#9ca3af',
+            avatarUrl: el.dataset.avatarUrl || '',
+            msgCountText: el.querySelector('.msg-count').textContent.trim(),
+        }));
+    }
+
+    function renderMergePickList() {
+        const q = mergeSearch.value.trim().toLowerCase();
+        const all = snapshotContacts().filter(c => c.id !== mergeSourceId);
+        const filtered = q
+            ? all.filter(c => (c.name || '').toLowerCase().includes(q))
+            : all;
+        mergePickList.innerHTML = '';
+        if (filtered.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'merge-pick-empty';
+            empty.textContent = all.length === 0
+                ? 'Других контактов нет.'
+                : 'Никто не подходит.';
+            mergePickList.appendChild(empty);
+            return;
+        }
+        filtered.forEach(c => {
+            const row = document.createElement('div');
+            row.className = 'merge-pick-row';
+            row.innerHTML = `
+                ${c.avatarUrl
+                    ? `<span class="avatar"><img src="${c.avatarUrl}" alt=""></span>`
+                    : `<span class="avatar" style="background: ${c.color};">${c.initial.toUpperCase()}</span>`}
+                <div>
+                    <div class="who"></div>
+                    <div class="small-meta"></div>
+                </div>
+            `;
+            row.querySelector('.who').textContent = c.name;
+            row.querySelector('.small-meta').textContent = c.msgCountText;
+            row.addEventListener('click', () => doMerge(c.id));
+            mergePickList.appendChild(row);
+        });
+    }
+
+    function openMergeModal(cardEl) {
+        mergeSourceId = cardEl.dataset.contactId;
+        document.getElementById('merge-source-name').textContent = cardEl.dataset.displayName;
+        document.getElementById('merge-source-name-2').textContent = cardEl.dataset.displayName;
+        mergeSearch.value = '';
+        renderMergePickList();
+        mergeModal.classList.add('open');
+        setTimeout(() => mergeSearch.focus(), 30);
+    }
+    mergeSearch.addEventListener('input', renderMergePickList);
+
+    async function doMerge(targetId) {
+        if (!mergeSourceId || mergeSourceId === targetId) return;
+        const sourceId = mergeSourceId;
+        mergeModal.classList.remove('open');
+        try {
+            await postForm('/contacts/merge',
+                { source_id: sourceId, target_id: targetId });
+            // Все хэндлы исходной карточки переедут в целевую
+            const srcCard = card(sourceId);
+            const tgtCard = card(targetId);
+            const tgtZone = tgtCard ? tgtCard.querySelector('[data-drop-zone]') : null;
+            if (srcCard && tgtZone) {
+                srcCard.querySelectorAll('.handle-chip').forEach(chip => {
+                    tgtZone.appendChild(chip);
+                });
+                refreshHandlesEmptyState(tgtZone);
+            }
+            removeCard(sourceId);
+            toast('Контакты объединены', 'success');
+        } catch (e) {
+            toast('Не удалось объединить', 'error');
+        }
+        mergeSourceId = null;
+    }
+
+    // ---------- Закрытие модалок ----------
+    document.querySelectorAll('.mng-modal-backdrop').forEach(bd => {
+        bd.addEventListener('click', (e) => {
+            if (e.target === bd) bd.classList.remove('open');
+        });
+        bd.querySelectorAll('[data-close]').forEach(btn => {
+            btn.addEventListener('click', () => bd.classList.remove('open'));
+        });
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            document.querySelectorAll('.mng-modal-backdrop.open')
+                .forEach(bd => bd.classList.remove('open'));
+        }
+    });
+
+    // ---------- Вынести handle в отдельный контакт ----------
+    async function extractHandle(chip) {
+        const handleId = chip.dataset.handleId;
+        if (!handleId) return;
+        try {
+            await postForm('/contacts/handles/' + handleId + '/extract', {});
+            toast('Личность вынесена', 'success');
+            // Структура карточек сложная (аватары, цвета, мета) — надёжнее
+            // перезагрузить, чем дублировать Jinja-логику на JS.
+            setTimeout(() => location.reload(), 350);
+        } catch (e) {
+            if (e && e.message === 'already_alone') {
+                toast('Личность уже одна в контакте', 'error');
+            } else {
+                toast('Не удалось вынести', 'error');
+            }
+        }
+    }
+
+    // ---------- Делегирование кликов по action-кнопкам ----------
+    host.addEventListener('click', (e) => {
+        const btn = e.target.closest('[data-action]');
+        if (!btn) return;
+        if (btn.dataset.action === 'extract') {
+            e.stopPropagation();
+            const chip = btn.closest('.handle-chip');
+            if (chip) extractHandle(chip);
+            return;
+        }
+        const cardEl = btn.closest('.contact-card');
+        if (!cardEl) return;
+        if (btn.dataset.action === 'delete') openDeleteModal(cardEl);
+        else if (btn.dataset.action === 'merge') openMergeModal(cardEl);
+    });
+
+    // ---------- Инициализация ----------
+    host.querySelectorAll('.contact-card').forEach(c => {
+        bindRename(c);
+        bindCardDropZone(c);
+    });
+    host.querySelectorAll('.handle-chip').forEach(bindChip);
+})();
+</script>
 {% endblock %}
