@@ -1043,18 +1043,24 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None):
     import io
     bio = io.BytesIO(data)
     bio.name = filename or "file"
-    if caption:
-        _recent_self_sent.append((int(chat_id), caption, time.monotonic()))
-    await client.send_file(int(chat_id), bio, caption=caption or None,
-                           reply_to=reply_to)
+    sent = await client.send_file(int(chat_id), bio,
+                                   caption=caption or None,
+                                   reply_to=reply_to)
+    return getattr(sent, "id", None)
 
 
 def send_file(chat_id, data, filename, caption="", reply_to=None):
     """Отправляет файл (фото/видео/документ) в Telegram-чат.
-    `reply_to` — id telegram-сообщения, на которое отвечаем (или None)."""
+    `reply_to` — id telegram-сообщения, на которое отвечаем (или None).
+    Возвращает id отправленного Telegram-сообщения — нужно вызывающему,
+    чтобы СРАЗУ создать локальную запись Messages+Attachment (echo от
+    Telethon для собственных media приходит не всегда, и на него
+    рассчитывать нельзя). От дубля при возможном echo защищает
+    anti-dupe в `_handle_message` по `tg_message_id`."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_send_file(chat_id, data, filename, caption, reply_to), timeout=120)
+    return _call(_send_file(chat_id, data, filename, caption, reply_to),
+                 timeout=120)
 
 
 async def _delete_message(chat_id, message_id):

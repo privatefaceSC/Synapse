@@ -38,7 +38,50 @@
        детерминированную высоту, как было раньше. */
     .contacts-shell { height: calc(100vh - 110px); }
     #col-list, #col-feed { display: flex; flex-direction: column; min-height: 0; }
-    .contact-search { flex: 0 0 auto; margin-bottom: 12px; position: relative; }
+    .contact-search { flex: 0 0 auto; margin-bottom: 8px; position: relative; }
+    /* «Папки» — горизонтальная панель кнопок-фильтров по мессенджерам.
+     * Активная подсвечена синим. «Все» — спецзначение, показывает всех. */
+    .messenger-folders {
+        flex: 0 0 auto; display: flex; gap: 6px; margin-bottom: 10px;
+        overflow-x: auto; padding-bottom: 6px;
+        scrollbar-width: thin;
+        scrollbar-color: #cbd5e1 transparent;
+    }
+    .messenger-folders::-webkit-scrollbar { height: 6px; }
+    .messenger-folders::-webkit-scrollbar-track { background: transparent; }
+    .messenger-folders::-webkit-scrollbar-thumb {
+        background: #cbd5e1; border-radius: 3px;
+    }
+    .messenger-folders::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    [data-bs-theme="dark"] .messenger-folders {
+        scrollbar-color: #475569 transparent;
+    }
+    [data-bs-theme="dark"] .messenger-folders::-webkit-scrollbar-thumb {
+        background: #475569;
+    }
+    [data-bs-theme="dark"] .messenger-folders::-webkit-scrollbar-thumb:hover {
+        background: #64748b;
+    }
+    .mf-btn {
+        flex: 0 0 auto; padding: 6px 12px; border-radius: 999px;
+        border: 1px solid #e2e8f0; background: #fff; cursor: pointer;
+        font-size: 13px; color: #475569; white-space: nowrap;
+        transition: background .15s ease, color .15s ease, border-color .15s ease;
+    }
+    .mf-btn:hover { background: #f1f5f9; }
+    .mf-btn.active {
+        background: #2563eb; color: #fff; border-color: #2563eb;
+    }
+    .mf-btn .mf-count {
+        margin-left: 6px; opacity: .7; font-size: 11px;
+    }
+    [data-bs-theme="dark"] .mf-btn {
+        background: #1a1d24; border-color: #2a2f3a; color: #cbd5e1;
+    }
+    [data-bs-theme="dark"] .mf-btn:hover { background: #232730; }
+    [data-bs-theme="dark"] .mf-btn.active {
+        background: #3b82f6; color: #fff; border-color: #3b82f6;
+    }
     .search-results {
         position: absolute; left: 0; right: 0; top: calc(100% + 6px);
         background: #fff; border: 1px solid #ecedf1; border-radius: 12px;
@@ -325,13 +368,25 @@
     }
     [data-bs-theme="dark"] .scroll-fab .fab-badge { border-color: #1a1d24; }
     .feed {
-        height: 100%; overflow-y: auto;
+        height: 100%; overflow: hidden;
+        display: flex; flex-direction: column;
         background:
             radial-gradient(1100px 380px at 50% -8%, #e9eefb 0%, rgba(233,238,251,0) 70%),
             linear-gradient(180deg, #eef1f6 0%, #f4f5f9 100%);
         border: 1px solid #e6e8ee; border-radius: 16px; padding: 18px 22px;
         box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
         transition: background 0.25s ease, border-color 0.25s ease;
+    }
+    .feed > .feed-header,
+    .feed > .composer { flex: 0 0 auto; }
+    /* Скролл переехал внутрь messages-container — composer и feed-header
+     * остаются ВНЕ скролла и всегда видны (как в Telegram). Без этого
+     * composer уезжал вверх вместе с прокруткой сообщений. */
+    .feed > #messages-container,
+    .feed > .forum-picker {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
     }
     .feed-header {
         display: flex; flex-direction: column;
@@ -492,7 +547,18 @@
         transition: background 0.25s ease, box-shadow 0.18s ease;
     }
     .bubble:hover { box-shadow: 0 4px 14px rgba(16,24,40,.10); }
-    .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; }
+    .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; word-break: break-word; }
+    .bubble .text .msg-link {
+        color: #2563eb; text-decoration: underline;
+        text-underline-offset: 2px; word-break: break-all;
+    }
+    .bubble .text .msg-link:hover { color: #1d4ed8; }
+    [data-bs-theme="dark"] .bubble .text .msg-link { color: #93c5fd; }
+    [data-bs-theme="dark"] .bubble .text .msg-link:hover { color: #bfdbfe; }
+    /* В исходящих bubble (синий фон) делаем ссылку белой с подчёркиванием. */
+    .bubble-row.outgoing .bubble .text .msg-link {
+        color: #fff; text-decoration: underline;
+    }
     /* Цитата сообщения, на которое это — ответ (reply). */
     .bubble .reply-quote {
         display: block; margin-bottom: 6px; padding: 4px 9px;
@@ -671,14 +737,16 @@
     }
     .topics-pin .tp-bars {
         display: flex; flex-direction: column; gap: 2px; flex: 0 0 auto;
-        height: 36px; width: 3px;
+        height: 36px; width: 4px;
     }
     /* Вертикальная «лента» из коротких сегментов — индикатор сколько
-     * закрепов и где мы сейчас (Telegram-style). */
+     * закрепов и где мы сейчас (Telegram-style). Клик по сегменту —
+     * переход к соответствующей теме. */
     .topics-pin .tp-bar {
         flex: 1; background: #93c5fd; border-radius: 2px;
-        opacity: .5; transition: opacity .2s;
+        opacity: .5; transition: opacity .2s; cursor: pointer;
     }
+    .topics-pin .tp-bar:hover { opacity: .85; }
     .topics-pin .tp-bar.active { opacity: 1; background: #2563eb; }
     [data-bs-theme="dark"] .topics-pin .tp-bar { background: #475569; }
     [data-bs-theme="dark"] .topics-pin .tp-bar.active { background: #60a5fa; }
@@ -1148,6 +1216,7 @@
                         hidden title="Включить уведомления о новых сообщениях">🔔</button>
                 <div class="search-results" id="search-results" role="listbox"></div>
             </div>
+            <div class="messenger-folders" id="messenger-folders"></div>
             <div class="contact-list" id="contact-list"
                  data-active-id="{{ selected.id if selected else '' }}">
                 {% if contacts %}
@@ -1375,13 +1444,6 @@
     <img id="lb-img" src="" alt="фото">
 </div>
 
-<div class="msgr-picker" id="msgr-picker">
-    <div class="msgr-picker-box">
-        <div class="msgr-picker-title">Открыть переписку</div>
-        <div id="msgr-picker-list"></div>
-    </div>
-</div>
-
 <div class="msgr-picker" id="forward-modal">
     <div class="msgr-picker-box" style="min-width:340px;max-width:420px;">
         <div class="msgr-picker-title">Переслать в Telegram-чат</div>
@@ -1554,6 +1616,9 @@
                         onclick="openContactMenu(this, ${c.id})">⋮</button>
             </div>`;
         }).join('');
+        // После перерисовки списка — пересчитать счётчики папок и
+        // применить активный фильтр.
+        if (window._refreshFolders) window._refreshFolders();
     }
 
     async function poll() {
@@ -2267,10 +2332,36 @@
         }[c]));
     }
 
-    function isNearBottom() {
-        return feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80;
+    // Превращает голые URL в кликабельные <a> ВНУТРИ уже escape-нутого
+    // HTML — поэтому ищем именно `https?://` (после escapeHtml спецсимволы
+    // в адресе превратились в &amp; и т.п., но протокол не задет).
+    // Хвостовая пунктуация (.,;:!?)] и т.п. — НЕ часть URL, отрезаем.
+    function linkify(escapedHtml) {
+        return escapedHtml.replace(
+            /(https?:\/\/[^\s<]+?)([.,;:!?)\]\}»"']*)(?=\s|$|<)/g,
+            function(_, url, tail) {
+                return '<a class="msg-link" href="' + url
+                    + '" target="_blank" rel="noopener noreferrer">'
+                    + url + '</a>' + tail;
+            });
     }
-    function scrollToBottom() { feed.scrollTop = feed.scrollHeight; }
+
+    // Скролл теперь живёт ВНУТРИ messages-container (а не на feed —
+    // иначе composer уезжает наверх со скроллом). На forum-picker —
+    // там скролл тоже на нём самом, у него своя лента карточек.
+    function scrollEl() {
+        return document.getElementById('messages-container')
+            || feed.querySelector('.forum-picker')
+            || feed;
+    }
+    function isNearBottom() {
+        const el = scrollEl();
+        return el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    }
+    function scrollToBottom() {
+        const el = scrollEl();
+        el.scrollTop = el.scrollHeight;
+    }
 
     /** Скролл в самый низ + автоподтяжка пока в ленте догружаются
      *  изображения/видео (их размеры приходят асинхронно, после первого
@@ -2338,8 +2429,9 @@
     let unseenWhileScrolled = 0;
     function updateScrollFab() {
         if (!scrollFab) return;
-        const farFromBottom = feed.scrollHeight - feed.scrollTop
-                              - feed.clientHeight > 200;
+        const el = scrollEl();
+        const farFromBottom = el.scrollHeight - el.scrollTop
+                              - el.clientHeight > 200;
         scrollFab.classList.toggle('show', farFromBottom);
         if (!farFromBottom) {
             unseenWhileScrolled = 0;
@@ -2360,7 +2452,12 @@
             scrollToBottom();
             updateScrollFab();
         });
-        feed.addEventListener('scroll', updateScrollFab, {passive: true});
+        // scroll не bubble'ит, поэтому слушаем в capture-фазе на window
+        // и реагируем только когда источник — наш реальный scroll-эл.
+        window.addEventListener('scroll', function(e) {
+            const el = scrollEl();
+            if (e.target === el) updateScrollFab();
+        }, true);
     }
 
     function renderHeader(c) {
@@ -2603,7 +2700,7 @@
                    >🗑 ${m.outgoing ? 'Вы удалили это сообщение' : 'Удалено собеседником'}</div>`
                 : '';
             const textHtml = m.text
-                ? `<div class="text">${escapeHtml(m.text)}</div>` : '';
+                ? `<div class="text">${linkify(escapeHtml(m.text))}</div>` : '';
             // «📝 ред. ×N» — кнопка показа истории редактирований.
             // Полный список версий клеим как JSON в атрибут bubble, popover
             // читает оттуда — отдельный fetch не нужен.
@@ -2862,6 +2959,25 @@
             // Закреплённые «темы чата» — если уже анализировались, сразу
             // показываем пин-бар сверху. Сервер их хранит в БД.
             setPinnedTopics(data.topics || []);
+            // Защитный fetch: если основной запрос почему-то не отдал
+            // темы (race, baked-in старый JS, частичная ошибка), отдельно
+            // тянем сохранённые темы из БД для текущего (contact, topic).
+            // cached_only=1 не дёргает LLM, поэтому быстрый.
+            if (!(data.topics && data.topics.length)) {
+                const _tidp = currentTopicId
+                    ? '&topic_id=' + encodeURIComponent(currentTopicId) : '';
+                fetch('/contacts/' + id + '/topics.json?cached_only=1'
+                      + _tidp, {credentials: 'same-origin'})
+                    .then(r => r.ok ? r.json() : null)
+                    .then(d => {
+                        if (token !== navToken) return;
+                        if (d && d.status === 'ok'
+                                && Array.isArray(d.topics)
+                                && d.topics.length) {
+                            setPinnedTopics(d.topics);
+                        }
+                    }).catch(() => {});
+            }
             // Сигнатура — та же что в pollMessages: id+text+time+tg_read+
             // deleted+reactions. Иначе первый же tick пересоберёт ленту впустую.
             lastSig = JSON.stringify(data.messages.map(m => [
@@ -2957,28 +3073,111 @@
         }
     }
 
+    // --- Папки по мессенджерам ---
+    // Над списком контактов — горизонтальные «папки» (Все / Telegram /
+    // WhatsApp / VK / Max…). Выбранная папка фильтрует contact-row-wrap
+    // по data-messengers. Активная папка также определяет какой именно
+    // мессенджер открывать при клике на контакт с несколькими источниками
+    // (раньше тут был picker — он удалён, см. ниже).
+    const MF_KEY = 'skillwood:active-folder';
+    let activeFolder = localStorage.getItem(MF_KEY) || '';  // '' = «Все»
+
+    function collectMessengers() {
+        const set = new Set();
+        list.querySelectorAll('.contact-row-wrap').forEach(function(w) {
+            (w.dataset.messengers || '').split(',').forEach(function(m) {
+                m = m.trim();
+                if (m) set.add(m);
+            });
+        });
+        return Array.from(set).sort();
+    }
+    function countByMessenger(m) {
+        return list.querySelectorAll(
+            '.contact-row-wrap[data-messengers*="' + m + '"]').length;
+    }
+    function renderFolders() {
+        const box = document.getElementById('messenger-folders');
+        if (!box) return;
+        const msgrs = collectMessengers();
+        if (msgrs.length <= 1) {
+            box.innerHTML = '';   // если один мессенджер — фильтр бессмыслен
+            return;
+        }
+        const totalCount = list.querySelectorAll('.contact-row-wrap').length;
+        let html = '<button type="button" class="mf-btn'
+            + (activeFolder === '' ? ' active' : '') + '" data-folder="">'
+            + 'Все<span class="mf-count">' + totalCount + '</span></button>';
+        msgrs.forEach(function(m) {
+            html += '<button type="button" class="mf-btn'
+                + (activeFolder === m ? ' active' : '')
+                + '" data-folder="' + escapeHtml(m) + '">'
+                + escapeHtml(m)
+                + '<span class="mf-count">' + countByMessenger(m) + '</span>'
+                + '</button>';
+        });
+        box.innerHTML = html;
+    }
+    function applyFolderFilter() {
+        list.querySelectorAll('.contact-row-wrap').forEach(function(w) {
+            if (!activeFolder) { w.hidden = false; return; }
+            const msgrs = (w.dataset.messengers || '')
+                .split(',').filter(Boolean);
+            w.hidden = !msgrs.includes(activeFolder);
+        });
+    }
+    function setActiveFolder(m) {
+        activeFolder = m || '';
+        if (activeFolder) localStorage.setItem(MF_KEY, activeFolder);
+        else localStorage.removeItem(MF_KEY);
+        renderFolders();
+        applyFolderFilter();
+    }
+    // Какой мессенджер открыть для данного контакта: если активная папка
+    // совпадает с одним из его мессенджеров — открываем именно её, иначе
+    // первый доступный (без выбора пользователем).
+    function pickMessengerFor(wrap) {
+        const msgrs = (wrap.dataset.messengers || '')
+            .split(',').filter(Boolean);
+        if (activeFolder && msgrs.includes(activeFolder)) return activeFolder;
+        return msgrs[0] || null;
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+        renderFolders();
+        applyFolderFilter();
+    });
+    // Выставляем во внешний IIFE — список контактов перерисовывается
+    // поллингом каждые 5с, после каждого render надо пересчитать счётчики
+    // папок и заново применить фильтр.
+    window._refreshFolders = function() {
+        renderFolders();
+        applyFolderFilter();
+    };
+
     document.addEventListener('click', function(e) {
         if (!e.target.closest) return;
+        // Клик по «папке»-кнопке вверху списка.
+        const fbtn = e.target.closest('.mf-btn');
+        if (fbtn) {
+            e.preventDefault();
+            setActiveFolder(fbtn.dataset.folder || '');
+            return;
+        }
         const back = e.target.closest('.feed-back-btn');
         if (back && feed.contains(back)) {
             e.preventDefault();
             showList();
             return;
         }
-        // Клик по шапке чата: группа — раскрыть участников;
-        // контакт-«папка» — попап выбора мессенджера.
+        // Клик по шапке чата: группа — раскрыть участников. Picker
+        // мессенджеров здесь удалён — мессенджер выбирается папкой
+        // в списке контактов, а не из шапки открытого чата.
         const top = e.target.closest('.feed-header.expandable .feed-header-top');
         if (top && feed.contains(top)) {
             const header = top.closest('.feed-header');
             if (header.dataset.isGroup) {
                 header.classList.toggle('open');
                 if (header.classList.contains('open')) loadMembers(header);
-            } else {
-                const msgrs = (header.dataset.messengers || '')
-                    .split(',').filter(Boolean);
-                if (msgrs.length > 1) {
-                    showMessengerPicker(header.dataset.contactId, msgrs);
-                }
             }
             return;
         }
@@ -2994,49 +3193,11 @@
             const wrap = row.closest('.contact-row-wrap');
             const id = wrap && wrap.dataset.contactId;
             if (!id) return;
-            const msgrs = (wrap.dataset.messengers || '')
-                .split(',').filter(Boolean);
-            // Контакт-«папка»: несколько мессенджеров — спросить какой открыть.
-            if (msgrs.length > 1) {
-                showMessengerPicker(id, msgrs);
-            } else {
-                openContact(id, msgrs[0] || null);
-            }
+            // Мессенджер определяет активная папка (или первый доступный
+            // если папка не выбрана). Picker'а больше нет.
+            openContact(id, pickMessengerFor(wrap));
         }
     });
-
-    function showMessengerPicker(contactId, messengers) {
-        const picker = document.getElementById('msgr-picker');
-        const listEl = document.getElementById('msgr-picker-list');
-        if (!picker || !listEl) return;
-        listEl.innerHTML = messengers.map(function(m) {
-            const reply = m === 'Telegram';
-            return '<button type="button" class="msgr-pick-btn" data-pick-id="'
-                + contactId + '" data-pick-m="' + escapeHtml(m) + '">'
-                + '<span class="m-tag">' + escapeHtml(m) + '</span>'
-                + '<span class="m-hint">'
-                + (reply ? '✉ можно отвечать' : 'только чтение')
-                + '</span></button>';
-        }).join('');
-        picker.classList.add('open');
-    }
-
-    (function() {
-        const picker = document.getElementById('msgr-picker');
-        if (!picker) return;
-        picker.addEventListener('click', function(e) {
-            const btn = e.target.closest('.msgr-pick-btn');
-            if (btn) {
-                picker.classList.remove('open');
-                openContact(btn.dataset.pickId, btn.dataset.pickM);
-                return;
-            }
-            if (e.target === picker) picker.classList.remove('open');
-        });
-        document.addEventListener('keydown', function(e) {
-            if (e.key === 'Escape') picker.classList.remove('open');
-        });
-    })();
 
     function messengerFromUrl() {
         const m = location.search.match(/[?&]m=([^&]+)/);
@@ -3379,11 +3540,13 @@
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') closeEditsPopover();
     });
-    feed.addEventListener('scroll', closeEditsPopover, {passive: true});
+    // Скролл теперь живёт внутри messages-container — ловим в capture-фазе.
+    window.addEventListener('scroll', function(e) {
+        if (e.target === scrollEl()) closeEditsPopover();
+    }, true);
 
     // --- «📑 Темы чата» — анализ через локальную Ollama ---
     let topicsPanel = null;
-    let topicsLimit = 200;  // дефолт; пользователь может переключить
     let topicsWarmedUp = false;  // первый запрос за сессию — модель грузится в VRAM
 
     // Закрепы тем чата + текущий индекс активной темы. Хранятся для
@@ -3476,28 +3639,51 @@
             feed.insertBefore(pin, feed.firstChild);
         }
     }
-    function setPinnedTopics(topics) {
+    function setPinnedTopics(topics, opts) {
         pinnedTopics = Array.isArray(topics) ? topics : [];
-        // Свежий заход — показываем самую первую тему. Начнётся
-        // циклическое продвижение при кликах.
+        // Свежий заход — показываем самую первую тему. Клики по бару /
+        // палочкам-индикаторам переключают тему.
         pinnedIndex = 0;
         pinnedHidden = false;
         clearTopicHighlight();
         renderTopicsPin();
+        // После явного анализа (нажатие «📑») сразу подсвечиваем сообщения
+        // первой темы — пользователь видит, какие bubble'ы к ней относятся.
+        // При автозагрузке кэша на перезаходе подсветку не ставим, чтобы
+        // лента не «расцветала» без действия пользователя.
+        if (opts && opts.autoHighlight && pinnedTopics.length) {
+            applyTopicHighlight(pinnedTopics[0].message_ids);
+        }
     }
     function advancePin() {
         if (!pinnedTopics.length) return;
         pinnedIndex = (pinnedIndex + 1) % pinnedTopics.length;
         renderTopicsPin();
     }
-    function onPinClick(pin) {
+    function showTopicAt(index) {
+        // Выбрать тему по индексу: бар висит на ней, в ленте подсвечены
+        // все её сообщения, скролл — к началу темы.
+        if (!pinnedTopics.length) return;
+        if (index < 0) index = pinnedTopics.length - 1;
+        if (index >= pinnedTopics.length) index = 0;
+        pinnedIndex = index;
+        renderTopicsPin();
         const cur = pinnedTopics[pinnedIndex];
         if (!cur) return;
         applyTopicHighlight(cur.message_ids);
         if (window.jumpToMessage) window.jumpToMessage(cur.start_id);
-        // После клика — продвигаем «стек» закрепов: следующий тап
-        // покажет уже предыдущую тему (как в Telegram).
-        advancePin();
+    }
+    function onPinClick(target) {
+        // Клик по конкретному индикатору-палочке — переход к i-й теме.
+        // Клик по остальной площади бара — циклически следующая.
+        const bar = target && target.closest
+            ? target.closest('.tp-bar') : null;
+        if (bar && bar.parentNode) {
+            const bars = bar.parentNode.querySelectorAll('.tp-bar');
+            const idx = Array.prototype.indexOf.call(bars, bar);
+            if (idx >= 0) { showTopicAt(idx); return; }
+        }
+        showTopicAt(pinnedIndex + 1);
     }
     // Делегированный handler — pin элемент пересоздаётся при каждом
     // продвижении, на него вешать addEventListener нельзя.
@@ -3512,7 +3698,7 @@
         const pin = e.target.closest('.topics-pin');
         if (pin) {
             e.preventDefault(); e.stopPropagation();
-            onPinClick(pin);
+            onPinClick(e.target);
         }
     });
     function closeTopicsPanel() {
@@ -3548,8 +3734,9 @@
                 + 'увеличить количество сообщений.</div>';
             return;
         }
-        body.innerHTML = topics.map(t =>
-            '<div class="tp-item" data-jump-id="' + t.start_id + '">'
+        body.innerHTML = topics.map((t, i) =>
+            '<div class="tp-item" data-jump-id="' + t.start_id + '"'
+            + ' data-topic-index="' + i + '">'
             + '<div class="tp-item-title">' + escapeHtml(t.title) + '</div>'
             + '<div class="tp-item-meta">'
             + (t.date ? escapeHtml(t.date) + ' · ' : '')
@@ -3562,23 +3749,34 @@
                 + ' сообщений' + (cached ? ' (из кэша)' : '');
         }
     }
-    async function loadTopics(btn) {
+    async function loadTopics(btn, opts) {
         if (currentContactId == null) return;
         const cid = currentContactId;
+        const force = !!(opts && opts.force);
         const warmHint = topicsWarmedUp
             ? ''
             : '\n\nПервый раз за сессию: модель загружается в видеопамять, '
               + 'это до 1-2 минут. Дальше будет быстро.';
-        renderTopicsStatus('Анализирую ' + topicsLimit + ' сообщений…'
-                           + warmHint);
+        renderTopicsStatus('Анализирую переписку…' + warmHint);
         try {
-            const r = await fetch('/contacts/' + cid + '/topics.json?limit='
-                                  + topicsLimit, {credentials: 'same-origin'});
+            // Передаём topic_id если открыта конкретная тема форум-чата —
+            // темы LLM считаются и кэшируются отдельно для каждой темы
+            // форума, иначе соседние темы форума делили бы один набор.
+            // Лимит сообщений сервер выбирает сам (всё, но не больше 2000).
+            const tidParam = currentTopicId
+                ? '&topic_id=' + encodeURIComponent(currentTopicId) : '';
+            const forceParam = force ? '&force=1' : '';
+            const r = await fetch('/contacts/' + cid + '/topics.json?'
+                                  + tidParam.replace(/^&/, '')
+                                  + forceParam,
+                                  {credentials: 'same-origin'});
             const d = await r.json();
             topicsWarmedUp = true;  // даже при ошибке модель уже подгрузилась
             if (d.status === 'ok' && Array.isArray(d.topics)) {
-                // Свежие темы — обновляем пин-бар сверху чата.
-                setPinnedTopics(d.topics);
+                // Свежие темы — обновляем пин-бар сверху чата. Если результат
+                // не из кэша (свежий анализ) — сразу подсвечиваем первую
+                // тему, чтобы пользователь видел, что подсветка работает.
+                setPinnedTopics(d.topics, {autoHighlight: !d.cached});
             }
             // Контакт могли успеть переключить пока шёл fetch — игнорим.
             if (String(cid) !== String(currentContactId)) return;
@@ -3614,9 +3812,8 @@
         pop.innerHTML =
             '<div class="tp-head">'
             +   '<div class="tp-title">📑 Темы чата</div>'
-            +   '<button type="button" class="tp-limit" data-tp-limit="1">'
-            +     'последние ' + topicsLimit + ' ▾'
-            +   '</button>'
+            +   '<button type="button" class="tp-limit" data-tp-refresh="1"'
+            +           ' title="Пересчитать темы заново">🔄</button>'
             + '</div>'
             + '<div class="tp-body"></div>'
             + '<div class="tp-footer"></div>';
@@ -3625,19 +3822,12 @@
         positionTopicsPanel(btn);
         loadTopics(btn);
     }
-    function cycleLimit() {
-        // 200 → 500 → 1000 → 2000 → 200 …
-        topicsLimit = (
-            topicsLimit === 200 ? 500 :
-            topicsLimit === 500 ? 1000 :
-            topicsLimit === 1000 ? 2000 : 200);
-        if (!topicsPanel) return;
-        const btnLimit = topicsPanel.querySelector('[data-tp-limit]');
-        if (btnLimit) btnLimit.textContent =
-            'последние ' + topicsLimit + ' ▾';
-        // Перезапускаем анализ для нового объёма.
+    function refreshTopics() {
+        // Принудительный пересчёт (force=1) — для случая «темы не очень,
+        // хочу чтобы LLM попробовала ещё раз». При обычном открытии сервер
+        // сам пересчитает если max_id поменялся; refresh — для остального.
         const headerBtn = feed.querySelector('[data-topics-btn]');
-        if (headerBtn) loadTopics(headerBtn);
+        if (headerBtn) loadTopics(headerBtn, {force: true});
     }
     feed.addEventListener('click', function(e) {
         const tbtn = e.target.closest('[data-topics-btn]');
@@ -3671,18 +3861,24 @@
     document.addEventListener('click', function(e) {
         if (!topicsPanel) return;
         if (topicsPanel.contains(e.target)) {
-            // Внутри панели: либо лимит, либо клик по теме.
-            const lim = e.target.closest('[data-tp-limit]');
-            if (lim) {
+            // Внутри панели: либо кнопка обновить, либо клик по теме.
+            const refresh = e.target.closest('[data-tp-refresh]');
+            if (refresh) {
                 e.preventDefault(); e.stopPropagation();
-                cycleLimit();
+                refreshTopics();
                 return;
             }
             const item = e.target.closest('[data-jump-id]');
             if (item) {
-                const id = item.dataset.jumpId;
                 closeTopicsPanel();
-                if (window.jumpToMessage) window.jumpToMessage(id);
+                // Синхронизируем пин-бар с выбранной темой и применяем
+                // подсветку всех её сообщений в ленте.
+                const tIdx = parseInt(item.dataset.topicIndex, 10);
+                if (!isNaN(tIdx) && pinnedTopics[tIdx]) {
+                    showTopicAt(tIdx);
+                } else if (window.jumpToMessage) {
+                    window.jumpToMessage(item.dataset.jumpId);
+                }
                 return;
             }
             return;
@@ -3701,6 +3897,33 @@
             pendingFile = inp.files[0];
             showPreview(pendingFile);
             inp.value = '';
+        }
+    });
+    // Ctrl+V в поле ввода — если в буфере картинка, прицепляем как файл
+    // (как в Telegram, чтобы не лезть в скрепку). Бьём в первый image/*
+    // элемент clipboard.items, делаем у него осмысленное имя и кладём в
+    // pendingFile + превью. preventDefault, чтобы base64 не вставился
+    // в textarea как текст.
+    feed.addEventListener('paste', function(e) {
+        const ta = e.target.closest('#composer-text');
+        if (!ta) return;
+        const items = (e.clipboardData && e.clipboardData.items) || [];
+        for (let i = 0; i < items.length; i++) {
+            const it = items[i];
+            if (it.kind !== 'file') continue;
+            if (!it.type || it.type.indexOf('image/') !== 0) continue;
+            const raw = it.getAsFile();
+            if (!raw) continue;
+            e.preventDefault();
+            // Clipboard-файлы часто называются «image.png» без даты, или
+            // вообще пустым именем — придаём уникальное имя, иначе
+            // несколько скриншотов подряд получат одинаковый name.
+            const ext = '.' + ((it.type.split('/')[1] || 'png').toLowerCase());
+            const named = new File([raw],
+                'pasted-' + Date.now() + ext, {type: it.type});
+            pendingFile = named;
+            showPreview(named);
+            return;
         }
     });
     // Авторост поля ввода под текст.
@@ -3735,7 +3958,11 @@
         // Подгружаем сохранённые «темы чата» (если уже анализировались)
         // для прямого захода /contacts/<id>. cached_only=1 — НЕ дёргаем
         // LLM, просто читаем БД; если тем нет — pin-бар не появится.
-        fetch('/contacts/' + currentContactId + '/topics.json?cached_only=1',
+        // Для форум-чата запрашиваем темы конкретной открытой темы форума.
+        const _tidParam0 = currentTopicId
+            ? '&topic_id=' + encodeURIComponent(currentTopicId) : '';
+        fetch('/contacts/' + currentContactId
+              + '/topics.json?cached_only=1' + _tidParam0,
               {credentials: 'same-origin'})
             .then(r => r.ok ? r.json() : null)
             .then(d => {

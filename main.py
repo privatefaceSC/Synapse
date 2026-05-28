@@ -118,10 +118,13 @@ def _reply_channel(handles):
 # fallback для старых handles, у которых поле `package_name` ещё пустое
 # (запись была создана до того, как Android-клиент начал его слать). Без
 # этого MAX/VK/WhatsApp выглядели бы read-only до прихода нового входящего.
+# Ключи в нижнем регистре — lookup case-insensitive, иначе для handle с
+# messenger_name='MAX' (как реально приходит из Android-уведомлений Max)
+# fallback не срабатывал и композер не показывался.
 _DEFAULT_PACKAGE_NAMES = {
-    'Max': 'ru.oneme.app',
-    'ВКонтакте': 'com.vkontakte.android',
-    'WhatsApp': 'com.whatsapp',
+    'max': 'ru.oneme.app',
+    'вконтакте': 'com.vkontakte.android',
+    'whatsapp': 'com.whatsapp',
 }
 
 
@@ -129,7 +132,8 @@ def _package_for_handle(handle) -> str | None:
     """Реальный или дефолтный `package_name` для хэндла."""
     if handle.package_name:
         return handle.package_name
-    return _DEFAULT_PACKAGE_NAMES.get(handle.messenger_name)
+    name = (handle.messenger_name or '').strip().lower()
+    return _DEFAULT_PACKAGE_NAMES.get(name)
 
 
 _MESSENGER_PRIORITY = ('Telegram', 'Max', 'ВКонтакте', 'WhatsApp')
@@ -182,6 +186,197 @@ def _attach_reactions(db, msgs):
     for m in msgs:
         m.reactions = by_msg.get(m.id, [])
     return msgs
+
+
+def _topics_full(db, contact_id, topic_id, handle_ids,
+                 topic_filter_args, max_id, cap):
+    """ПОЛНЫЙ анализ: тянем ВСЕ сообщения (или последние `cap`, если
+    их слишком много), извлекаем темы чанками, переписываем сохранённый
+    набор. Используется при первом анализе и при force=1.
+
+    Эвристика-фолбэк: если LLM вернула тему с одним только start_id —
+    дозаполняем message_ids сегментом до следующей темы (с разрывом
+    по времени).
+
+    Возвращает {count: N} (сколько проанализировано) или
+    {error: <jsonable_dict>} при ошибке LLM."""
+    from data import ollama as _ollama
+    from data.chat_topics import replace_topics as _replace_topics
+    from data.users import Messages
+
+    msgs = (db.query(Messages)
+            .filter(*topic_filter_args)
+            .filter(Messages.deleted_at.is_(None))
+            .order_by(Messages.created_at.asc().nullsfirst(),
+                      Messages.id.asc())
+            .all())
+    # Если сообщений больше cap — берём ПОСЛЕДНИЕ cap (свежие важнее).
+    if len(msgs) > cap:
+        msgs = msgs[-cap:]
+    items = [{'id': m.id, 'text': (m.text or '').strip()}
+             for m in msgs if (m.text or '').strip()]
+    if not items:
+        return {'error': {'status': 'no_messages', 'topics': []}}
+
+    try:
+        topics = _ollama.extract_topics_chunked(items)
+    except RuntimeError as exc:
+        return {'error': {'status': 'llm_error', 'detail': str(exc)}}
+
+    valid_ids = {it['id'] for it in items}
+    msg_by_id = {m.id: m for m in msgs}
+    clean = []
+    seen_starts = set()
+    for t in topics:
+        sid = t.get('start_id')
+        if sid not in valid_ids or sid in seen_starts:
+            continue
+        seen_starts.add(sid)
+        related = [mid for mid in (t.get('message_ids') or [sid])
+                   if mid in valid_ids]
+        if sid not in related:
+            related = [sid] + related
+        clean.append({
+            'title': t['title'],
+            'start_id': sid,
+            'message_ids': related,
+        })
+
+    if clean:
+        from datetime import timedelta as _td
+        pos_by_id = {it['id']: i for i, it in enumerate(items)}
+        clean.sort(key=lambda c: pos_by_id.get(c['start_id'], 0))
+        max_gap = _td(minutes=60)
+        for idx, tt in enumerate(clean):
+            if len(tt['message_ids']) > 1:
+                continue
+            sid = tt['start_id']
+            start_pos = pos_by_id[sid]
+            end_pos = len(items)
+            if idx + 1 < len(clean):
+                np_ = pos_by_id.get(clean[idx + 1]['start_id'])
+                if np_ is not None and np_ > start_pos:
+                    end_pos = np_
+            related = {sid}
+            prev_time = (msg_by_id[sid].created_at
+                         if sid in msg_by_id else None)
+            for j in range(start_pos, end_pos):
+                cur_id = items[j]['id']
+                cur_msg = msg_by_id.get(cur_id)
+                cur_time = cur_msg.created_at if cur_msg else None
+                if (prev_time is not None and cur_time is not None
+                        and cur_time - prev_time > max_gap):
+                    break
+                related.add(cur_id)
+                if cur_time is not None:
+                    prev_time = cur_time
+            tt['message_ids'] = sorted(
+                related, key=lambda mid: pos_by_id.get(mid, 0))
+
+        _replace_topics(db, contact_id, topic_id, clean,
+                        analyzed_count=len(items),
+                        fingerprint_max_id=max_id)
+    return {'count': len(items)}
+
+
+def _topics_incremental(db, contact_id, topic_id, handle_ids,
+                        topic_filter_args, saved_fp, max_id):
+    """ИНКРЕМЕНТАЛЬНЫЙ анализ: берём только сообщения с id > saved_fp
+    (то, что появилось после прошлого анализа) и классифицируем их —
+    LLM решает, добавить к существующей теме или завести новую.
+
+    Если новых сообщений с текстом меньше 3 — просто обновляем
+    fingerprint и не дёргаем LLM (не стоит того).
+
+    Возвращает {count: N} или {error: ...}."""
+    from data import ollama as _ollama
+    from data.chat_topics import (get_topics as _get_topics,
+                                   append_to_topic as _append_to_topic,
+                                   add_topic as _add_topic,
+                                   bump_fingerprint as _bump_fingerprint,
+                                   ChatTopic)
+    from data.users import Messages
+
+    new_msgs = (db.query(Messages)
+                .filter(*topic_filter_args)
+                .filter(Messages.deleted_at.is_(None))
+                .filter(Messages.id > saved_fp)
+                .order_by(Messages.created_at.asc().nullsfirst(),
+                          Messages.id.asc())
+                .all())
+    new_items = [{'id': m.id, 'text': (m.text or '').strip()}
+                 for m in new_msgs if (m.text or '').strip()]
+    if len(new_items) < 3:
+        # Слишком мало нового материала — обновляем fingerprint и выходим
+        # (иначе при каждом тике LLM будет дёргаться без толку).
+        _bump_fingerprint(db, contact_id, topic_id, max_id)
+        return {'count': len(new_items)}
+
+    # Готовим существующие темы для LLM: title + один пример текста
+    # (start-сообщение, чтобы LLM поняла контекст темы).
+    saved = _get_topics(db, contact_id, topic_id)
+    if not saved:
+        # Кэш есть в fingerprint, но тем нет — fallback к полному.
+        return _topics_full(db, contact_id, topic_id, handle_ids,
+                            topic_filter_args, max_id, 5000)
+
+    start_ids = [s['start_id'] for s in saved]
+    msg_by_id = {m.id: m for m in (
+        db.query(Messages)
+        .filter(Messages.id.in_(start_ids))
+        .all())}
+    existing_for_llm = []
+    for s in saved:
+        ms = msg_by_id.get(s['start_id'])
+        existing_for_llm.append({
+            'title': s['title'],
+            'sample_text': (ms.text or '') if ms else '',
+        })
+
+    try:
+        cls = _ollama.classify_new_messages(existing_for_llm, new_items)
+    except RuntimeError as exc:
+        return {'error': {'status': 'llm_error', 'detail': str(exc)}}
+
+    # Группируем классификации:
+    # 1) добавление к существующей теме (по индексу) — список message_ids
+    # 2) новые темы — сгруппированы по title (LLM может разнести подряд
+    #    идущие сообщения одной темы под одним title — мерджим).
+    append_map = {}      # index → [msg_ids]
+    new_topics_map = {}  # title.lower() → {'title': str, 'ids': [ids]}
+    for c in cls:
+        if c['topic'] == 'NEW':
+            key = c['title'].strip().lower()
+            if key not in new_topics_map:
+                new_topics_map[key] = {'title': c['title'].strip(),
+                                       'ids': []}
+            new_topics_map[key]['ids'].append(c['id'])
+        else:
+            idx = c['topic']
+            if 0 <= idx < len(saved):
+                append_map.setdefault(idx, []).append(c['id'])
+
+    # Применяем: достаём id-шники строк ChatTopic для append.
+    saved_rows = (db.query(ChatTopic)
+                  .filter(ChatTopic.contact_id == contact_id,
+                          ChatTopic.topic_id.is_(None) if topic_id is None
+                          else ChatTopic.topic_id == int(topic_id))
+                  .order_by(ChatTopic.position.asc(),
+                            ChatTopic.id.asc()).all())
+    for idx, mids in append_map.items():
+        if idx < len(saved_rows):
+            _append_to_topic(db, saved_rows[idx].id, mids)
+    for entry in new_topics_map.values():
+        ids = sorted(set(entry['ids']))
+        if not ids:
+            continue
+        _add_topic(db, contact_id, topic_id,
+                   title=entry['title'],
+                   start_id=ids[0],
+                   message_ids=ids,
+                   fingerprint_max_id=max_id)
+    _bump_fingerprint(db, contact_id, topic_id, max_id)
+    return {'count': len(new_items)}
 
 
 def _topics_with_time(db, topics, handle_ids):
@@ -1209,8 +1404,11 @@ def register_routes(app: Flask) -> None:
         # отдадим клиенту, чтобы он сразу мог показать пин-бар сверху без
         # отдельного запроса.
         from data.chat_topics import get_topics as _get_topics
+        # Для форум-чата отдаём темы LLM ТОЛЬКО открытой темы форума:
+        # соседние темы форума имеют свои закрепы. Для обычного чата —
+        # как раньше (topic_id=None).
         saved_topics = _topics_with_time(
-            db, _get_topics(db, contact_id), handle_ids)
+            db, _get_topics(db, contact_id, topic_id_int), handle_ids)
         return jsonify({
             'contact': {
                 'id': contact.id,
@@ -1308,13 +1506,70 @@ def register_routes(app: Flask) -> None:
                 if not data:
                     return jsonify({'error': 'empty'}), 400
                 try:
-                    telegram_bridge.send_file(tg_handle.tg_chat_id, data,
-                                              upload.filename or 'file', text,
-                                              **reply_kw_tg)
+                    sent_id = telegram_bridge.send_file(
+                        tg_handle.tg_chat_id, data,
+                        upload.filename or 'file', text, **reply_kw_tg)
                 except Exception as exc:  # noqa: BLE001
                     return jsonify({'error': 'send_failed',
                                     'detail': str(exc)}), 502
-                return jsonify({'ok': True, 'media': True})
+                # СРАЗУ пишем локальную запись Messages + Attachment —
+                # echo для своих media от Telethon приходит не всегда
+                # (зависит от версии/настроек клиента). Anti-dupe по
+                # tg_message_id в `_handle_message` защитит от двойной
+                # записи, если echo всё-таки прилетит.
+                mime = (upload.mimetype or '').lower()
+                if mime.startswith('image/'):
+                    kind = 'image'
+                elif mime.startswith('video/'):
+                    kind = 'video'
+                elif mime.startswith('audio/'):
+                    kind = 'audio'
+                else:
+                    kind = 'file'
+                placeholder = {
+                    'image': '📷 Фото', 'video': '🎬 Видео',
+                    'audio': '🎵 Аудио', 'file': '📎 Файл',
+                }.get(kind, '📎 Вложение')
+                now = datetime.now()
+                msg = Messages(
+                    sender='Вы',
+                    text=text or placeholder,
+                    messenger_name='Telegram',
+                    time=now.strftime('%H:%M'),
+                    user_id=user_id,
+                    handle_id=tg_handle.id,
+                    created_at=now,
+                    outgoing=True,
+                    tg_message_id=sent_id,
+                    reply_to_message_id=(
+                        reply_target.id if reply_target else None),
+                )
+                db.add(msg)
+                db.flush()  # нужно msg.id для Attachment
+                # Шифруем и кладём файл в media/<user_id>/<uuid>.enc —
+                # тот же контракт, что у моста (_save_attachment).
+                from data.attachments import Attachment as _Attachment
+                from data.crypto import encrypt_bytes as _encrypt_bytes
+                import uuid as _uuid
+                root = (os.environ.get('SKILLWOOD_MEDIA_ROOT')
+                        or os.path.join(os.getcwd(), 'media'))
+                rel_dir = str(user_id)
+                os.makedirs(os.path.join(root, rel_dir), exist_ok=True)
+                stored_path = f"{rel_dir}/{_uuid.uuid4().hex}.enc"
+                with open(os.path.join(root, stored_path), 'wb') as f:
+                    f.write(_encrypt_bytes(data))
+                att = _Attachment(
+                    user_id=user_id,
+                    message_id=msg.id,
+                    kind=kind,
+                    mime=mime or None,
+                    original_name=upload.filename or None,
+                    stored_path=stored_path,
+                    size=len(data),
+                )
+                db.add(att)
+                db.commit()
+                return jsonify({'ok': True, 'media': True, 'id': msg.id})
 
             try:
                 sent_id = telegram_bridge.send_message(
@@ -1413,48 +1668,49 @@ def register_routes(app: Flask) -> None:
         if not contact:
             return jsonify({'status': 'not_found'}), 404
 
-        try:
-            limit = int(request.args.get('limit') or 200)
-        except ValueError:
-            limit = 200
-        limit = max(50, min(limit, 5000))  # разумные границы
+        # Параметры: force (принудительный полный пересчёт), cached_only
+        # (тихая автозагрузка — не дёргать LLM), topic_id (для форум-тем).
+        # limit больше не нужен — анализируем весь чат / только дельту.
         force = request.args.get('force') == '1'
-        # cached_only=1 — НЕ дёргать LLM. Если в БД нет сохранённых тем —
-        # сразу вернуть пустой список. Используется при автозагрузке
-        # темы на перезаходе, чтобы не блокировать страницу на 1-2 мин.
         cached_only = request.args.get('cached_only') == '1'
+        raw_topic_id = request.args.get('topic_id')
+        try:
+            topic_id = (int(raw_topic_id)
+                        if raw_topic_id not in (None, '', 'null') else None)
+        except ValueError:
+            topic_id = None
+
+        # Защитный потолок: на чате >5000 сообщений chunked-анализ может
+        # уйти на 10+ минут. Берём только последние 5000 — старые темы
+        # уже не релевантны, а пользователь хочет что-то получить за
+        # разумное время.
+        MAX_FULL_MSGS = 5000
 
         handle_ids = [h.id for h in db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()]
         if not handle_ids:
             return jsonify({'status': 'no_messages', 'topics': []})
         from sqlalchemy import func
+        topic_filter_args = [Messages.handle_id.in_(handle_ids)]
+        if topic_id is not None:
+            topic_filter_args.append(Messages.tg_topic_id == topic_id)
         max_id = (db.query(func.max(Messages.id))
-                  .filter(Messages.handle_id.in_(handle_ids)).scalar() or 0)
+                  .filter(*topic_filter_args).scalar() or 0)
 
-        # Если в БД уже есть свежие темы (fingerprint совпадает) — отдаём
-        # их без обращения к LLM. force=1 принуждает пересчёт.
-        if not force:
-            saved_fp, saved_count = _topics_fp(db, contact_id)
-            if saved_fp is not None:
-                # Темы есть в БД — отдаём как кэш, неважно совпадает ли
-                # fingerprint (на перезаходе хотим показать что-то быстро,
-                # пользователь сам нажмёт «обновить» если нужно свежее).
-                saved = _get_topics(db, contact_id)
-                return jsonify({
-                    'status': 'ok',
-                    'topics': _topics_with_time(db, saved, handle_ids),
-                    'cached': True,
-                    'stale': saved_fp != max_id or saved_count != limit,
-                })
+        # Кэш: если max_id не менялся — отдаём что есть.
+        saved_fp, _ = _topics_fp(db, contact_id, topic_id)
+        cache_valid = (saved_fp is not None and saved_fp == max_id)
+        if cached_only or (cache_valid and not force):
+            if saved_fp is None:
+                return jsonify({'status': 'no_cached', 'topics': []})
+            saved = _get_topics(db, contact_id, topic_id)
+            return jsonify({
+                'status': 'ok',
+                'topics': _topics_with_time(db, saved, handle_ids),
+                'cached': True,
+                'stale': not cache_valid,
+            })
 
-        if cached_only:
-            # Тем нет, а LLM нам трогать запрещено. Возвращаем пусто.
-            return jsonify({'status': 'no_cached', 'topics': []})
-
-        # Проверяем что Ollama локально доступна — если нет, сразу
-        # отдаём фрустрирующее, но корректное сообщение для UI с
-        # инструкцией. Не пытаемся вообще ничего считать без неё.
         if not _ollama.is_available():
             return jsonify({
                 'status': 'no_ollama',
@@ -1470,63 +1726,30 @@ def register_routes(app: Flask) -> None:
                 'available_models': models,
             })
 
-        # Тянем последние limit сообщений (по created_at desc), потом
-        # переворачиваем в хронологический порядок (LLM понимает идущие
-        # подряд диалоги лучше).
-        msgs = (db.query(Messages)
-                .filter(Messages.handle_id.in_(handle_ids))
-                .filter(Messages.deleted_at.is_(None))
-                .order_by(Messages.created_at.desc().nullslast(),
-                          Messages.id.desc())
-                .limit(limit).all())
-        msgs = list(reversed(msgs))
-        items = []
-        for m in msgs:
-            text = (m.text or '').strip()
-            if not text:
-                continue
-            items.append({'id': m.id, 'text': text})
-        if not items:
-            return jsonify({'status': 'no_messages', 'topics': []})
+        # Режим: ПОЛНЫЙ (нет кэша или force=1) vs ИНКРЕМЕНТАЛЬНЫЙ
+        # (кэш есть, max_id вырос — обрабатываем только дельту).
+        incremental = (saved_fp is not None and not force
+                       and saved_fp < max_id)
 
-        try:
-            topics = _ollama.extract_topics(items)
-        except RuntimeError as exc:
-            return jsonify({'status': 'llm_error', 'detail': str(exc)})
+        if incremental:
+            analyzed = _topics_incremental(
+                db, contact_id, topic_id, handle_ids,
+                topic_filter_args, saved_fp, max_id)
+        else:
+            analyzed = _topics_full(
+                db, contact_id, topic_id, handle_ids,
+                topic_filter_args, max_id, MAX_FULL_MSGS)
 
-        # Валидируем что start_id LLM указала из нашей пачки — иначе
-        # клик не приведёт никуда. Кладём также «time» (HH:MM первого
-        # сообщения темы) для UI.
-        valid_ids = {it['id'] for it in items}
-        msg_by_id = {m.id: m for m in msgs}
-        clean = []
-        for t in topics:
-            sid = t.get('start_id')
-            if sid not in valid_ids:
-                continue
-            # message_ids: оставляем только те id, которые реально были
-            # в проанализированной пачке.
-            related = [mid for mid in (t.get('message_ids') or [sid])
-                       if mid in valid_ids]
-            if sid not in related:
-                related = [sid] + related
-            clean.append({
-                'title': t['title'],
-                'start_id': sid,
-                'message_ids': related,
-            })
-
-        if clean:
-            _replace_topics(db, contact_id, clean,
-                            analyzed_count=limit,
-                            fingerprint_max_id=max_id)
-            db.commit()
-        saved = _get_topics(db, contact_id)
+        if analyzed.get('error'):
+            return jsonify(analyzed['error'])
+        db.commit()
+        saved = _get_topics(db, contact_id, topic_id)
         return jsonify({
             'status': 'ok',
             'topics': _topics_with_time(db, saved, handle_ids),
-            'analyzed': len(items),
+            'analyzed': analyzed.get('count', 0),
             'cached': False,
+            'incremental': incremental,
         })
 
     @app.route('/contacts/<int:contact_id>/forum-topics.json')

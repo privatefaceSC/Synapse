@@ -30,6 +30,13 @@ class ChatTopic(SqlAlchemyBase):
     contact_id = sqlalchemy.Column(sqlalchemy.Integer,
                                    sqlalchemy.ForeignKey("contacts.id"),
                                    nullable=False, index=True)
+    # Telegram-форумы: один Contact содержит несколько изолированных тем
+    # (Messages.tg_topic_id). LLM-«темы чата» считаются ОТДЕЛЬНО для
+    # каждой темы форума, иначе при переключении между темами форума мы
+    # бы видели одни и те же закрепы. Для обычных (не форумных) чатов
+    # значение NULL.
+    topic_id = sqlalchemy.Column(sqlalchemy.BigInteger,
+                                 nullable=True, index=True)
     title = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     start_message_id = sqlalchemy.Column(sqlalchemy.Integer,
                                          nullable=False)
@@ -47,10 +54,20 @@ class ChatTopic(SqlAlchemyBase):
     fingerprint_max_id = sqlalchemy.Column(sqlalchemy.Integer, nullable=True)
 
 
-def get_topics(db, contact_id: int):
-    """Все темы контакта в порядке position. Парсит message_ids_json."""
+def _topic_filter(topic_id):
+    """`topic_id == NULL` в SQL никогда не True — для NULL-веток (не-форум
+    или «все темы») нужен `IS NULL`. Возвращает готовый SQLAlchemy-фильтр."""
+    if topic_id is None:
+        return ChatTopic.topic_id.is_(None)
+    return ChatTopic.topic_id == int(topic_id)
+
+
+def get_topics(db, contact_id: int, topic_id=None):
+    """Все темы контакта (для форум-чата — конкретной темы форума) в
+    порядке position. Парсит message_ids_json."""
     rows = (db.query(ChatTopic)
-            .filter(ChatTopic.contact_id == contact_id)
+            .filter(ChatTopic.contact_id == contact_id,
+                    _topic_filter(topic_id))
             .order_by(ChatTopic.position.asc(), ChatTopic.id.asc())
             .all())
     out = []
@@ -70,17 +87,20 @@ def get_topics(db, contact_id: int):
     return out
 
 
-def replace_topics(db, contact_id: int, topics: list, analyzed_count: int,
-                   fingerprint_max_id: int):
-    """Полностью переписать набор тем контакта. `topics` — список dict-ов
-    {title, start_id, message_ids}. Position проставляется по порядку.
+def replace_topics(db, contact_id: int, topic_id, topics: list,
+                   analyzed_count: int, fingerprint_max_id: int):
+    """Полностью переписать набор тем для пары (contact_id, topic_id).
+    `topic_id`=None — обычный (не форумный) чат.
+    `topics` — список dict-ов {title, start_id, message_ids}. Position
+    проставляется по порядку.
 
-    Удаляем старые ChatTopic'и контакта и вставляем свежие — мы не
-    ведём историю анализов, только текущий снимок."""
+    Удаляем старые ChatTopic'и ТОЛЬКО для этой пары и вставляем свежие —
+    закрепы соседних тем форума не трогаем."""
     db.query(ChatTopic).filter(
-        ChatTopic.contact_id == contact_id).delete(
-        synchronize_session=False)
+        ChatTopic.contact_id == contact_id,
+        _topic_filter(topic_id)).delete(synchronize_session=False)
     now = datetime.datetime.now()
+    tid_value = None if topic_id is None else int(topic_id)
     for pos, t in enumerate(topics):
         ids = t.get("message_ids") or [t.get("start_id")]
         # Гарантируем что start_id есть в message_ids — пригодится для
@@ -89,6 +109,7 @@ def replace_topics(db, contact_id: int, topics: list, analyzed_count: int,
             ids = [t["start_id"]] + ids
         db.add(ChatTopic(
             contact_id=contact_id,
+            topic_id=tid_value,
             title=t["title"],
             start_message_id=int(t["start_id"]),
             message_ids_json=json.dumps(ids, ensure_ascii=False),
@@ -100,12 +121,67 @@ def replace_topics(db, contact_id: int, topics: list, analyzed_count: int,
     db.flush()
 
 
-def fingerprint(db, contact_id: int):
-    """Возвращает (max_id, count) текущего набора. Используется для
-    решения: пересчитывать или брать сохранённое."""
+def fingerprint(db, contact_id: int, topic_id=None):
+    """Возвращает (max_id, count) текущего набора для пары
+    (contact_id, topic_id). Используется для решения: пересчитывать
+    или брать сохранённое."""
     row = (db.query(ChatTopic.fingerprint_max_id, ChatTopic.analyzed_count)
-           .filter(ChatTopic.contact_id == contact_id)
+           .filter(ChatTopic.contact_id == contact_id,
+                   _topic_filter(topic_id))
            .order_by(ChatTopic.id.asc()).first())
     if not row:
         return (None, None)
     return (row[0], row[1])
+
+
+def append_to_topic(db, ct_id: int, new_message_ids: list):
+    """Добавить id-ы сообщений в message_ids_json существующей темы.
+    Дубликаты не плодим, сортируем по возрастанию (хронология)."""
+    row = db.query(ChatTopic).filter(ChatTopic.id == ct_id).first()
+    if not row:
+        return
+    try:
+        cur = json.loads(row.message_ids_json) if row.message_ids_json else []
+    except (TypeError, ValueError):
+        cur = []
+    cur_set = set(cur)
+    for mid in new_message_ids:
+        cur_set.add(int(mid))
+    row.message_ids_json = json.dumps(sorted(cur_set), ensure_ascii=False)
+    db.flush()
+
+
+def add_topic(db, contact_id: int, topic_id, title: str, start_id: int,
+              message_ids: list, fingerprint_max_id: int):
+    """Создать новую тему — НЕ удаляя существующие. Position = max+1.
+    Используется в инкрементальном режиме когда LLM нашла новую тему
+    среди новых сообщений."""
+    max_pos = (db.query(sqlalchemy.func.max(ChatTopic.position))
+               .filter(ChatTopic.contact_id == contact_id,
+                       _topic_filter(topic_id)).scalar()) or -1
+    ids = list(message_ids) or [start_id]
+    if start_id not in ids:
+        ids = [start_id] + ids
+    db.add(ChatTopic(
+        contact_id=contact_id,
+        topic_id=None if topic_id is None else int(topic_id),
+        title=title,
+        start_message_id=int(start_id),
+        message_ids_json=json.dumps(sorted(set(ids)), ensure_ascii=False),
+        position=max_pos + 1,
+        computed_at=datetime.datetime.now(),
+        analyzed_count=None,
+        fingerprint_max_id=int(fingerprint_max_id or 0),
+    ))
+    db.flush()
+
+
+def bump_fingerprint(db, contact_id: int, topic_id, new_max_id: int):
+    """Обновить fingerprint_max_id у всех тем пары (contact, topic) —
+    после инкрементального прохода это значит «мы дошли до этого id»,
+    и при следующем запросе кэш будет считаться актуальным."""
+    (db.query(ChatTopic)
+     .filter(ChatTopic.contact_id == contact_id, _topic_filter(topic_id))
+     .update({ChatTopic.fingerprint_max_id: int(new_max_id)},
+             synchronize_session=False))
+    db.flush()

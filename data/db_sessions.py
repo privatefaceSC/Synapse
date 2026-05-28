@@ -57,6 +57,7 @@ def _apply_light_migrations(engine):
                      ("pinned_at", "DATETIME"),
                      ("muted", "BOOLEAN")],
         "users": [("username", "VARCHAR")],
+        "chat_topics": [("topic_id", "BIGINT")],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():
