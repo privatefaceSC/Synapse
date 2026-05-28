@@ -103,7 +103,7 @@
                     <input type="password" class="form-control"
                            id="confirm_password" name="confirm_password" required>
                 </div>
-                <div class="col-12">
+                <div class="col-sm-6">
                     <label class="form-label">Пол</label>
                     <div>
                         <div class="form-check form-check-inline">
@@ -118,6 +118,31 @@
                                    {% if v.get('sex') == 'female' %}checked{% endif %}>
                             <label class="form-check-label" for="female">Женский</label>
                         </div>
+                    </div>
+                </div>
+                <div class="col-sm-6">
+                    <label for="preferred_lang" class="form-label">
+                        Язык для перевода</label>
+                    <select class="form-control" id="preferred_lang"
+                            name="preferred_lang">
+                        {% set cur = v.get('preferred_lang', 'ru') %}
+                        <option value="ru" {% if cur == 'ru' %}selected{% endif %}>Русский</option>
+                        <option value="en" {% if cur == 'en' %}selected{% endif %}>English</option>
+                        <option value="es" {% if cur == 'es' %}selected{% endif %}>Español</option>
+                        <option value="de" {% if cur == 'de' %}selected{% endif %}>Deutsch</option>
+                        <option value="fr" {% if cur == 'fr' %}selected{% endif %}>Français</option>
+                        <option value="it" {% if cur == 'it' %}selected{% endif %}>Italiano</option>
+                        <option value="pt" {% if cur == 'pt' %}selected{% endif %}>Português</option>
+                        <option value="uk" {% if cur == 'uk' %}selected{% endif %}>Українська</option>
+                        <option value="tr" {% if cur == 'tr' %}selected{% endif %}>Türkçe</option>
+                        <option value="zh" {% if cur == 'zh' %}selected{% endif %}>中文</option>
+                        <option value="ja" {% if cur == 'ja' %}selected{% endif %}>日本語</option>
+                        <option value="ko" {% if cur == 'ko' %}selected{% endif %}>한국어</option>
+                        <option value="ar" {% if cur == 'ar' %}selected{% endif %}>العربية</option>
+                    </select>
+                    <div class="form-text">
+                        На этот язык будут переводиться чужие сообщения
+                        при выборе «Перевести» в контекстном меню.
                     </div>
                 </div>
             </div>

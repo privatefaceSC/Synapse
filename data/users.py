@@ -20,6 +20,9 @@ class User(SqlAlchemyBase):
     # Публичный User ID (как @username в Telegram) — по нему пользователя
     # находят во внутреннем мессенджере. Уникальный, латиница/цифры/«_».
     username = sqlalchemy.Column(sqlalchemy.String, nullable=True, unique=True)
+    # ISO-код языка пользователя (ru, en, es, …) — на него Ollama переводит
+    # сообщения по правому клику «Перевести». Если NULL — считаем русский.
+    preferred_lang = sqlalchemy.Column(sqlalchemy.String, nullable=True)
 
 
 class Messages(SqlAlchemyBase):

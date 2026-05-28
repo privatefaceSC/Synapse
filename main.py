@@ -730,6 +730,7 @@ def register_routes(app: Flask) -> None:
             messages_count=messages_count,
             has_avatar=os.path.exists(_avatar_file(user.id)),
             username=user.username or '',
+            preferred_lang=user.preferred_lang or 'ru',
         )
 
     @app.route('/home/username', methods=['POST'])
@@ -752,6 +753,24 @@ def register_routes(app: Flask) -> None:
         if is_xhr:
             return jsonify({'ok': True, 'username': new})
         return redirect('/home')
+
+    @app.route('/home/lang', methods=['POST'])
+    def change_lang():
+        """Сменить язык, на который Ollama переводит чужие сообщения.
+        Принимает ISO-код, валидирует против whitelist (любая отсебятина
+        отвалится — мы не хотим, чтобы LLM получала мусор в target_lang)."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        allowed = {'ru', 'en', 'es', 'de', 'fr', 'it', 'pt',
+                   'uk', 'tr', 'zh', 'ja', 'ko', 'ar'}
+        new = (request.form.get('lang') or '').strip().lower()
+        if new not in allowed:
+            return jsonify({'error': 'bad_lang'}), 400
+        db = get_db()
+        me = db.query(User).filter(User.id == session['user_id']).first()
+        me.preferred_lang = new
+        db.commit()
+        return jsonify({'ok': True, 'lang': new})
 
     @app.route('/messenger')
     def messenger_index():
@@ -1085,6 +1104,14 @@ def register_routes(app: Flask) -> None:
             confirm_password = request.form.get('confirm_password')
             sex = request.form.get('sex')
             username = _normalize_username(request.form.get('username'))
+            # ISO-код языка для перевода чужих сообщений через Ollama.
+            # Поддерживаем закрытый список — иначе пользователь введёт
+            # «русский», и потом LLM получит мусор в `target_lang`.
+            allowed_langs = {'ru', 'en', 'es', 'de', 'fr', 'it', 'pt',
+                             'uk', 'tr', 'zh', 'ja', 'ko', 'ar'}
+            preferred_lang = (request.form.get('preferred_lang') or '').strip().lower()
+            if preferred_lang not in allowed_langs:
+                preferred_lang = 'ru'
 
             def fail(msg):
                 return render_template('register.html', message=msg,
@@ -1109,6 +1136,7 @@ def register_routes(app: Flask) -> None:
                 email=email,
                 sex=sex,
                 username=username,
+                preferred_lang=preferred_lang,
                 hashed_password=generate_password_hash(password),
             )
             user.connect_code = _generate_code()
@@ -2212,6 +2240,41 @@ def register_routes(app: Flask) -> None:
         db.delete(msg)
         db.commit()
         return jsonify({'ok': True, 'tg_deleted': tg_deleted})
+
+    @app.route('/messages/<int:message_id>/translate', methods=['POST'])
+    def message_translate(message_id):
+        """Перевести текст сообщения через локальную Ollama на язык
+        пользователя (`User.preferred_lang`). НЕ кэшируем результат —
+        пользователь может сменить целевой язык, и переводить заново
+        дешевле, чем городить инвалидацию."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import ollama as _ollama
+        db = get_db()
+        user_id = session['user_id']
+        msg = db.query(Messages).filter(
+            Messages.id == message_id, Messages.user_id == user_id).first()
+        if not msg:
+            return jsonify({'error': 'not_found'}), 404
+        text = (msg.text or '').strip()
+        if not text:
+            return jsonify({'error': 'empty'}), 400
+        user = db.query(User).filter(User.id == user_id).first()
+        target = (user.preferred_lang if user else None) or 'ru'
+        if not _ollama.is_available():
+            return jsonify({
+                'status': 'no_ollama',
+                'detail': 'Перевод требует локальной Ollama. '
+                          'Запустите её и попробуйте снова.',
+            }), 503
+        try:
+            translated = _ollama.translate(text, target)
+        except RuntimeError as exc:
+            return jsonify({'status': 'llm_error',
+                            'detail': str(exc)}), 502
+        return jsonify({'ok': True,
+                        'text': translated,
+                        'lang': target})
 
     @app.route('/messages/<int:message_id>/edit', methods=['POST'])
     def message_edit(message_id):

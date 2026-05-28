@@ -559,6 +559,35 @@
     .bubble-row.outgoing .bubble .text .msg-link {
         color: #fff; text-decoration: underline;
     }
+    /* Перевод сообщения — прицеплен под .text внутри bubble, мягко
+     * отделён горизонтальной чертой. */
+    .bubble .msg-translation {
+        margin-top: 8px; padding-top: 6px;
+        border-top: 1px dashed rgba(37,99,235,.35);
+        font-size: 13.5px; color: #1f2733;
+    }
+    .bubble-row.outgoing .bubble .msg-translation {
+        color: #fff; border-top-color: rgba(255,255,255,.4);
+    }
+    .bubble .msg-translation .mt-head {
+        display: flex; align-items: center; gap: 6px;
+        font-size: 11px; font-weight: 700; opacity: .7;
+        text-transform: uppercase; letter-spacing: .04em;
+        margin-bottom: 3px;
+    }
+    .bubble .msg-translation .mt-close {
+        margin-left: auto; background: none; border: none;
+        cursor: pointer; font-size: 16px; line-height: 1; padding: 0 4px;
+        color: inherit; opacity: .6;
+    }
+    .bubble .msg-translation .mt-close:hover { opacity: 1; }
+    .bubble .msg-translation .mt-status { font-style: italic; opacity: .7; }
+    .bubble .msg-translation .mt-err { color: #ef4444; }
+    .bubble-row.outgoing .bubble .msg-translation .mt-err { color: #fecaca; }
+    .bubble .msg-translation .mt-body { white-space: pre-wrap; word-break: break-word; }
+    [data-bs-theme="dark"] .bubble .msg-translation {
+        color: #e8eaed; border-top-color: rgba(96,165,250,.35);
+    }
     /* Цитата сообщения, на которое это — ответ (reply). */
     .bubble .reply-quote {
         display: block; margin-bottom: 6px; padding: 4px 9px;
@@ -1933,6 +1962,13 @@
             }
             items.push('<button class="copy-btn" type="button">'
                 + '<span class="menu-ico">📋</span>Копировать</button>');
+            // Перевод доступен только если есть исходный текст; для своих
+            // сообщений тоже разрешаем — иногда хочется проверить как
+            // звучит фраза на другом языке.
+            if (text && text.length > 0) {
+                items.push('<button class="translate-msg-btn" type="button">'
+                    + '<span class="menu-ico">🌐</span>Перевести</button>');
+            }
             if (outgoing) {
                 items.push('<button class="edit-msg-btn" type="button">'
                     + '<span class="menu-ico">✏</span>Изменить</button>');
@@ -2030,6 +2066,54 @@
             } catch (err) {}
             closeMenu();
         });
+        const trBtn = menu.querySelector('.translate-msg-btn');
+        if (trBtn) {
+            trBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                closeMenu();
+                // Находим bubble и подвешиваем под текстом плашку
+                // «🌐 переводится…», которую заменим результатом.
+                const row = document.querySelector(
+                    '.bubble-row[data-message-id="' + messageId + '"]');
+                const bubble = row && row.querySelector('.bubble');
+                if (!bubble) return;
+                // Если уже есть перевод — toggle (убрать).
+                const existing = bubble.querySelector('.msg-translation');
+                if (existing) { existing.remove(); return; }
+                const box = document.createElement('div');
+                box.className = 'msg-translation';
+                box.innerHTML = '<div class="mt-status">🌐 Переводится…</div>';
+                bubble.appendChild(box);
+                try {
+                    const r = await fetch('/messages/' + messageId
+                                          + '/translate', {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: {'X-Requested-With': 'XMLHttpRequest'},
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (r.ok && d.ok && d.text) {
+                        box.innerHTML =
+                            '<div class="mt-head">🌐 Перевод ('
+                            + escapeHtml((d.lang || '').toUpperCase())
+                            + ') <button type="button" class="mt-close"'
+                            + ' title="Скрыть перевод">×</button></div>'
+                            + '<div class="mt-body">'
+                            + escapeHtml(d.text)
+                            + '</div>';
+                        box.querySelector('.mt-close')
+                            .addEventListener('click', () => box.remove());
+                    } else {
+                        box.innerHTML = '<div class="mt-status mt-err">'
+                            + escapeHtml(d.detail || d.error
+                                || ('Ошибка ' + r.status))
+                            + '</div>';
+                    }
+                } catch (err) {
+                    box.innerHTML = '<div class="mt-status mt-err">'
+                        + 'Сеть недоступна.</div>';
+                }
+            });
+        }
         const editBtn = menu.querySelector('.edit-msg-btn');
         if (editBtn) {
             editBtn.addEventListener('click', async (e) => {

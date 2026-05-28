@@ -76,6 +76,25 @@
     .status-pill .dot {
         width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto;
     }
+    /* Inline-select для смены языка прямо внутри .status-pill —
+     * без рамки/фона, чтобы выглядел частью текста pill'а. */
+    .lang-inline-select {
+        background: transparent; border: none; outline: none;
+        color: inherit; font: inherit; cursor: pointer;
+        padding: 0; appearance: none; -webkit-appearance: none;
+        padding-right: 14px;
+        background-image: linear-gradient(45deg, transparent 50%, currentColor 50%),
+                          linear-gradient(135deg, currentColor 50%, transparent 50%);
+        background-position: calc(100% - 8px) 50%, calc(100% - 4px) 50%;
+        background-size: 4px 4px, 4px 4px; background-repeat: no-repeat;
+    }
+    .lang-inline-select option { color: #1a2230; background: #fff; }
+    .lang-status {
+        font-size: .72rem; opacity: .7; margin-left: 2px;
+        transition: opacity .2s ease;
+    }
+    .lang-status.ok { color: #10b981; }
+    .lang-status.err { color: #fca5a5; }
     .status-pill .dot.on  { background: #4ade80; box-shadow: 0 0 0 4px rgba(74,222,128,.25); }
     .status-pill .dot.off { background: #fbbf24; box-shadow: 0 0 0 4px rgba(251,191,36,.25); }
     .status-pill a { color: #fff; text-decoration: underline; }
@@ -187,11 +206,31 @@
                         <a href="/code">введите код</a>
                     </span>
                 {% endif %}
-                <div class="mt-2">
+                <div class="mt-2 d-flex flex-wrap gap-2">
                     <span class="status-pill">
                         🆔 <span id="uid-value">@{{ username }}</span>
                         <a href="#" id="uid-edit" title="Изменить User ID"
                            style="margin-left:2px;">✎</a>
+                    </span>
+                    <span class="status-pill" title="Язык, на который переводятся чужие сообщения">
+                        🌐
+                        <select id="lang-select" class="lang-inline-select">
+                            {% set cur = preferred_lang %}
+                            <option value="ru" {% if cur == 'ru' %}selected{% endif %}>Русский</option>
+                            <option value="en" {% if cur == 'en' %}selected{% endif %}>English</option>
+                            <option value="es" {% if cur == 'es' %}selected{% endif %}>Español</option>
+                            <option value="de" {% if cur == 'de' %}selected{% endif %}>Deutsch</option>
+                            <option value="fr" {% if cur == 'fr' %}selected{% endif %}>Français</option>
+                            <option value="it" {% if cur == 'it' %}selected{% endif %}>Italiano</option>
+                            <option value="pt" {% if cur == 'pt' %}selected{% endif %}>Português</option>
+                            <option value="uk" {% if cur == 'uk' %}selected{% endif %}>Українська</option>
+                            <option value="tr" {% if cur == 'tr' %}selected{% endif %}>Türkçe</option>
+                            <option value="zh" {% if cur == 'zh' %}selected{% endif %}>中文</option>
+                            <option value="ja" {% if cur == 'ja' %}selected{% endif %}>日本語</option>
+                            <option value="ko" {% if cur == 'ko' %}selected{% endif %}>한국어</option>
+                            <option value="ar" {% if cur == 'ar' %}selected{% endif %}>العربية</option>
+                        </select>
+                        <span id="lang-status" class="lang-status"></span>
                     </span>
                 </div>
             </div>
@@ -297,6 +336,48 @@
             try { document.execCommand('copy'); } catch (e) {}
             ta.remove(); done();
         }
+    });
+})();
+
+// Смена языка перевода — AJAX, без перезагрузки страницы. Статус
+// «✓» / «не удалось» прячется через 1.5 сек.
+(function() {
+    var sel = document.getElementById('lang-select');
+    var status = document.getElementById('lang-status');
+    if (!sel) return;
+    sel.addEventListener('change', async function() {
+        var lang = sel.value;
+        if (status) {
+            status.textContent = '…';
+            status.className = 'lang-status';
+        }
+        try {
+            var r = await fetch('/home/lang', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: new URLSearchParams({lang: lang}),
+            });
+            var data = await r.json().catch(function() { return {}; });
+            if (r.ok && data.ok) {
+                if (status) {
+                    status.textContent = '✓';
+                    status.className = 'lang-status ok';
+                }
+            } else {
+                if (status) {
+                    status.textContent = '✗';
+                    status.className = 'lang-status err';
+                }
+            }
+        } catch (e) {
+            if (status) {
+                status.textContent = '✗';
+                status.className = 'lang-status err';
+            }
+        }
+        setTimeout(function() {
+            if (status) { status.textContent = ''; status.className = 'lang-status'; }
+        }, 1500);
     });
 })();
 

@@ -56,7 +56,8 @@ def _apply_light_migrations(engine):
         "contacts": [("avatar_path", "VARCHAR"),
                      ("pinned_at", "DATETIME"),
                      ("muted", "BOOLEAN")],
-        "users": [("username", "VARCHAR")],
+        "users": [("username", "VARCHAR"),
+                  ("preferred_lang", "VARCHAR")],
         "chat_topics": [("topic_id", "BIGINT")],
     }
     with engine.begin() as conn:
