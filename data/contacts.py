@@ -22,6 +22,11 @@ class Contact(SqlAlchemyBase):
     # Беззвучный режим: True = не показывать браузерные уведомления и не пищать.
     # Бэйдж непрочитанного всё равно остаётся — это «выключить звук», не «не следить».
     muted = sqlalchemy.Column(sqlalchemy.Boolean, default=False, nullable=True)
+    # Блокировка: NULL = не заблокирован. Иначе момент блокировки. Если стоит,
+    # record_message() молча игнорирует новые входящие от этого контакта —
+    # сообщение не сохраняется ни в БД, ни в Telegram оно само собой остаётся
+    # (мы лишь не показываем). Старая переписка по-прежнему доступна.
+    blocked_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
 
     handles = orm.relationship("MessengerHandle", back_populates="contact",
                                foreign_keys="MessengerHandle.contact_id")
@@ -172,7 +177,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     tg_message_id=None, reply_to_tg_id=None, package_name=None,
                     tg_ttl_seconds=None, fwd_from_name=None,
                     fwd_from_tg_chat_id=None, tg_topic_id=None,
-                    tg_topic_title=None, tg_is_forum=None):
+                    tg_topic_title=None, tg_is_forum=None,
+                    text_html=None):
     """Записывает сообщение.
 
     `sender_raw` — ключ личности (контакта): для лички это имя
@@ -192,6 +198,12 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                                    tg_chat_id=tg_chat_id,
                                    tg_chat_type=tg_chat_type,
                                    package_name=package_name)
+    # Контакт заблокирован — молча игнорируем новые входящие. Свои
+    # исходящие пропускаем (вдруг разблокировка и сами что-то ответили).
+    if not outgoing:
+        contact = db.query(Contact).filter(Contact.id == handle.contact_id).first()
+        if contact is not None and contact.blocked_at is not None:
+            return None
     # Если мост только что узнал, что чат — форум-канал, отметим
     # это на handle. Делается лениво — при первом сообщении.
     if tg_is_forum is not None and bool(handle.tg_is_forum) != bool(tg_is_forum):
@@ -222,6 +234,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         fwd_from_tg_chat_id=fwd_from_tg_chat_id,
         tg_topic_id=tg_topic_id,
         tg_topic_title=tg_topic_title,
+        text_html=text_html,
     )
     db.add(msg)
     db.commit()

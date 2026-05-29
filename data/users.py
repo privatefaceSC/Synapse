@@ -73,3 +73,12 @@ class Messages(SqlAlchemyBase):
     # кладёт его в `MessageActionTopicCreate.title`. У остальных
     # сообщений темы поле остаётся NULL — мы достаём название из головы.
     tg_topic_title = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # HTML-версия текста с разметкой Telegram (bold/italic/spoiler/code/
+    # ссылки) — приходит из `msg.entities`, конвертируется через
+    # `telethon.extensions.html.unparse`. NULL — нет разметки или сообщение
+    # не из Telegram; UI рендерит обычный `text` через escapeHtml+linkify.
+    text_html = sqlalchemy.Column(EncryptedText(), nullable=True)
+    # Закрепление в чате (Telegram pin). NULL — не закреплено; иначе —
+    # момент закрепления. Telegram возвращает закрепы в любом порядке,
+    # мы храним время чтобы пин-бар показывал сверху последние закрепы.
+    pinned_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)

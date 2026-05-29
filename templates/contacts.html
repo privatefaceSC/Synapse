@@ -403,8 +403,8 @@
     }
     .feed-header .is-typing { color: #3b82f6; font-style: italic; }
     [data-bs-theme="dark"] .feed-header .is-typing { color: #60a5fa; }
-    .feed-header.expandable .feed-header-top { cursor: pointer; user-select: none; }
-    .feed-header.expandable .feed-header-top:hover { background: rgba(0,0,0,.025); }
+    .feed-header .feed-header-top { cursor: pointer; user-select: none; }
+    .feed-header .feed-header-top:hover { background: rgba(0,0,0,.025); }
     .feed-header .fw-semibold { font-size: 16px; font-weight: 700; color: #111827; }
     .feed-header .avatar { width: 46px; height: 46px; font-size: 17px;
         box-shadow: 0 3px 8px rgba(16,24,40,.22);
@@ -548,6 +548,58 @@
     }
     .bubble:hover { box-shadow: 0 4px 14px rgba(16,24,40,.10); }
     .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; word-break: break-word; }
+    /* Форматирование текста из Telegram entities. */
+    .bubble .text b, .bubble .text strong { font-weight: 700; }
+    .bubble .text i, .bubble .text em { font-style: italic; }
+    .bubble .text u { text-decoration: underline; }
+    .bubble .text s, .bubble .text strike, .bubble .text del { text-decoration: line-through; }
+    .bubble .text code {
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+        background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px;
+        font-size: 0.92em;
+    }
+    .bubble .text pre {
+        font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+        background: rgba(15,23,42,.92); color: #e2e8f0;
+        padding: 10px 12px; border-radius: 10px;
+        font-size: 0.9em; overflow-x: auto; margin: 6px 0;
+        white-space: pre; line-height: 1.45;
+        scrollbar-width: thin;
+    }
+    .bubble .text pre code {
+        /* Внутри pre — снимаем фон/паддинг у inline code,
+         * иначе двойная плашка выглядит уродливо. */
+        background: transparent; padding: 0; color: inherit;
+        font-size: 1em;
+    }
+    .bubble .text blockquote {
+        border-left: 3px solid rgba(37,99,235,.5);
+        padding-left: 10px; margin: 4px 0; opacity: .85;
+    }
+    /* Спойлер: серая плитка, при ховере раскрывается с blur-анимацией. */
+    .bubble .text .spoiler {
+        background: #475569; color: transparent;
+        border-radius: 4px; padding: 0 4px;
+        cursor: pointer; user-select: none;
+        transition: background .25s ease, color .25s ease;
+    }
+    .bubble .text .spoiler.revealed,
+    .bubble .text .spoiler:hover {
+        background: transparent; color: inherit; user-select: text;
+    }
+    [data-bs-theme="dark"] .bubble .text code,
+    [data-bs-theme="dark"] .bubble .text pre {
+        background: rgba(255,255,255,.08);
+    }
+    [data-bs-theme="dark"] .bubble .text .spoiler { background: #334155; }
+    /* В исходящих синих bubble: code/pre фон чуть светлее, чтобы был контраст. */
+    .bubble-row.outgoing .bubble .text code,
+    .bubble-row.outgoing .bubble .text pre {
+        background: rgba(255,255,255,.18);
+    }
+    .bubble-row.outgoing .bubble .text blockquote {
+        border-left-color: rgba(255,255,255,.55);
+    }
     .bubble .text .msg-link {
         color: #2563eb; text-decoration: underline;
         text-underline-offset: 2px; word-break: break-all;
@@ -888,6 +940,52 @@
         background: #0a0f17; border-color: #60a5fa;
     }
 
+    /* Маркер закреплённого сообщения — компактная иконка ВНУТРИ bubble,
+     * справа сверху. Раньше ::before выходил за пределы bubble (top: -7px;
+     * right: -2px), и messages-container получал горизонтальный/
+     * вертикальный overflow → у composer появлялся «ползунок». */
+    .bubble-row .bubble { position: relative; }
+    .bubble-row.pinned .bubble::before {
+        content: '📌'; position: absolute; top: 4px; right: 6px;
+        font-size: 11px; opacity: .8; pointer-events: none;
+    }
+    /* Чуть сдвигаем правый край text-блока, чтобы значок не наезжал
+     * на длинный текст. */
+    .bubble-row.pinned .bubble .text { padding-right: 18px; }
+    /* Плашка «📌 Закреплённые» — поверх ленты, под feed-header. Клик
+     * по строке — переход к bubble, как клик по reply-цитате. */
+    .pinned-bar {
+        display: flex; align-items: center; gap: 10px;
+        background: rgba(255,255,255,.7); backdrop-filter: blur(6px);
+        border: 1px solid #e2e8f0; border-radius: 12px;
+        padding: 8px 12px; margin: 0 0 10px;
+        cursor: pointer; transition: background .15s ease;
+        flex: 0 0 auto;
+    }
+    .pinned-bar:hover { background: rgba(255,255,255,.92); }
+    [data-bs-theme="dark"] .pinned-bar {
+        background: rgba(26,29,36,.7); border-color: #2a2f3a;
+    }
+    [data-bs-theme="dark"] .pinned-bar:hover { background: rgba(35,40,49,.95); }
+    .pinned-bar .pb-ico { font-size: 16px; flex: 0 0 auto; opacity: .85; }
+    .pinned-bar .pb-body { flex: 1 1 auto; min-width: 0; }
+    .pinned-bar .pb-label {
+        font-size: 11px; color: #2563eb; font-weight: 600;
+        text-transform: uppercase; letter-spacing: .04em;
+    }
+    [data-bs-theme="dark"] .pinned-bar .pb-label { color: #60a5fa; }
+    .pinned-bar .pb-text {
+        font-size: 13.5px; color: #1f2733;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    [data-bs-theme="dark"] .pinned-bar .pb-text { color: #e2e8f0; }
+    .pinned-bar .pb-count {
+        font-size: 11px; color: #64748b; flex: 0 0 auto;
+        background: rgba(0,0,0,.05); padding: 2px 7px; border-radius: 999px;
+    }
+    [data-bs-theme="dark"] .pinned-bar .pb-count {
+        color: #94a3b8; background: rgba(255,255,255,.08);
+    }
     /* Подсветка сообщений выбранной темы — мягкое цветное обрамление. */
     .bubble-row.topic-hl .bubble {
         box-shadow: 0 0 0 2px rgba(37,99,235,.5),
@@ -1194,7 +1292,7 @@
     [data-bs-theme="dark"] .feed-header {
         border-bottom-color: #242832; background: rgba(19,21,25,.82);
     }
-    [data-bs-theme="dark"] .feed-header.expandable .feed-header-top:hover {
+    [data-bs-theme="dark"] .feed-header .feed-header-top:hover {
         background: rgba(255,255,255,.04);
     }
     [data-bs-theme="dark"] .feed-header .fw-semibold { color: #f3f4f6; }
@@ -1233,6 +1331,230 @@
         .contact-row, .contact-row .avatar { transition: none; }
         .bubble:hover, .bubble .media-img:hover { transform: none; }
     }
+
+    /* --- Модальная панель «Профиль контакта» по центру экрана --- */
+    /* Палитра у панели всегда тёмная (как в Telegram), независимо от темы
+       сайта — поэтому светлые/тёмные оверрайды ниже не нужны. */
+    .profile-backdrop {
+        position: fixed; inset: 0; background: rgba(15,23,42,.55);
+        opacity: 0; pointer-events: none;
+        transition: opacity .22s ease; z-index: 1040;
+    }
+    .profile-backdrop.open { opacity: 1; pointer-events: auto; }
+    .profile-panel {
+        position: fixed; top: 50%; left: 50%;
+        width: 480px; max-width: 92vw;
+        height: auto; max-height: 88vh;
+        background: #1e2533; color: #f8fafc;
+        border-radius: 14px;
+        box-shadow: 0 20px 60px rgba(0,0,0,.5);
+        transform: translate(-50%, -50%) scale(.96);
+        opacity: 0; pointer-events: none;
+        transition: transform .2s ease, opacity .2s ease;
+        z-index: 1050;
+        display: flex; flex-direction: column; overflow: hidden;
+    }
+    .profile-panel.open {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1; pointer-events: auto;
+    }
+    .profile-panel[hidden] { display: none; }
+    .profile-content { flex: 1 1 auto; overflow-y: auto; padding: 0; }
+    .profile-head {
+        padding: 18px 16px 14px 16px;
+        position: sticky; top: 0; background: #1e2533; z-index: 2;
+        border-bottom: 1px solid #2a3346;
+    }
+    .profile-head-top {
+        display: flex; align-items: center; gap: 8px;
+        margin-bottom: 12px;
+    }
+    .profile-close {
+        width: 36px; height: 36px; border-radius: 50%;
+        border: none; background: transparent; cursor: pointer;
+        font-size: 22px; line-height: 1; color: #cbd5e1;
+        margin-left: auto;
+    }
+    .profile-close:hover { background: rgba(255,255,255,.08); }
+    .profile-title {
+        font-size: 14px; color: #cbd5e1;
+        font-weight: 600;
+    }
+    .profile-id-block { display: flex; gap: 14px; align-items: center; }
+    .profile-id-block .avatar {
+        width: 72px; height: 72px; font-size: 28px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        color: #fff; font-weight: 700; flex: 0 0 72px;
+        overflow: hidden;
+    }
+    .profile-id-block .avatar img {
+        width: 100%; height: 100%; object-fit: cover;
+    }
+    .profile-name {
+        font-size: 20px; font-weight: 700; color: #ffffff;
+        line-height: 1.2; word-break: break-word;
+    }
+    .profile-sub {
+        font-size: 13px; color: #cbd5e1; margin-top: 2px;
+    }
+    .profile-actions {
+        display: grid; grid-template-columns: repeat(5, 1fr);
+        gap: 6px; padding: 12px 12px 14px 12px;
+        border-bottom: 1px solid #2a3346;
+    }
+    .profile-action {
+        display: flex; flex-direction: column; align-items: center;
+        gap: 4px; padding: 10px 4px; border: none; background: #2a3346;
+        border-radius: 10px; cursor: pointer; color: #ffffff;
+        font-size: 12px; line-height: 1.2;
+    }
+    .profile-action:hover { background: #36405a; }
+    .profile-action .ico {
+        font-size: 18px; line-height: 1;
+    }
+    .profile-action.danger { color: #fca5a5; }
+    .profile-action.danger:hover { background: #4b1e23; }
+    .profile-section {
+        padding: 6px 0;
+        border-bottom: 1px solid #2a3346;
+    }
+    .profile-section:last-child { border-bottom: none; }
+    .profile-section-title {
+        padding: 12px 16px 4px 16px;
+        font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+        color: #94a3b8; font-weight: 700;
+    }
+    .profile-row {
+        display: flex; align-items: center; gap: 14px;
+        padding: 10px 16px; cursor: default;
+        font-size: 14px; color: #ffffff;
+    }
+    .profile-row.tappable { cursor: pointer; }
+    .profile-row.tappable:hover { background: #2a3346; }
+    .profile-row .row-ico {
+        font-size: 18px; width: 28px; text-align: center; color: #ffffff;
+    }
+    .profile-row .row-main { flex: 1; min-width: 0; }
+    .profile-row .row-label { color: #ffffff; }
+    .profile-row .row-sub { color: #cbd5e1; font-size: 12px; }
+    .profile-row .row-count {
+        color: #cbd5e1; font-size: 13px; font-variant-numeric: tabular-nums;
+    }
+    .profile-row.danger { color: #fca5a5; }
+    .profile-row.danger:hover { background: #3a1f24; }
+
+    /* «Внутренний экран» галереи поверх контента панели */
+    .profile-gallery-head {
+        padding: 12px 16px; position: sticky; top: 0; background: #1e2533;
+        z-index: 2; border-bottom: 1px solid #2a3346;
+        display: flex; align-items: center; gap: 8px;
+    }
+    .gallery-back-btn {
+        width: 36px; height: 36px; border-radius: 50%; border: none;
+        background: transparent; cursor: pointer; font-size: 20px;
+        color: #cbd5e1;
+    }
+    .gallery-back-btn:hover { background: rgba(255,255,255,.08); }
+    .gallery-title {
+        font-size: 16px; font-weight: 700; color: #ffffff; flex: 1;
+    }
+    .gallery-grid {
+        display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
+        padding: 2px;
+    }
+    .gallery-cell {
+        position: relative; aspect-ratio: 1 / 1; background: #2a3346;
+        overflow: hidden; cursor: pointer;
+    }
+    .gallery-cell img {
+        width: 100%; height: 100%; object-fit: cover; display: block;
+    }
+    .gallery-cell .ico {
+        position: absolute; inset: 0; display: flex; align-items: center;
+        justify-content: center; font-size: 28px; color: #cbd5e1;
+    }
+    .gallery-cell.video::after {
+        content: '▶'; position: absolute; right: 6px; bottom: 4px;
+        color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,.5); font-size: 14px;
+    }
+    .gallery-list {
+        display: flex; flex-direction: column;
+    }
+    .gallery-item {
+        display: flex; align-items: center; gap: 12px;
+        padding: 10px 16px; border-bottom: 1px solid #2a3346;
+        color: #ffffff; text-decoration: none;
+    }
+    .gallery-item:hover { background: #2a3346; }
+    .gallery-item .gi-ico {
+        width: 40px; height: 40px; border-radius: 8px; background: #1e3a8a;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 18px; flex: 0 0 40px; color: #ffffff;
+    }
+    .gallery-item .gi-name {
+        font-size: 14px; word-break: break-word; color: #ffffff;
+        overflow: hidden; text-overflow: ellipsis;
+        display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    .gallery-item .gi-meta { color: #cbd5e1; font-size: 12px; }
+    .gallery-empty {
+        padding: 40px 20px; text-align: center; color: #cbd5e1;
+    }
+
+    @media (max-width: 640px) {
+        .profile-panel {
+            width: 100vw; max-width: 100vw;
+            height: 100vh; max-height: 100vh;
+            border-radius: 0;
+        }
+    }
+
+    /* --- Кастомный confirm-диалог --- */
+    .confirm-backdrop {
+        position: fixed; inset: 0; background: rgba(15,23,42,.55);
+        opacity: 0; pointer-events: none;
+        transition: opacity .18s ease; z-index: 1090;
+    }
+    .confirm-backdrop.open { opacity: 1; pointer-events: auto; }
+    .confirm-modal {
+        position: fixed; top: 50%; left: 50%;
+        width: 380px; max-width: 92vw;
+        background: #1e2533; color: #f8fafc;
+        border-radius: 14px;
+        box-shadow: 0 20px 60px rgba(0,0,0,.5);
+        transform: translate(-50%, -50%) scale(.94);
+        opacity: 0; pointer-events: none;
+        transition: transform .18s ease, opacity .18s ease;
+        z-index: 1100; padding: 18px 18px 14px 18px;
+    }
+    .confirm-modal.open {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1; pointer-events: auto;
+    }
+    .confirm-modal[hidden] { display: none; }
+    .confirm-title {
+        font-size: 17px; font-weight: 700; color: #ffffff;
+        margin-bottom: 10px;
+    }
+    .confirm-text {
+        font-size: 14px; color: #cbd5e1; line-height: 1.45;
+        white-space: pre-wrap; word-wrap: break-word;
+        margin-bottom: 18px;
+    }
+    .confirm-actions {
+        display: flex; gap: 8px; justify-content: flex-end;
+    }
+    .confirm-btn {
+        border: none; padding: 8px 18px; border-radius: 8px;
+        font-size: 14px; font-weight: 600; cursor: pointer;
+        background: #2a3346; color: #f1f5f9;
+        transition: background .15s ease;
+    }
+    .confirm-btn:hover { background: #36405a; }
+    .confirm-btn.ok { background: #2563eb; color: #ffffff; }
+    .confirm-btn.ok:hover { background: #1d4ed8; }
+    .confirm-btn.ok.danger { background: #b91c1c; }
+    .confirm-btn.ok.danger:hover { background: #991b1b; }
 </style>
 
 <div class="container-fluid contacts-shell">
@@ -1350,7 +1672,7 @@
                     <div id="messages-container">
                         {% if messages %}
                             {% for m in messages %}
-                            <div class="bubble-row{% if m.outgoing %} outgoing{% endif %}"
+                            <div class="bubble-row{% if m.outgoing %} outgoing{% endif %}{% if m.pinned_at %} pinned{% endif %}"
                                  data-message-id="{{ m.id }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
                                  {% if m.edit_history %}data-edits-json='{{ m.edit_history|tojson|forceescape }}'{% endif %}>
@@ -1381,10 +1703,10 @@
                                              loading="lazy" alt="стикер">
                                         {% elif a.kind == 'video' %}
                                         <video class="media-video" src="/attachments/{{ a.id }}"
-                                               controls preload="metadata"></video>
+                                               controls preload="none"></video>
                                         {% elif a.kind == 'voice' or a.kind == 'audio' %}
                                         <audio class="media-audio" src="/attachments/{{ a.id }}"
-                                               controls preload="metadata"></audio>
+                                               controls preload="none"></audio>
                                         {% elif a.kind == 'file' %}
                                         <a class="media-file" href="/attachments/{{ a.id }}" download>
                                             <span class="file-ico">📎</span>
@@ -1454,7 +1776,7 @@
                                accept="image/*,video/*" hidden>
                         {% endif %}
                         <textarea id="composer-text" rows="1"
-                                  placeholder="{% if reply_via == 'notif' %}Написать в {{ current_messenger }} (через шторку телефона)…{% else %}Написать в {{ current_messenger or 'Telegram' }}…{% endif %}"></textarea>
+                                  placeholder="Сообщение…"></textarea>
                         <button type="submit" class="send-btn" id="composer-send">Отправить</button>
                     </form>
                     {% endif %}
@@ -1481,6 +1803,100 @@
         <div class="fwd-list" id="forward-list"></div>
     </div>
 </div>
+
+<!-- Правая выезжающая панель «Профиль контакта»: открывается по клику на
+     шапку чата. Контент рендерит JS из /contacts/<id>/profile.json и
+     /contacts/<id>/media.json — см. блок «Профиль контакта» ниже. -->
+<div class="profile-backdrop" id="profile-backdrop" aria-hidden="true"></div>
+<aside class="profile-panel" id="profile-panel" hidden aria-hidden="true">
+    <div class="profile-content" id="profile-content"></div>
+</aside>
+
+<!-- Кастомный confirm-диалог: единый стиль для всех «точно удалить?» /
+     «точно заблокировать?» подтверждений. Заменяет нативный confirm(),
+     который выглядит дёшево («Подтвердите действие на 172.18.0.1»). -->
+<div class="confirm-backdrop" id="confirm-backdrop" aria-hidden="true"></div>
+<div class="confirm-modal" id="confirm-modal" hidden role="dialog"
+     aria-modal="true" aria-labelledby="confirm-title">
+    <div class="confirm-title" id="confirm-title">Подтвердить</div>
+    <div class="confirm-text" id="confirm-text"></div>
+    <div class="confirm-actions">
+        <button type="button" class="confirm-btn cancel"
+                id="confirm-cancel">Отмена</button>
+        <button type="button" class="confirm-btn ok"
+                id="confirm-ok">OK</button>
+    </div>
+</div>
+
+<script>
+// --- Кастомный confirm: единый стиль вместо нативного браузерного диалога,
+// который показывает «Подтвердите действие на 172.18.0.1». Возвращает
+// Promise<boolean>. Используется во всех «точно удалить?» / «точно
+// заблокировать?» — поэтому объявлен в самом раннем script-блоке, чтобы
+// быть доступным изо всех остальных. ---
+(function() {
+    const backdrop = document.getElementById('confirm-backdrop');
+    const modal = document.getElementById('confirm-modal');
+    if (!backdrop || !modal) return;
+    const titleEl = document.getElementById('confirm-title');
+    const textEl = document.getElementById('confirm-text');
+    const okBtn = document.getElementById('confirm-ok');
+    const cancelBtn = document.getElementById('confirm-cancel');
+
+    let activeResolver = null;
+    let onKey = null;
+
+    function cleanup(result) {
+        modal.classList.remove('open');
+        backdrop.classList.remove('open');
+        backdrop.setAttribute('aria-hidden', 'true');
+        document.removeEventListener('keydown', onKey);
+        onKey = null;
+        setTimeout(() => {
+            if (!modal.classList.contains('open')) modal.hidden = true;
+        }, 200);
+        const r = activeResolver;
+        activeResolver = null;
+        if (r) r(result);
+    }
+
+    window.confirmDialog = function(opts) {
+        opts = opts || {};
+        // Если уже открыт — закроем предыдущий с false, чтобы не плодить.
+        if (activeResolver) cleanup(false);
+        return new Promise((resolve) => {
+            titleEl.textContent = opts.title || 'Подтвердить действие';
+            textEl.textContent = opts.text || '';
+            okBtn.textContent = opts.okLabel || 'OK';
+            cancelBtn.textContent = opts.cancelLabel || 'Отмена';
+            okBtn.classList.toggle('danger', !!opts.danger);
+            activeResolver = resolve;
+            modal.hidden = false;
+            requestAnimationFrame(() => {
+                modal.classList.add('open');
+                backdrop.classList.add('open');
+                backdrop.setAttribute('aria-hidden', 'false');
+                // Фокус на «Отмена», чтобы Enter не подтверждал опасное
+                // действие случайно. Подтверждение — только явным кликом
+                // (или Enter, если пользователь сам сфокусировал ok).
+                cancelBtn.focus();
+            });
+            onKey = function(e) {
+                if (e.key === 'Escape') { e.preventDefault(); cleanup(false); }
+                else if (e.key === 'Enter'
+                         && document.activeElement === okBtn) {
+                    e.preventDefault(); cleanup(true);
+                }
+            };
+            document.addEventListener('keydown', onKey);
+        });
+    };
+
+    okBtn.addEventListener('click', () => cleanup(true));
+    cancelBtn.addEventListener('click', () => cleanup(false));
+    backdrop.addEventListener('click', () => cleanup(false));
+})();
+</script>
 
 <script>
 // Полноэкранный просмотр фото: клик по .media-img открывает оверлей поверх
@@ -1857,7 +2273,13 @@
     }
 
     async function deleteContact(contactId) {
-        if (!confirm('Точно удалить чат и все его сообщения? Действие необратимо.')) {
+        const ok = await window.confirmDialog({
+            title: 'Удалить чат?',
+            text: 'Чат и все его сообщения будут удалены. '
+                + 'Действие необратимо.',
+            okLabel: 'Удалить', danger: true,
+        });
+        if (!ok) {
             closeOpenMenu();
             return;
         }
@@ -1969,13 +2391,37 @@
                 items.push('<button class="translate-msg-btn" type="button">'
                     + '<span class="menu-ico">🌐</span>Перевести</button>');
             }
+            // Закреп: «Прикрепить» / «Открепить» в зависимости от текущего
+            // состояния bubble. Доступно и для исходящих, и для входящих.
+            const isPinned = !!(row && row.classList.contains('pinned'));
+            items.push('<button class="pin-msg-btn" type="button">'
+                + '<span class="menu-ico">📌</span>'
+                + (isPinned ? 'Открепить' : 'Прикрепить')
+                + '</button>');
             if (outgoing) {
                 items.push('<button class="edit-msg-btn" type="button">'
                     + '<span class="menu-ico">✏</span>Изменить</button>');
             }
             items.push('<div class="menu-divider"></div>');
-            items.push('<button class="delete-msg-btn danger" type="button">'
-                + '<span class="menu-ico">🗑</span>Удалить сообщение</button>');
+            // Telegram: два варианта — у себя / у всех. Для входящих в TG
+            // revoke у всех чаще всего запрещён правилами Telegram, поэтому
+            // показываем только «у меня». Для не-Telegram источников
+            // (Android-уведомления и т.п.) удаление всегда только локальное.
+            if (isTelegram) {
+                items.push('<button class="delete-msg-btn danger" type="button"'
+                    + ' data-scope="self">'
+                    + '<span class="menu-ico">🗑</span>Удалить у меня</button>');
+                if (outgoing) {
+                    items.push('<button class="delete-msg-btn danger" type="button"'
+                        + ' data-scope="all">'
+                        + '<span class="menu-ico">🗑</span>'
+                        + 'Удалить у всех</button>');
+                }
+            } else {
+                items.push('<button class="delete-msg-btn danger" type="button"'
+                    + ' data-scope="self">'
+                    + '<span class="menu-ico">🗑</span>Удалить сообщение</button>');
+            }
         }
         menu.innerHTML = items.join('');
 
@@ -1996,8 +2442,13 @@
         if (delLocal) {
             delLocal.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (!confirm('Удалить только локальную копию? В мессенджере '
-                    + 'её уже нет, у нас она просто пропадёт из ленты.')) {
+                const ok = await window.confirmDialog({
+                    title: 'Удалить локальную копию?',
+                    text: 'В мессенджере этого сообщения уже нет — '
+                        + 'у нас оно просто пропадёт из ленты.',
+                    okLabel: 'Удалить', danger: true,
+                });
+                if (!ok) {
                     closeMenu();
                     return;
                 }
@@ -2144,17 +2595,66 @@
                 }
             });
         }
-        const delBtn = menu.querySelector('.delete-msg-btn');
-        if (delBtn) {
+        const pinBtn = menu.querySelector('.pin-msg-btn');
+        if (pinBtn) {
+            pinBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                closeMenu();
+                const row = document.querySelector(
+                    '.bubble-row[data-message-id="' + messageId + '"]');
+                const wasPinned = !!(row && row.classList.contains('pinned'));
+                const url = '/messages/' + messageId
+                    + (wasPinned ? '/unpin' : '/pin');
+                try {
+                    const r = await fetch(url, {
+                        method: 'POST', credentials: 'same-origin',
+                        headers: {'X-Requested-With': 'XMLHttpRequest'},
+                    });
+                    const d = await r.json().catch(() => ({}));
+                    if (r.ok && d.ok) {
+                        // Поллинг через ~5с подтянет свежий список pinned
+                        // и обновит плашку сверху чата. Локально сразу же
+                        // переключаем класс bubble, чтобы UX был мгновенным.
+                        if (row) row.classList.toggle('pinned', !wasPinned);
+                    } else {
+                        alert((wasPinned ? 'Не удалось открепить: '
+                                         : 'Не удалось закрепить: ')
+                            + (d.detail || d.error || ('HTTP ' + r.status)));
+                    }
+                } catch (err) {
+                    alert('Сеть недоступна.');
+                }
+            });
+        }
+        menu.querySelectorAll('.delete-msg-btn').forEach(delBtn => {
             delBtn.addEventListener('click', async (e) => {
                 e.stopPropagation();
-                if (!confirm('Удалить это сообщение? Оно удалится и в Telegram.')) {
+                const scope = delBtn.dataset.scope === 'all' ? 'all' : 'self';
+                let confirmTitle, confirmText;
+                if (scope === 'all') {
+                    confirmTitle = 'Удалить у всех?';
+                    confirmText = 'Сообщение пропадёт и у собеседника '
+                                + 'в Telegram.';
+                } else if (isTelegram) {
+                    confirmTitle = 'Удалить у себя?';
+                    confirmText = 'У собеседника в Telegram сообщение '
+                                + 'сохранится.';
+                } else {
+                    confirmTitle = 'Удалить сообщение?';
+                    confirmText = '';
+                }
+                const ok = await window.confirmDialog({
+                    title: confirmTitle, text: confirmText,
+                    okLabel: 'Удалить', danger: true,
+                });
+                if (!ok) {
                     closeMenu();
                     return;
                 }
                 try {
                     const r = await fetch('/messages/' + messageId + '/delete', {
                         method: 'POST', credentials: 'same-origin',
+                        body: new URLSearchParams({scope}),
                     });
                     if (r.ok) {
                         const row = document.querySelector(
@@ -2164,7 +2664,7 @@
                 } catch (err) {}
                 closeMenu();
             });
-        }
+        });
     }
 
     // --- Реакции: набор эмодзи в шапке контекстного меню сообщения ---
@@ -2414,6 +2914,75 @@
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[c]));
+    }
+
+    // Безопасный санитайзер для text_html, который приходит от Telegram
+    // (entities → HTML через Telethon). Разрешаем только теги форматирования
+    // и ссылки; всё остальное — экранируем. На случай если в БД попадёт
+    // что-то «лишнее» (например, после миграции старых сообщений), это
+    // защищает от XSS — никакого innerHTML мусора, ни <script>, ни on*.
+    //
+    // Подход: распарсить во временный DOM через DOMParser, рекурсивно
+    // обойти, оставить только allowlist-теги/атрибуты, остальное —
+    // textContent. Это надёжнее, чем регэкспы на строке.
+    function sanitizeTgHtml(html) {
+        const ALLOW_TAGS = new Set([
+            'B', 'STRONG', 'I', 'EM', 'U', 'S', 'STRIKE', 'DEL',
+            'CODE', 'PRE', 'BR', 'SPAN', 'TG-SPOILER', 'BLOCKQUOTE'
+        ]);
+        const tpl = document.createElement('template');
+        tpl.innerHTML = String(html || '');
+        const out = document.createElement('div');
+        function walk(src, dst) {
+            src.childNodes.forEach(node => {
+                if (node.nodeType === 3) {  // text
+                    dst.appendChild(document.createTextNode(node.nodeValue));
+                    return;
+                }
+                if (node.nodeType !== 1) return;  // skip comments etc
+                const tag = node.tagName;
+                if (tag === 'A') {
+                    // Ссылки: только http/https/mailto/tg, остальное — текст.
+                    const href = (node.getAttribute('href') || '').trim();
+                    const safe = /^(https?:|mailto:|tg:)/i.test(href);
+                    if (safe) {
+                        const a = document.createElement('a');
+                        a.setAttribute('href', href);
+                        a.setAttribute('target', '_blank');
+                        a.setAttribute('rel', 'noopener noreferrer');
+                        a.className = 'msg-link';
+                        walk(node, a);
+                        dst.appendChild(a);
+                    } else {
+                        walk(node, dst);
+                    }
+                    return;
+                }
+                if (ALLOW_TAGS.has(tag)) {
+                    // Спойлер Telegram пишется как <tg-spoiler> — превращаем
+                    // в <span class="spoiler"> для нашего CSS-эффекта.
+                    let el;
+                    if (tag === 'TG-SPOILER') {
+                        el = document.createElement('span');
+                        el.className = 'spoiler';
+                    } else if (tag === 'SPAN' &&
+                               node.classList.contains('tg-spoiler')) {
+                        el = document.createElement('span');
+                        el.className = 'spoiler';
+                    } else {
+                        el = document.createElement(tag.toLowerCase());
+                    }
+                    walk(node, el);
+                    dst.appendChild(el);
+                    return;
+                }
+                // Незнакомый тег — игнорируем тег, но рекурсивно
+                // переносим его содержимое (не теряем текст).
+                walk(node, dst);
+            });
+        }
+        walk(tpl.content, out);
+        return out.innerHTML;
     }
 
     // Превращает голые URL в кликабельные <a> ВНУТРИ уже escape-нутого
@@ -2731,9 +3300,9 @@
                     if (a.kind === 'sticker')
                         return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`;
                     if (a.kind === 'video')
-                        return `<video class="media-video" src="/attachments/${a.id}" controls preload="metadata"></video>`;
+                        return `<video class="media-video" src="/attachments/${a.id}" controls preload="none"></video>`;
                     if (a.kind === 'voice' || a.kind === 'audio')
-                        return `<audio class="media-audio" src="/attachments/${a.id}" controls preload="metadata"></audio>`;
+                        return `<audio class="media-audio" src="/attachments/${a.id}" controls preload="none"></audio>`;
                     if (a.kind === 'file')
                         return `<a class="media-file" href="/attachments/${a.id}" download>`
                             + `<span class="file-ico">📎</span>`
@@ -2783,8 +3352,15 @@
                           title="Сообщение удалили в мессенджере, но мы успели сохранить"
                    >🗑 ${m.outgoing ? 'Вы удалили это сообщение' : 'Удалено собеседником'}</div>`
                 : '';
-            const textHtml = m.text
-                ? `<div class="text">${linkify(escapeHtml(m.text))}</div>` : '';
+            // Если у Telegram-сообщения была разметка (entities), сервер
+            // прислал готовый HTML — пропускаем через санитайзер с
+            // allowlist и рендерим как innerHTML. Если разметки нет,
+            // путь старый: escapeHtml → linkify.
+            const textHtml = m.text_html
+                ? `<div class="text">${sanitizeTgHtml(m.text_html)}</div>`
+                : (m.text
+                    ? `<div class="text">${linkify(escapeHtml(m.text))}</div>`
+                    : '');
             // «📝 ред. ×N» — кнопка показа истории редактирований.
             // Полный список версий клеим как JSON в атрибут bubble, popover
             // читает оттуда — отдельный fetch не нужен.
@@ -2813,7 +3389,7 @@
                     ).join('')
                   + '</div>'
                 : '';
-            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}"
+            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}${m.pinned ? ' pinned' : ''}"
                 data-message-id="${m.id}"
                 data-messenger="${escapeHtml(m.messenger_name || '')}"${editsJson}>
                 <span class="source">${source}</span>
@@ -2840,9 +3416,10 @@
         if (!contact || !contact.can_reply) return '';
         const messenger = contact.messenger || 'Telegram';
         const isTg = (contact.reply_via || 'telegram') === 'telegram';
-        const placeholder = isTg
-            ? 'Написать в ' + messenger + '…'
-            : 'Написать в ' + messenger + ' (через шторку телефона)…';
+        // Один и тот же placeholder во всех мессенджерах — компактно
+        // и не отвлекает. Markdown по-прежнему работает (Telethon его
+        // разберёт), просто без подсказки в UI.
+        const placeholder = 'Сообщение…';
         const attach = isTg
             ? `<button type="button" class="attach-btn" id="composer-attach"
                        title="Прикрепить фото или видео">📎</button>
@@ -2972,10 +3549,14 @@
             const sigItems = data.messages.map(m => [
                 m.id || (m.time + m.text), m.text, m.time,
                 m.tg_read ? 1 : 0, m.deleted ? 1 : 0,
+                m.pinned ? 1 : 0,
                 (m.reactions || []).map(r =>
                     r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
                 ).join(','),
             ]);
+            // Плашка «📌 Закреплённые сообщения» обновляется отдельно от
+            // ленты — pinned_messages приходят рядом в /messages.json.
+            setPinnedMessages(data.pinned_messages || []);
             const sig = JSON.stringify(sigItems);
             if (sig !== lastSig) {
                 const stick = isNearBottom();
@@ -3043,6 +3624,8 @@
             // Закреплённые «темы чата» — если уже анализировались, сразу
             // показываем пин-бар сверху. Сервер их хранит в БД.
             setPinnedTopics(data.topics || []);
+            // Закреплённые сообщения чата — плашка «📌 Закреплённое».
+            setPinnedMessages(data.pinned_messages || []);
             // Защитный fetch: если основной запрос почему-то не отдал
             // темы (race, baked-in старый JS, частичная ошибка), отдельно
             // тянем сохранённые темы из БД для текущего (contact, topic).
@@ -3240,6 +3823,14 @@
 
     document.addEventListener('click', function(e) {
         if (!e.target.closest) return;
+        // Спойлер в сообщении — клик раскрывает (как в Telegram).
+        const sp = e.target.closest('.bubble .text .spoiler');
+        if (sp) {
+            e.preventDefault();
+            e.stopPropagation();
+            sp.classList.add('revealed');
+            return;
+        }
         // Клик по «папке»-кнопке вверху списка.
         const fbtn = e.target.closest('.mf-btn');
         if (fbtn) {
@@ -3253,24 +3844,9 @@
             showList();
             return;
         }
-        // Клик по шапке чата: группа — раскрыть участников. Picker
-        // мессенджеров здесь удалён — мессенджер выбирается папкой
-        // в списке контактов, а не из шапки открытого чата.
-        const top = e.target.closest('.feed-header.expandable .feed-header-top');
-        if (top && feed.contains(top)) {
-            const header = top.closest('.feed-header');
-            if (header.dataset.isGroup) {
-                header.classList.toggle('open');
-                if (header.classList.contains('open')) loadMembers(header);
-            }
-            return;
-        }
-        // Клик вне шапки — закрыть раскрытую панель личностей.
-        const insideHeader = e.target.closest('.feed-header');
-        if (!insideHeader) {
-            const fh = feed.querySelector('.feed-header.open');
-            if (fh) fh.classList.remove('open');
-        }
+        // Клик по шапке чата теперь обрабатывает правая выезжающая
+        // панель «Профиль контакта» (см. скрипт в конце шаблона):
+        // там и список личностей, и счётчики медиа, и действия.
         const row = e.target.closest('a.contact-row');
         if (row && list.contains(row)) {
             e.preventDefault();
@@ -3353,7 +3929,13 @@
                         const empty = c.querySelector('.empty-state');
                         if (empty) c.innerHTML = '';
                         c.insertAdjacentHTML('beforeend', renderMessages([{
-                            id: data.id, text: data.text, time: data.time,
+                            id: data.id, text: data.text,
+                            // Если сервер прислал text_html (markdown), рендерим
+                            // сразу с разметкой — иначе пользователь видит
+                            // звёздочки 5 сек, пока поллинг не подтянет
+                            // отформатированную версию.
+                            text_html: data.text_html || null,
+                            time: data.time,
                             outgoing: true,
                             // Telegram-исходящее сразу с одной галочкой;
                             // двойную поставит read-history-апдейт через
@@ -3723,6 +4305,68 @@
             feed.insertBefore(pin, feed.firstChild);
         }
     }
+    // --- Плашка «📌 Закреплённые сообщения» сверху чата ---
+    // Сервер отдаёт `pinned_messages` в /messages.json. Плашка циклически
+    // листает закрепы: один клик — перейти к следующему, прокрутка к нему.
+    let pinnedList = [];     // [{id, text, author}]
+    let pinnedListIdx = 0;
+    function renderPinnedBar() {
+        const old = feed.querySelector('.pinned-bar');
+        if (old) old.remove();
+        if (!pinnedList.length) return;
+        // На «обзоре» форум-чата (без открытой темы) ленты нет — плашка
+        // не нужна.
+        const header = feed.querySelector('.feed-header');
+        if (header && header.dataset.isForum === '1'
+                && !header.dataset.topicId) return;
+        if (pinnedListIdx >= pinnedList.length) pinnedListIdx = 0;
+        const cur = pinnedList[pinnedListIdx];
+        const bar = document.createElement('div');
+        bar.className = 'pinned-bar';
+        bar.dataset.pinnedId = cur.id;
+        bar.innerHTML =
+            '<span class="pb-ico">📌</span>'
+            + '<div class="pb-body">'
+            +   '<div class="pb-label">Закреплённое '
+            +     (pinnedList.length > 1
+                    ? (pinnedListIdx + 1) + '/' + pinnedList.length
+                    : 'сообщение')
+            +   '</div>'
+            +   '<div class="pb-text">'
+            +     '<b>' + escapeHtml(cur.author || '') + ':</b> '
+            +     escapeHtml(cur.text || '')
+            +   '</div>'
+            + '</div>'
+            + (pinnedList.length > 1
+                ? '<span class="pb-count">' + pinnedList.length + '</span>'
+                : '');
+        if (header && header.nextSibling) {
+            feed.insertBefore(bar, header.nextSibling);
+        } else if (header) {
+            header.parentNode.appendChild(bar);
+        } else {
+            feed.insertBefore(bar, feed.firstChild);
+        }
+    }
+    function setPinnedMessages(arr) {
+        pinnedList = Array.isArray(arr) ? arr : [];
+        pinnedListIdx = 0;
+        renderPinnedBar();
+    }
+    // Клик по плашке — прыжок к закреплённому, потом сдвиг индекса
+    // (как в Telegram: каждое нажатие листает следующий закреп).
+    feed.addEventListener('click', function(e) {
+        const bar = e.target.closest('.pinned-bar');
+        if (!bar) return;
+        e.preventDefault(); e.stopPropagation();
+        const cur = pinnedList[pinnedListIdx];
+        if (cur && window.jumpToMessage) window.jumpToMessage(cur.id);
+        if (pinnedList.length > 1) {
+            pinnedListIdx = (pinnedListIdx + 1) % pinnedList.length;
+            renderPinnedBar();
+        }
+    });
+
     function setPinnedTopics(topics, opts) {
         pinnedTopics = Array.isArray(topics) ? topics : [];
         // Свежий заход — показываем самую первую тему. Клики по бару /
@@ -4207,6 +4851,636 @@
     // Поллинг перерисовывает список (innerHTML) — переналожить фильтр.
     new MutationObserver(() => { if (query) applyFilter(); })
         .observe(list, { childList: true });
+})();
+</script>
+
+<script>
+// --- Профиль контакта: правая выезжающая панель ---
+// Открывается кликом по шапке чата (.feed-header-top). Корневой экран —
+// сводка (имя, действия, секции медиа). По клику на секцию подменяет
+// контент на галерею соответствующего типа с кнопкой ← назад.
+(function() {
+    const panel = document.getElementById('profile-panel');
+    const backdrop = document.getElementById('profile-backdrop');
+    const content = document.getElementById('profile-content');
+    if (!panel || !backdrop || !content) return;
+
+    let currentContactId = null;
+    let cachedProfile = null;   // последний загруженный профиль (для возврата)
+    let cachedTgExtra = null;   // bio / телефон / @username / общие группы
+    let cachedMembers = null;   // участники группы из /members.json
+
+    function escapeHtml(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;',
+            '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function avatarHtml(c) {
+        if (c.avatar_url) {
+            return '<span class="avatar">'
+                 + '<img src="' + escapeHtml(c.avatar_url) + '" alt=""></span>';
+        }
+        const initial = (c.display_name || '?').trim().charAt(0).toUpperCase()
+                        || '?';
+        // Простой детерминированный цвет от id, чтобы один контакт всегда
+        // выглядел одинаково.
+        const hue = (c.id * 47) % 360;
+        const bg = 'hsl(' + hue + ',55%,55%)';
+        return '<span class="avatar" style="background:' + bg + '">'
+             + escapeHtml(initial) + '</span>';
+    }
+
+    function open(contactId) {
+        currentContactId = contactId;
+        cachedTgExtra = null;
+        cachedMembers = null;
+        panel.hidden = false;
+        // requestAnimationFrame чтобы transition сработал, а не «прыжок».
+        requestAnimationFrame(() => {
+            panel.classList.add('open');
+            backdrop.classList.add('open');
+            panel.setAttribute('aria-hidden', 'false');
+            backdrop.setAttribute('aria-hidden', 'false');
+        });
+        // Базовый профиль — быстрый запрос из локальной БД.
+        // Расширенные данные TG (bio, телефон, общие группы) — отдельный
+        // запрос, идёт через Telethon, может быть медленным и не всегда
+        // доступен. Запускаем параллельно: первый рендер делается сразу
+        // по profile.json, потом UI обогащается, когда придёт tg_extra.
+        loadProfile(contactId);
+        loadTgExtra(contactId);
+    }
+
+    function close() {
+        panel.classList.remove('open');
+        backdrop.classList.remove('open');
+        panel.setAttribute('aria-hidden', 'true');
+        backdrop.setAttribute('aria-hidden', 'true');
+        currentContactId = null;
+        cachedProfile = null;
+        cachedTgExtra = null;
+        cachedMembers = null;
+        // После завершения transition спрячем целиком, чтобы tab не лез.
+        setTimeout(() => {
+            if (!panel.classList.contains('open')) {
+                panel.hidden = true;
+                content.innerHTML = '';
+            }
+        }, 280);
+    }
+
+    async function loadProfile(contactId) {
+        content.innerHTML = '<div class="gallery-empty">Загрузка…</div>';
+        try {
+            const r = await fetch('/contacts/' + contactId + '/profile.json',
+                                  {credentials: 'same-origin'});
+            const d = await r.json();
+            // Пользователь мог закрыть панель или переключить контакт пока
+            // мы ждали ответа — игнорируем устаревший результат.
+            if (String(contactId) !== String(currentContactId)) return;
+            if (!r.ok || !d.ok) {
+                content.innerHTML = '<div class="gallery-empty">'
+                    + 'Не удалось загрузить профиль ('
+                    + escapeHtml(d.error || ('HTTP ' + r.status)) + ')</div>';
+                return;
+            }
+            cachedProfile = d;
+            renderProfile(d, cachedTgExtra);
+            // Группа? Тогда подтянем участников отдельным запросом —
+            // он ходит в Telegram через Telethon и может быть небыстрым.
+            if (d.is_group) loadMembers(contactId);
+        } catch (err) {
+            content.innerHTML = '<div class="gallery-empty">'
+                + 'Сеть недоступна.</div>';
+        }
+    }
+
+    async function loadMembers(contactId) {
+        try {
+            const r = await fetch('/contacts/' + contactId + '/members.json',
+                                  {credentials: 'same-origin'});
+            const d = await r.json().catch(() => ({}));
+            if (String(contactId) !== String(currentContactId)) return;
+            if (!r.ok || !d.is_group) return;
+            cachedMembers = d.members || [];
+            if (cachedProfile) renderProfile(cachedProfile, cachedTgExtra);
+        } catch (err) { /* молча */ }
+    }
+
+    async function loadTgExtra(contactId) {
+        try {
+            const r = await fetch('/contacts/' + contactId + '/tg_extra.json',
+                                  {credentials: 'same-origin'});
+            const d = await r.json().catch(() => ({}));
+            // Не сообщаем об ошибках tg_extra пользователю — это
+            // дополнительные данные, базовый профиль работает и без них.
+            if (String(contactId) !== String(currentContactId)) return;
+            if (!r.ok || !d.ok || !d.available) return;
+            cachedTgExtra = d;
+            if (cachedProfile) renderProfile(cachedProfile, cachedTgExtra);
+        } catch (err) { /* молча */ }
+    }
+
+    function renderProfile(d, tgExtra) {
+        const c = d.contact;
+        const ui = (tgExtra && tgExtra.user_info) || null;
+        const messengersTxt = (d.messengers || [])
+            .map(m => m.name).filter(Boolean).join(' · ');
+        const subParts = [];
+        if (ui && ui.username) {
+            subParts.push('@' + escapeHtml(ui.username));
+        }
+        if (messengersTxt) subParts.push(escapeHtml(messengersTxt));
+        if (c.messages_count) {
+            subParts.push(c.messages_count + ' сообщ.');
+        }
+        const sub = subParts.join(' · ') || 'нет личностей';
+
+        // Секция «Информация» — телефон, @username, bio. Показываем только
+        // если из tg_extra пришло хоть что-то полезное. Bio выводим целиком
+        // (Telegram-ограничение ~70 символов, но иногда длиннее).
+        const infoRows = [];
+        if (ui) {
+            if (ui.phone) {
+                infoRows.push(
+                    '<div class="profile-row">'
+                    + '<span class="row-ico">📞</span>'
+                    + '<div class="row-main">'
+                    + '<div class="row-label">+'
+                    + escapeHtml(ui.phone) + '</div>'
+                    + '<div class="row-sub">Телефон</div>'
+                    + '</div></div>');
+            }
+            if (ui.username) {
+                infoRows.push(
+                    '<div class="profile-row">'
+                    + '<span class="row-ico">@</span>'
+                    + '<div class="row-main">'
+                    + '<div class="row-label">@'
+                    + escapeHtml(ui.username) + '</div>'
+                    + '<div class="row-sub">Имя пользователя</div>'
+                    + '</div></div>');
+            }
+            if (ui.about) {
+                infoRows.push(
+                    '<div class="profile-row" style="align-items:flex-start;">'
+                    + '<span class="row-ico">ℹ</span>'
+                    + '<div class="row-main">'
+                    + '<div class="row-label" style="white-space:pre-wrap;">'
+                    + escapeHtml(ui.about) + '</div>'
+                    + '<div class="row-sub">О себе</div>'
+                    + '</div></div>');
+            }
+        }
+        const infoHtml = infoRows.length
+            ? '<div class="profile-section">'
+              + '<div class="profile-section-title">Информация</div>'
+              + infoRows.join('') + '</div>'
+            : '';
+
+        const counts = d.media_counts || {};
+        const sections = [
+            {bucket: 'photo', ico: '🖼', label: 'Фото'},
+            {bucket: 'video', ico: '🎥', label: 'Видео'},
+            {bucket: 'file',  ico: '📎', label: 'Файлы'},
+            {bucket: 'audio', ico: '🎵', label: 'Аудио'},
+            {bucket: 'voice', ico: '🎤', label: 'Голосовые'},
+            {bucket: 'link',  ico: '🔗', label: 'Ссылки'},
+        ].filter(s => (counts[s.bucket] || 0) > 0);
+
+        const sectionsHtml = sections.length
+            ? '<div class="profile-section">'
+              + '<div class="profile-section-title">Медиа</div>'
+              + sections.map(s =>
+                  '<div class="profile-row tappable" data-bucket="'
+                  + s.bucket + '" data-label="' + escapeHtml(s.label) + '">'
+                  + '<span class="row-ico">' + s.ico + '</span>'
+                  + '<div class="row-main"><div class="row-label">'
+                  + escapeHtml(s.label) + '</div></div>'
+                  + '<span class="row-count">' + (counts[s.bucket] || 0)
+                  + '</span></div>').join('')
+              + '</div>'
+            : '<div class="profile-section">'
+              + '<div class="gallery-empty" style="padding:24px 16px;">'
+              + 'Медиа в этом чате пока нет.</div></div>';
+
+        // Секция «Общие группы» — приходит из tg_extra. Клик по строке
+        // открывает этот чат внутри Synapse (через /from-tg.json, если
+        // локального Contact ещё нет — создаём его на лету).
+        const commonChats = (tgExtra && tgExtra.common_chats) || [];
+        const commonHtml = commonChats.length
+            ? '<div class="profile-section">'
+              + '<div class="profile-section-title">'
+              + commonChats.length + ' общих групп</div>'
+              + commonChats.map(g =>
+                  '<div class="profile-row tappable common-chat-row"'
+                  + ' data-tg-chat-id="' + (g.id || '') + '"'
+                  + ' data-title="' + escapeHtml(g.title || '') + '">'
+                  + '<span class="row-ico">'
+                  + (g.is_channel ? '📢' : '👥') + '</span>'
+                  + '<div class="row-main"><div class="row-label">'
+                  + escapeHtml(g.title || '—') + '</div>'
+                  + (g.participants_count
+                      ? '<div class="row-sub">'
+                        + g.participants_count + ' участников</div>'
+                      : '')
+                  + '</div></div>').join('')
+              + '</div>'
+            : '';
+
+        const handlesHtml = (d.messengers || []).length
+            ? '<div class="profile-section">'
+              + '<div class="profile-section-title">Личности</div>'
+              + (d.messengers || []).map(m =>
+                  '<div class="profile-row">'
+                  + '<span class="row-ico">💬</span>'
+                  + '<div class="row-main">'
+                  + '<div class="row-label">'
+                  + escapeHtml(m.sender_raw || '—') + '</div>'
+                  + '<div class="row-sub">'
+                  + escapeHtml(m.name || '') + '</div>'
+                  + '</div></div>').join('')
+              + '</div>'
+            : '';
+
+        // Секция «Участники» — только для групп и только когда подтянули
+        // список из /members.json. До этого момента (или для лички) её
+        // не показываем, чтобы не было «Загрузка…»-плейсхолдера.
+        // Каждый участник кликабелен: открываем личный чат с ним
+        // (если у нас уже есть Contact) или Telegram по username/id.
+        const members = cachedMembers || [];
+        const membersHtml = (d.is_group && members.length)
+            ? '<div class="profile-section">'
+              + '<div class="profile-section-title">'
+              + members.length + ' участников</div>'
+              + members.map(p => {
+                  const uname = (p.username || '').replace(/^@/, '');
+                  const dataAttrs = ' data-tg-user-id="'
+                      + (p.tg_user_id || '') + '"'
+                      + ' data-tg-username="' + escapeHtml(uname) + '"';
+                  return '<div class="profile-row tappable member-row"'
+                      + dataAttrs + '>'
+                      + '<span class="row-ico">👤</span>'
+                      + '<div class="row-main">'
+                      + '<div class="row-label">'
+                      + escapeHtml(p.name || '—') + '</div>'
+                      + (p.username
+                          ? '<div class="row-sub">'
+                            + escapeHtml(p.username) + '</div>'
+                          : '')
+                      + '</div></div>';
+              }).join('')
+              + '</div>'
+            : '';
+
+        const html = ''
+          + '<div class="profile-head">'
+          +   '<div class="profile-head-top">'
+          +     '<div class="profile-title">Профиль</div>'
+          +     '<button type="button" class="profile-close"'
+          +       ' aria-label="Закрыть" data-action="close">×</button>'
+          +   '</div>'
+          +   '<div class="profile-id-block">'
+          +     avatarHtml(c)
+          +     '<div style="min-width:0;">'
+          +       '<div class="profile-name">'
+          +         escapeHtml(c.display_name) + '</div>'
+          +       '<div class="profile-sub">' + sub + '</div>'
+          +     '</div>'
+          +   '</div>'
+          + '</div>'
+          + '<div class="profile-actions">'
+          +   '<button type="button" class="profile-action"'
+          +     ' data-action="pin" title="'
+          +     (c.pinned ? 'Открепить в списке' : 'Закрепить в списке') + '">'
+          +     '<span class="ico">📌</span><span>'
+          +     (c.pinned ? 'Откреплено' : 'Закрепить') + '</span></button>'
+          +   '<button type="button" class="profile-action"'
+          +     ' data-action="mute" title="'
+          +     (c.muted ? 'Включить звук' : 'Отключить звук') + '">'
+          +     '<span class="ico">' + (c.muted ? '🔔' : '🔇') + '</span>'
+          +     '<span>' + (c.muted ? 'Звук' : 'Без звука') + '</span></button>'
+          +   '<button type="button" class="profile-action"'
+          +     ' data-action="rename" title="Переименовать">'
+          +     '<span class="ico">✏</span><span>Имя</span></button>'
+          +   '<button type="button" class="profile-action'
+          +     (c.blocked ? ' danger' : '') + '"'
+          +     ' data-action="block" title="'
+          +     (c.blocked ? 'Разблокировать' : 'Заблокировать') + '">'
+          +     '<span class="ico">🚫</span><span>'
+          +     (c.blocked ? 'Разблок.' : 'Блок') + '</span></button>'
+          +   '<button type="button" class="profile-action danger"'
+          +     ' data-action="delete" title="Удалить контакт">'
+          +     '<span class="ico">🗑</span><span>Удалить</span></button>'
+          + '</div>'
+          + infoHtml
+          + sectionsHtml
+          + commonHtml
+          + membersHtml
+          + handlesHtml;
+
+        content.scrollTop = 0;
+        content.innerHTML = html;
+    }
+
+    // Клик по строке участника группы / по общей группе: открываем чат
+    // внутри Synapse. Если локального Contact ещё нет — создаём его
+    // через /contacts/from-tg.json (бэк резолвит имя через Telethon
+    // get_entity и заводит Contact + MessengerHandle).
+    async function openTgChat(tgChatId, label) {
+        if (!tgChatId || tgChatId === '0') return;
+        try {
+            const r = await fetch('/contacts/from-tg.json', {
+                method: 'POST', credentials: 'same-origin',
+                body: new URLSearchParams({tg_chat_id: tgChatId}),
+            });
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.contact_id) {
+                close();
+                window.location.href = '/contacts/' + d.contact_id;
+                return;
+            }
+            await window.confirmDialog({
+                title: 'Не удалось открыть чат',
+                text: (label ? label + ': ' : '')
+                    + (d.detail || d.error
+                       || 'Telegram-мост не отвечает. Попробуйте позже.'),
+                okLabel: 'Закрыть', cancelLabel: 'Отмена',
+            });
+        } catch (err) {
+            await window.confirmDialog({
+                title: 'Сеть недоступна',
+                text: 'Не удалось связаться с сервером.',
+                okLabel: 'Закрыть', cancelLabel: 'Отмена',
+            });
+        }
+    }
+
+    function openMemberChat(memberEl) {
+        return openTgChat(memberEl.dataset.tgUserId, memberEl.dataset.tgUsername
+            ? '@' + memberEl.dataset.tgUsername : 'участник');
+    }
+
+    function openCommonChat(groupEl) {
+        return openTgChat(groupEl.dataset.tgChatId, groupEl.dataset.title
+            || 'общая группа');
+    }
+
+    async function showGallery(contactId, bucket, label) {
+        // Лоадинг сразу: пользователь видит шапку галереи и спиннер.
+        content.scrollTop = 0;
+        content.innerHTML = ''
+          + '<div class="profile-gallery-head">'
+          +   '<button type="button" class="gallery-back-btn"'
+          +     ' data-action="back">←</button>'
+          +   '<div class="gallery-title">' + escapeHtml(label) + '</div>'
+          + '</div>'
+          + '<div class="gallery-empty" id="gallery-body">Загрузка…</div>';
+        try {
+            const r = await fetch('/contacts/' + contactId
+                + '/media.json?kind=' + encodeURIComponent(bucket)
+                + '&limit=120',
+                {credentials: 'same-origin'});
+            const d = await r.json();
+            const body = document.getElementById('gallery-body');
+            if (!body) return;
+            if (!r.ok || !d.ok) {
+                body.outerHTML = '<div class="gallery-empty">'
+                    + 'Ошибка загрузки.</div>';
+                return;
+            }
+            if (!d.items.length) {
+                body.outerHTML = '<div class="gallery-empty">'
+                    + 'Здесь пока пусто.</div>';
+                return;
+            }
+            body.outerHTML = renderGalleryBody(bucket, d.items);
+        } catch (err) {
+            const body = document.getElementById('gallery-body');
+            if (body) {
+                body.outerHTML = '<div class="gallery-empty">'
+                    + 'Сеть недоступна.</div>';
+            }
+        }
+    }
+
+    function renderGalleryBody(bucket, items) {
+        if (bucket === 'photo' || bucket === 'video') {
+            // Грид-плитки: фото — превью, видео — иконка ▶ поверх плейсхолдера.
+            const cells = items.map(it => {
+                if (bucket === 'photo') {
+                    return '<div class="gallery-cell" data-full="'
+                        + escapeHtml(it.url) + '">'
+                        + '<img src="' + escapeHtml(it.url) + '" loading="lazy"'
+                        + ' alt=""></div>';
+                }
+                return '<div class="gallery-cell video"'
+                    + ' data-video="' + escapeHtml(it.url) + '"'
+                    + ' data-msg-id="' + it.message_id + '">'
+                    + '<span class="ico">🎥</span></div>';
+            }).join('');
+            return '<div class="gallery-grid">' + cells + '</div>';
+        }
+        if (bucket === 'link') {
+            // Ссылки: каждая строка — кликабельный URL + превью текста
+            // сообщения, в котором она была.
+            const rows = items.map(it =>
+                '<a class="gallery-item" href="' + escapeHtml(it.url) + '"'
+                + ' target="_blank" rel="noopener">'
+                + '<span class="gi-ico">🔗</span>'
+                + '<div style="min-width:0; flex:1;">'
+                + '<div class="gi-name">' + escapeHtml(it.url) + '</div>'
+                + (it.text_preview
+                    ? '<div class="gi-meta">'
+                      + escapeHtml(it.text_preview) + '</div>'
+                    : '')
+                + '</div></a>').join('');
+            return '<div class="gallery-list">' + rows + '</div>';
+        }
+        // Список для файлов / аудио / голосовых.
+        const labelByBucket = {
+            file:  '📎', audio: '🎵', voice: '🎤',
+        };
+        const rows = items.map(it => {
+            const name = it.name
+                || (bucket === 'voice' ? 'Голосовое сообщение'
+                   : bucket === 'audio' ? 'Аудиофайл' : 'Файл');
+            const sizeKb = it.size ? Math.round(it.size / 1024) + ' КБ' : '';
+            const date = it.created_at
+                ? new Date(it.created_at).toLocaleDateString('ru-RU') : '';
+            const meta = [sizeKb, date].filter(Boolean).join(' · ');
+            return '<a class="gallery-item" href="' + escapeHtml(it.url) + '"'
+                + (bucket === 'file' ? ' download' : ' target="_blank"') + '>'
+                + '<span class="gi-ico">'
+                + (labelByBucket[bucket] || '📎') + '</span>'
+                + '<div style="min-width:0; flex:1;">'
+                + '<div class="gi-name">' + escapeHtml(name) + '</div>'
+                + (meta ? '<div class="gi-meta">' + escapeHtml(meta)
+                          + '</div>' : '')
+                + '</div></a>';
+        }).join('');
+        return '<div class="gallery-list">' + rows + '</div>';
+    }
+
+    // --- Делегированные обработчики действий ---
+    content.addEventListener('click', async (e) => {
+        const closeBtn = e.target.closest('[data-action="close"]');
+        if (closeBtn) { close(); return; }
+        const back = e.target.closest('[data-action="back"]');
+        if (back) {
+            if (cachedProfile) renderProfile(cachedProfile, cachedTgExtra);
+            else loadProfile(currentContactId);
+            return;
+        }
+        const row = e.target.closest('.profile-row.tappable[data-bucket]');
+        if (row && currentContactId) {
+            showGallery(currentContactId, row.dataset.bucket,
+                        row.dataset.label || 'Медиа');
+            return;
+        }
+        const member = e.target.closest('.member-row');
+        if (member) {
+            await openMemberChat(member);
+            return;
+        }
+        const common = e.target.closest('.common-chat-row');
+        if (common) {
+            await openCommonChat(common);
+            return;
+        }
+        const cell = e.target.closest('.gallery-cell');
+        if (cell) {
+            // Фото → открыть в лайтбоксе. Видео → открыть конкретное
+            // сообщение в чате (скролл к bubble), если оно в видимой ленте.
+            if (cell.dataset.full) {
+                const lb = document.getElementById('lightbox');
+                const img = document.getElementById('lb-img');
+                if (lb && img) { img.src = cell.dataset.full;
+                                 lb.classList.add('open'); }
+            } else if (cell.dataset.video) {
+                window.open(cell.dataset.video, '_blank');
+            }
+            return;
+        }
+        const act = e.target.closest('.profile-action[data-action]');
+        if (!act || !currentContactId) return;
+        const action = act.dataset.action;
+        if (action === 'pin') {
+            try {
+                const r = await fetch('/contacts/' + currentContactId + '/pin',
+                    {method: 'POST', credentials: 'same-origin'});
+                const d = await r.json();
+                if (r.ok && d.ok && cachedProfile) {
+                    cachedProfile.contact.pinned = d.pinned;
+                    renderProfile(cachedProfile, cachedTgExtra);
+                }
+            } catch (err) {}
+        } else if (action === 'mute') {
+            try {
+                const r = await fetch('/contacts/' + currentContactId + '/mute',
+                    {method: 'POST', credentials: 'same-origin'});
+                const d = await r.json();
+                if (r.ok && d.ok && cachedProfile) {
+                    cachedProfile.contact.muted = d.muted;
+                    renderProfile(cachedProfile, cachedTgExtra);
+                }
+            } catch (err) {}
+        } else if (action === 'block') {
+            const isBlocked = !!(cachedProfile && cachedProfile.contact
+                && cachedProfile.contact.blocked);
+            const ok = await window.confirmDialog(isBlocked
+                ? {
+                    title: 'Разблокировать контакт?',
+                    text: 'Контакт будет разблокирован и у нас, и в '
+                        + 'Telegram. Новые сообщения снова будут приходить.',
+                    okLabel: 'Разблокировать',
+                  }
+                : {
+                    title: 'Заблокировать контакт?',
+                    text: 'Сообщения от него перестанут сохраняться у нас. '
+                        + 'Параллельно мы попробуем заблокировать его и в '
+                        + 'самом Telegram.',
+                    okLabel: 'Заблокировать', danger: true,
+                  });
+            if (!ok) return;
+            try {
+                const r = await fetch('/contacts/' + currentContactId
+                                       + '/block',
+                    {method: 'POST', credentials: 'same-origin'});
+                const d = await r.json();
+                if (r.ok && d.ok && cachedProfile) {
+                    cachedProfile.contact.blocked = d.blocked;
+                    renderProfile(cachedProfile, cachedTgExtra);
+                }
+            } catch (err) {}
+        } else if (action === 'rename') {
+            const cur = cachedProfile && cachedProfile.contact
+                ? cachedProfile.contact.display_name : '';
+            const next = prompt('Новое имя контакта:', cur);
+            if (next == null) return;
+            const trimmed = next.trim();
+            if (!trimmed || trimmed === cur) return;
+            try {
+                const r = await fetch('/contacts/' + currentContactId
+                                      + '/rename', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {'X-Requested-With': 'XMLHttpRequest'},
+                    body: new URLSearchParams({display_name: trimmed}),
+                });
+                const d = await r.json().catch(() => ({}));
+                if (r.ok && d.ok && cachedProfile) {
+                    cachedProfile.contact.display_name = d.display_name;
+                    renderProfile(cachedProfile, cachedTgExtra);
+                    // Обновим имя в шапке открытого чата.
+                    const fh = document.querySelector(
+                        '.feed-header .fw-semibold');
+                    if (fh) fh.textContent = d.display_name;
+                }
+            } catch (err) {}
+        } else if (action === 'delete') {
+            const ok = await window.confirmDialog({
+                title: 'Удалить контакт?',
+                text: 'Контакт и вся переписка с ним будут удалены. '
+                    + 'Действие необратимо.',
+                okLabel: 'Удалить', danger: true,
+            });
+            if (!ok) return;
+            try {
+                const r = await fetch('/contacts/' + currentContactId
+                                      + '/delete',
+                    {method: 'POST', credentials: 'same-origin'});
+                if (r.ok) {
+                    close();
+                    // Возвращаемся к списку контактов.
+                    location.href = '/contacts';
+                }
+            } catch (err) {}
+        }
+    });
+
+    backdrop.addEventListener('click', close);
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && panel.classList.contains('open')) close();
+    });
+
+    // Делегированный обработчик клика по шапке чата.
+    // Capture-фаза, чтобы сработать раньше старого «раскрыть участников».
+    document.addEventListener('click', (e) => {
+        const top = e.target.closest('.feed-header .feed-header-top');
+        if (!top) return;
+        // Не реагируем на клики по кнопкам внутри шапки (📑, ← назад, …).
+        if (e.target.closest('button, a')) return;
+        const header = top.closest('.feed-header');
+        const cid = header && header.dataset.contactId;
+        if (!cid) return;
+        e.preventDefault();
+        e.stopPropagation();
+        open(cid);
+    }, true);
+
+    window.__skillwoodOpenProfile = open;
 })();
 </script>
 {% endblock %}

@@ -150,6 +150,20 @@ def _pick_messenger(available, requested=None):
     return available[0] if available else None
 
 
+# Признаки markdown-разметки в тексте: **жирный**, ||спойлер||, `моноширный`,
+# [текст](url), __подчёркивание__, ~~зачёркивание~~. Если ничего из этого
+# нет — не дёргаем parse_mode, отдаём plain. Регулярка намеренно простая;
+# даже если ложное срабатывание попадёт в Telethon, тот вернёт plain
+# (markdown-парсер мягкий, не падает на «лишних» звёздочках).
+_MARKDOWN_RE = re.compile(
+    r"\*\*.+?\*\*|__.+?__|~~.+?~~|\|\|.+?\|\||`.+?`|\[[^\]]+\]\([^)]+\)",
+    re.DOTALL)
+
+
+def _has_markdown(text: str) -> bool:
+    return bool(text and _MARKDOWN_RE.search(text))
+
+
 def _attach_media(db, msgs):
     from data.attachments import Attachment
     from data.matching import is_media_placeholder
@@ -167,8 +181,12 @@ def _attach_media(db, msgs):
         # Реальная подпись остаётся как есть.
         if m.media and is_media_placeholder(m.text):
             m.visible_text = ''
+            m.visible_text_html = None
         else:
             m.visible_text = m.text or ''
+            # text_html отдаём только если visible_text непустой —
+            # иначе UI получит «пустой html» и нарисует пустой <div>.
+            m.visible_text_html = getattr(m, 'text_html', None) or None
     return msgs
 
 
@@ -1456,10 +1474,12 @@ def register_routes(app: Flask) -> None:
             'topics': saved_topics,
             'messages': [
                 {'id': m.id, 'sender': m.sender, 'text': m.visible_text,
+                 'text_html': m.visible_text_html,
                  'messenger_name': m.messenger_name, 'time': m.time,
                  'outgoing': bool(m.outgoing),
                  'tg_read': bool(m.tg_read_at) if m.tg_message_id else None,
                  'deleted': bool(m.deleted_at),
+                 'pinned': bool(m.pinned_at),
                  'ttl_seconds': m.tg_ttl_seconds,
                  'display_author': display_author(m.sender, contact.display_name),
                  'reply_to': m.reply_quote,
@@ -1469,6 +1489,16 @@ def register_routes(app: Flask) -> None:
                  'attachments': [{'id': a.id, 'kind': a.kind,
                                   'name': a.original_name} for a in m.media]}
                 for m in msgs
+            ],
+            # Закреплённые сообщения чата — UI рисует «📌»-плашку сверху
+            # с кратким текстом и кнопкой «перейти». Список — самые свежие
+            # закрепы сверху.
+            'pinned_messages': [
+                {'id': m.id, 'text': (m.visible_text or '')[:160],
+                 'author': display_author(m.sender, contact.display_name)}
+                for m in sorted(
+                    [mm for mm in msgs if mm.pinned_at is not None],
+                    key=lambda mm: mm.pinned_at, reverse=True)
             ],
         })
 
@@ -1489,6 +1519,26 @@ def register_routes(app: Flask) -> None:
         upload = request.files.get('file')
         if not text and upload is None:
             return jsonify({'error': 'empty'}), 400
+
+        # Распознаём markdown: если текст содержит **жирный**, ||спойлер||,
+        # `моноширный`, [текст](url) — шлём с parse_mode='md', а у себя
+        # сохраняем plain без меток + готовый text_html (через
+        # telethon-утилиты) для подсветки в bubble сразу же.
+        md_parse_mode = None
+        md_html = None
+        md_plain = text
+        if text and _has_markdown(text):
+            try:
+                from telethon.extensions import (markdown as _tg_md,
+                                                  html as _tg_html)
+                parsed_text, entities = _tg_md.parse(text)
+                md_parse_mode = 'md'
+                md_plain = parsed_text
+                md_html = _tg_html.unparse(parsed_text, entities)
+            except Exception:  # noqa: BLE001
+                md_parse_mode = None
+                md_html = None
+                md_plain = text
 
         # Учитываем «какой мессенджер открыт у пользователя» (?m=… в URL ленты).
         # Если поле есть — пробуем отправить через этого мессенджера; иначе
@@ -1533,10 +1583,16 @@ def register_routes(app: Flask) -> None:
                 data = upload.read()
                 if not data:
                     return jsonify({'error': 'empty'}), 400
+                # parse_mode передаём только если был найден markdown —
+                # см. комментарий ниже у send_message о совместимости со
+                # старыми моками в тестах.
+                _md_kw_f = ({'parse_mode': md_parse_mode}
+                            if md_parse_mode else {})
                 try:
                     sent_id = telegram_bridge.send_file(
                         tg_handle.tg_chat_id, data,
-                        upload.filename or 'file', text, **reply_kw_tg)
+                        upload.filename or 'file', text,
+                        **_md_kw_f, **reply_kw_tg)
                 except Exception as exc:  # noqa: BLE001
                     return jsonify({'error': 'send_failed',
                                     'detail': str(exc)}), 502
@@ -1561,7 +1617,8 @@ def register_routes(app: Flask) -> None:
                 now = datetime.now()
                 msg = Messages(
                     sender='Вы',
-                    text=text or placeholder,
+                    text=md_plain or placeholder,
+                    text_html=md_html,
                     messenger_name='Telegram',
                     time=now.strftime('%H:%M'),
                     user_id=user_id,
@@ -1599,15 +1656,22 @@ def register_routes(app: Flask) -> None:
                 db.commit()
                 return jsonify({'ok': True, 'media': True, 'id': msg.id})
 
+            # parse_mode передаём ТОЛЬКО когда нашли markdown — иначе
+            # ломаются унаследованные моки в тестах, у которых сигнатура
+            # старого API (text-only без kwarg). Поведение для plain-текста
+            # не меняется.
+            _md_kw = {'parse_mode': md_parse_mode} if md_parse_mode else {}
             try:
                 sent_id = telegram_bridge.send_message(
-                    tg_handle.tg_chat_id, text, **reply_kw_tg)
+                    tg_handle.tg_chat_id, text,
+                    **_md_kw, **reply_kw_tg)
             except Exception as exc:  # noqa: BLE001
                 return jsonify({'error': 'send_failed', 'detail': str(exc)}), 502
             now = datetime.now()
             msg = Messages(
                 sender='Вы',
-                text=text,
+                text=md_plain,
+                text_html=md_html,
                 messenger_name='Telegram',
                 time=now.strftime('%H:%M'),
                 user_id=user_id,
@@ -1630,8 +1694,13 @@ def register_routes(app: Flask) -> None:
                                                     contact.display_name)),
                     'text': rt_text[:120] + ('…' if len(rt_text) > 120 else ''),
                 }
+            # Возвращаем text (plain без markdown-меток) и text_html для
+            # оптимистичного рендера на фронте — иначе пользователь видит
+            # звёздочки «**жирный**» 2-5 секунд, пока поллинг не подтянет
+            # уже отформатированную версию.
             return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
-                            'text': text, 'reply_to': reply_quote})
+                            'text': md_plain, 'text_html': md_html,
+                            'reply_to': reply_quote})
 
         # --- Notification reply через Android (только текст) ---
         if upload is not None:
@@ -2003,6 +2072,49 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'pinned': bool(contact.pinned_at)})
 
+    @app.route('/contacts/<int:contact_id>/block', methods=['POST'])
+    def contact_block(contact_id):
+        """Блокировка: ставим Contact.blocked_at (новые входящие молча
+        выкидываются в record_message), и параллельно пробуем заблокировать
+        пользователя в самом Telegram через BlockRequest — чтобы новые
+        сообщения не приходили и в TG-клиент тоже. Toggle: повторный
+        запрос снимает блок и тут, и в TG. Если TG-блок не удался (например,
+        мост не настроен) — локальное состояние всё равно меняется."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        from data import telegram_bridge
+        db = get_db()
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id,
+            Contact.user_id == session['user_id']).first()
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        new_block = contact.blocked_at is None
+        # Найдём личный TG-handle и попробуем синхронизировать состояние
+        # блокировки в самом Telegram. Это «best effort» — если упадёт
+        # (нет авторизации, не настроен мост, пользователь — group),
+        # просто пометим tg_synced=False в ответе.
+        tg_handle = (db.query(MessengerHandle)
+                     .filter(MessengerHandle.contact_id == contact.id,
+                             MessengerHandle.tg_chat_id.isnot(None),
+                             MessengerHandle.tg_chat_type == 'private')
+                     .first())
+        tg_synced = None
+        if tg_handle is not None and telegram_bridge.is_configured():
+            try:
+                telegram_bridge.set_block(tg_handle.tg_chat_id, new_block)
+                tg_synced = True
+            except Exception:  # noqa: BLE001
+                tg_synced = False
+        # Локальное состояние меняем независимо от успеха TG-вызова,
+        # чтобы хотя бы у нас работало.
+        contact.blocked_at = datetime.now() if new_block else None
+        db.commit()
+        return jsonify({'ok': True,
+                        'blocked': contact.blocked_at is not None,
+                        'tg_synced': tg_synced})
+
     @app.route('/contacts/<int:contact_id>/mute', methods=['POST'])
     def contact_mute(contact_id):
         """Беззвучный режим: контакт остаётся в списке (и бэйджи считаются),
@@ -2061,6 +2173,337 @@ def register_routes(app: Flask) -> None:
         db.delete(contact)
         db.commit()
         return jsonify({'ok': True})
+
+    # --- Профиль контакта (правая выезжающая панель в стиле Telegram) ---
+
+    # Маппинг внутреннего Attachment.kind в «корзины», которые видит UI.
+    # Стикеры показываем рядом с фото — это самое близкое по смыслу.
+    # 'link' — псевдо-корзина: ссылки достаются парсингом текста сообщений,
+    # отдельной таблицы под них нет.
+    _MEDIA_BUCKETS = {
+        'photo': ('image', 'sticker'),
+        'video': ('video',),
+        'voice': ('voice',),
+        'audio': ('audio',),
+        'file':  ('file',),
+    }
+
+    # Регэксп для извлечения URL из текста сообщений. Сознательно простой —
+    # ловит http(s)-схемы, режет на пробелах/кавычках/угловых скобках.
+    import re as _re_url
+    _URL_RE = _re_url.compile(r"https?://[^\s<>'\"]+", _re_url.IGNORECASE)
+    # Чтобы не разогнаться на больших чатах, ссылки ищем только в последних
+    # _LINK_SCAN_LIMIT сообщениях. Подсчёт получается приблизительный —
+    # этого достаточно для UI «сколько ссылок было в чате».
+    _LINK_SCAN_LIMIT = 500
+
+    def _aggregate_media_counts(db, user_id, contact_id):
+        """Возвращает dict bucket→count для всех вложений контакта,
+        плюс ключ 'link' с приближённым числом ссылок (см.
+        _count_message_links). Подсчёт ссылок ограничен последними
+        _LINK_SCAN_LIMIT сообщениями, чтобы не разогнаться на больших
+        чатах — для UI важно «много / мало / нет», а не точное число."""
+        from sqlalchemy import func
+        from data.attachments import Attachment
+        from data.contacts import MessengerHandle
+        rows = (db.query(Attachment.kind, func.count(Attachment.id))
+                .join(Messages, Attachment.message_id == Messages.id)
+                .join(MessengerHandle,
+                      Messages.handle_id == MessengerHandle.id)
+                .filter(MessengerHandle.contact_id == contact_id,
+                        Attachment.user_id == user_id)
+                .group_by(Attachment.kind).all())
+        out = {b: 0 for b in _MEDIA_BUCKETS}
+        for kind, cnt in rows:
+            for bucket, kinds in _MEDIA_BUCKETS.items():
+                if kind in kinds:
+                    out[bucket] += int(cnt)
+                    break
+        out['link'] = _count_message_links(db, user_id, contact_id)
+        return out
+
+    def _count_message_links(db, user_id, contact_id):
+        """Сколько ссылок в последних _LINK_SCAN_LIMIT сообщениях чата.
+        Текст сообщений зашифрован TypeDecorator'ом — фильтр в SQL по
+        '%http%' не сработает, поэтому загружаем и парсим regex'ом."""
+        from data.contacts import MessengerHandle
+        msgs = (db.query(Messages.text)
+                .join(MessengerHandle,
+                      Messages.handle_id == MessengerHandle.id)
+                .filter(MessengerHandle.contact_id == contact_id,
+                        Messages.user_id == user_id,
+                        Messages.text.isnot(None))
+                .order_by(Messages.id.desc())
+                .limit(_LINK_SCAN_LIMIT).all())
+        total = 0
+        for (txt,) in msgs:
+            if not txt:
+                continue
+            total += len(_URL_RE.findall(txt))
+        return total
+
+    def _collect_message_links(db, user_id, contact_id, limit, offset):
+        """Возвращает список найденных ссылок (URL + превью текста + id
+        исходного сообщения), отсортированный от свежих к старым.
+        Аналогично _count_message_links — пробегаем по последним
+        _LINK_SCAN_LIMIT сообщениям. limit/offset режут уже найденные."""
+        from data.contacts import MessengerHandle
+        msgs = (db.query(Messages)
+                .join(MessengerHandle,
+                      Messages.handle_id == MessengerHandle.id)
+                .filter(MessengerHandle.contact_id == contact_id,
+                        Messages.user_id == user_id,
+                        Messages.text.isnot(None))
+                .order_by(Messages.id.desc())
+                .limit(_LINK_SCAN_LIMIT).all())
+        items = []
+        for m in msgs:
+            urls = _URL_RE.findall(m.text or '')
+            for url in urls:
+                items.append({
+                    'url': url,
+                    'text_preview': (m.text or '')[:200],
+                    'message_id': m.id,
+                    'created_at': (m.created_at.isoformat()
+                                   if m.created_at else None),
+                })
+        return items[offset:offset + limit]
+
+    @app.route('/contacts/<int:contact_id>/profile.json')
+    def contact_profile(contact_id):
+        """Сводка для правой панели: имя, аватар, mute/pin, мессенджеры,
+        счётчики медиа по типам. Сами медиа отдаются отдельно через
+        /contacts/<id>/media.json — здесь только числа для секций."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        db = get_db()
+        user_id = session['user_id']
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id, Contact.user_id == user_id).first()
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        handles = db.query(MessengerHandle).filter(
+            MessengerHandle.contact_id == contact.id).all()
+        msgs_count = (db.query(Messages)
+                      .filter(Messages.handle_id.in_([h.id for h in handles]
+                                                     or [0]))
+                      .count()) if handles else 0
+        is_group = any(getattr(h, 'tg_chat_type', None) == 'group'
+                       or getattr(h, 'tg_chat_type', None) == 'channel'
+                       for h in handles)
+        return jsonify({
+            'ok': True,
+            'contact': {
+                'id': contact.id,
+                'display_name': contact.display_name,
+                'avatar_url': (f'/contacts/{contact.id}/photo'
+                               if contact.avatar_path else None),
+                'pinned': contact.pinned_at is not None,
+                'muted': bool(contact.muted),
+                'blocked': contact.blocked_at is not None,
+                'messages_count': int(msgs_count),
+            },
+            'messengers': [{
+                'name': h.messenger_name,
+                'sender_raw': h.sender_raw,
+                'tg_chat_id': h.tg_chat_id,
+                'tg_chat_type': getattr(h, 'tg_chat_type', None),
+            } for h in handles],
+            'is_group': is_group,
+            'media_counts': _aggregate_media_counts(
+                db, user_id, contact.id),
+        })
+
+    @app.route('/contacts/<int:contact_id>/media.json')
+    def contact_media(contact_id):
+        """Список вложений выбранного типа для галереи. ?kind=photo|video|
+        voice|audio|file, плюс limit/offset для подгрузки. Возвращаем
+        самые свежие сверху."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.attachments import Attachment
+        from data.contacts import Contact, MessengerHandle
+        db = get_db()
+        user_id = session['user_id']
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id, Contact.user_id == user_id).first()
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        bucket = (request.args.get('kind') or 'photo').lower()
+        try:
+            limit = max(1, min(int(request.args.get('limit') or 60), 200))
+            offset = max(0, int(request.args.get('offset') or 0))
+        except ValueError:
+            limit, offset = 60, 0
+        # «Ссылки» — отдельный путь: достаются парсингом текста сообщений,
+        # а не из таблицы attachments.
+        if bucket == 'link':
+            items = _collect_message_links(db, user_id, contact.id,
+                                            limit, offset)
+            return jsonify({'ok': True, 'kind': 'link', 'items': items})
+        kinds = _MEDIA_BUCKETS.get(bucket)
+        if not kinds:
+            return jsonify({'error': 'bad_kind'}), 400
+        rows = (db.query(Attachment)
+                .join(Messages, Attachment.message_id == Messages.id)
+                .join(MessengerHandle,
+                      Messages.handle_id == MessengerHandle.id)
+                .filter(MessengerHandle.contact_id == contact.id,
+                        Attachment.user_id == user_id,
+                        Attachment.kind.in_(kinds))
+                .order_by(Attachment.id.desc())
+                .limit(limit).offset(offset).all())
+        return jsonify({
+            'ok': True, 'kind': bucket,
+            'items': [{
+                'id': a.id,
+                'kind': a.kind,
+                'mime': a.mime,
+                'name': a.original_name,
+                'size': a.size,
+                'created_at': (a.created_at.isoformat()
+                               if a.created_at else None),
+                'message_id': a.message_id,
+                'url': f'/attachments/{a.id}',
+            } for a in rows],
+        })
+
+    @app.route('/contacts/by-tg.json')
+    def contact_by_tg():
+        """Найти существующий Contact по Telegram-id (без создания).
+        Параметр ?tg_chat_id=… (старое имя ?tg_user_id= тоже поддерживаем
+        для обратной совместимости). Возвращает contact_id или null."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import MessengerHandle
+        try:
+            tg_chat_id = int(request.args.get('tg_chat_id')
+                              or request.args.get('tg_user_id')
+                              or 0)
+        except ValueError:
+            tg_chat_id = 0
+        if not tg_chat_id:
+            return jsonify({'error': 'bad_request'}), 400
+        db = get_db()
+        handle = (db.query(MessengerHandle)
+                  .filter(MessengerHandle.user_id == session['user_id'],
+                          MessengerHandle.tg_chat_id == tg_chat_id)
+                  .first())
+        return jsonify({
+            'ok': True,
+            'contact_id': handle.contact_id if handle else None,
+        })
+
+    @app.route('/contacts/from-tg.json', methods=['POST'])
+    def contact_from_tg():
+        """Найти или создать локальный Contact для произвольной
+        Telegram-сущности (пользователь, группа, канал) по peer-id.
+        Нужно для клика по участнику группы / общей группе в правой
+        панели — у нас может ещё не быть с ними переписки, а пользователь
+        хочет открыть чат внутри Synapse. Резолвим имя через Telethon
+        get_entity, создаём Contact + MessengerHandle.
+        Body: tg_chat_id (int)."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import (Contact, MessengerHandle,
+                                    find_or_create_handle)
+        from data import telegram_bridge
+        try:
+            tg_chat_id = int(request.form.get('tg_chat_id') or 0)
+        except ValueError:
+            tg_chat_id = 0
+        if not tg_chat_id:
+            return jsonify({'error': 'bad_request'}), 400
+        db = get_db()
+        user_id = session['user_id']
+        # 1. Уже есть handle с этим id?
+        handle = (db.query(MessengerHandle)
+                  .filter(MessengerHandle.user_id == user_id,
+                          MessengerHandle.tg_chat_id == tg_chat_id)
+                  .first())
+        if handle is not None:
+            return jsonify({'ok': True, 'contact_id': handle.contact_id,
+                            'created': False})
+        # 2. Резолвим через Telethon, чтобы получить имя и тип.
+        if not telegram_bridge.is_configured():
+            return jsonify({'error': 'telegram_not_configured'}), 502
+        try:
+            info = telegram_bridge.resolve_entity_info(tg_chat_id)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'error': 'resolve_failed',
+                            'detail': str(exc)}), 502
+        # 3. У сущности может быть «нормализованный» id (например, если
+        # передали peer-id с -100… префиксом). Если так — повторим поиск
+        # уже с ним, чтобы не плодить дубликат.
+        norm_chat_id = int(info.get('chat_id') or tg_chat_id)
+        if norm_chat_id != tg_chat_id:
+            handle = (db.query(MessengerHandle)
+                      .filter(MessengerHandle.user_id == user_id,
+                              MessengerHandle.tg_chat_id == norm_chat_id)
+                      .first())
+            if handle is not None:
+                return jsonify({'ok': True, 'contact_id': handle.contact_id,
+                                'created': False})
+        # 4. Создаём через find_or_create_handle — он же поймает дубль
+        # по (user_id, 'Telegram', title), если такой Contact уже есть
+        # без проставленного tg_chat_id.
+        title = info.get('title') or 'Без имени'
+        kind = info.get('kind') or 'private'
+        handle = find_or_create_handle(
+            db, user_id, 'Telegram', title,
+            tg_chat_id=norm_chat_id, tg_chat_type=kind)
+        db.commit()
+        return jsonify({'ok': True, 'contact_id': handle.contact_id,
+                        'created': True})
+
+    @app.route('/contacts/<int:contact_id>/tg_extra.json')
+    def contact_tg_extra(contact_id):
+        """Расширенные данные TG-контакта: bio / телефон / @username +
+        список общих групп. Эти запросы ходят в Telegram через Telethon,
+        поэтому отдаём их отдельным эндпоинтом — UI рисует базовый профиль
+        мгновенно, а потом подтягивает эти данные. Если у контакта нет
+        личного TG-handle (только Android-уведомления или группа) —
+        возвращаем available=False."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id, Contact.user_id == user_id).first()
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        # Берём первый личный TG-handle (tg_chat_type='private' и tg_chat_id есть).
+        handle = (db.query(MessengerHandle)
+                  .filter(MessengerHandle.contact_id == contact.id,
+                          MessengerHandle.tg_chat_id.isnot(None),
+                          MessengerHandle.tg_chat_type == 'private')
+                  .first())
+        if handle is None:
+            return jsonify({'ok': True, 'available': False,
+                            'reason': 'no_tg_user_handle'})
+        if not telegram_bridge.is_configured():
+            return jsonify({'ok': True, 'available': False,
+                            'reason': 'telegram_not_configured'})
+
+        chat_id = handle.tg_chat_id
+        result = {
+            'ok': True, 'available': True,
+            'user_info': None, 'common_chats': [], 'errors': [],
+        }
+        try:
+            result['user_info'] = telegram_bridge.get_user_info(chat_id)
+        except Exception as exc:  # noqa: BLE001
+            result['errors'].append({'where': 'user_info',
+                                     'detail': str(exc)})
+        try:
+            result['common_chats'] = telegram_bridge.get_common_chats(chat_id)
+        except Exception as exc:  # noqa: BLE001
+            result['errors'].append({'where': 'common_chats',
+                                     'detail': str(exc)})
+        return jsonify(result)
 
     def _msg_tg_chat_id(db, msg):
         """tg_chat_id чата, которому принадлежит сообщение, либо None."""
@@ -2228,18 +2671,79 @@ def register_routes(app: Flask) -> None:
             Messages.id == message_id, Messages.user_id == user_id).first()
         if not msg:
             return jsonify({'error': 'not_found'}), 404
-        # Если у сообщения есть telegram-id — пробуем удалить и в Telegram.
+        # scope='self' — удалить только у меня (в TG останется у собеседника),
+        # scope='all' (или не указан, для обратной совместимости) — удалить
+        # у всех через Telegram revoke. Для не-Telegram сообщений scope
+        # ни на что не влияет: всегда просто чистим локальную копию.
+        scope = (request.form.get('scope')
+                 or (request.get_json(silent=True) or {}).get('scope')
+                 or 'all')
+        for_all = scope != 'self'
         tg_deleted = None
         chat_id = _msg_tg_chat_id(db, msg)
         if msg.tg_message_id is not None and chat_id is not None:
             try:
-                telegram_bridge.delete_message(chat_id, msg.tg_message_id)
+                if for_all:
+                    telegram_bridge.delete_message(chat_id, msg.tg_message_id)
+                else:
+                    telegram_bridge.delete_message(chat_id, msg.tg_message_id,
+                                                   revoke=False)
                 tg_deleted = True
             except Exception:  # noqa: BLE001
                 tg_deleted = False
         db.delete(msg)
         db.commit()
-        return jsonify({'ok': True, 'tg_deleted': tg_deleted})
+        return jsonify({'ok': True, 'tg_deleted': tg_deleted,
+                        'scope': 'all' if for_all else 'self'})
+
+    @app.route('/messages/<int:message_id>/pin', methods=['POST'])
+    def message_pin(message_id):
+        """Закрепить сообщение: в Telegram + локально (Messages.pinned_at).
+        Для Android-сообщений Telegram-API недоступен — закрепим только
+        локально (UI всё равно покажет плашку в верхушке чата)."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        msg = db.query(Messages).filter(
+            Messages.id == message_id, Messages.user_id == user_id).first()
+        if not msg:
+            return jsonify({'error': 'not_found'}), 404
+        chat_id = _msg_tg_chat_id(db, msg)
+        # Если это Telegram-сообщение — закрепим и в самом мессенджере.
+        if msg.tg_message_id is not None and chat_id is not None:
+            try:
+                telegram_bridge.pin_message(chat_id, msg.tg_message_id,
+                                             notify=False)
+            except Exception as exc:  # noqa: BLE001
+                return jsonify({'error': 'pin_failed',
+                                'detail': str(exc)}), 502
+        msg.pinned_at = datetime.now()
+        db.commit()
+        return jsonify({'ok': True, 'pinned_at': msg.pinned_at.isoformat()})
+
+    @app.route('/messages/<int:message_id>/unpin', methods=['POST'])
+    def message_unpin(message_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        msg = db.query(Messages).filter(
+            Messages.id == message_id, Messages.user_id == user_id).first()
+        if not msg:
+            return jsonify({'error': 'not_found'}), 404
+        chat_id = _msg_tg_chat_id(db, msg)
+        if msg.tg_message_id is not None and chat_id is not None:
+            try:
+                telegram_bridge.unpin_message(chat_id, msg.tg_message_id)
+            except Exception as exc:  # noqa: BLE001
+                return jsonify({'error': 'unpin_failed',
+                                'detail': str(exc)}), 502
+        msg.pinned_at = None
+        db.commit()
+        return jsonify({'ok': True})
 
     @app.route('/messages/<int:message_id>/translate', methods=['POST'])
     def message_translate(message_id):

@@ -489,6 +489,20 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
         except ImportError:
             pass
 
+    # HTML-версия текста с форматированием (bold/italic/spoiler/code/
+    # ссылки). У Telegram это `Message.entities` — список позиционных
+    # тегов. Telethon умеет собирать их обратно в HTML через
+    # extensions.html.unparse. Если разметки нет — оставляем NULL,
+    # UI сам отрисует plain через escapeHtml+linkify.
+    text_html = None
+    entities = getattr(msg, "entities", None)
+    if entities:
+        try:
+            from telethon.extensions.html import unparse as _tg_html_unparse
+            text_html = _tg_html_unparse(text, entities)
+        except Exception:  # noqa: BLE001
+            text_html = None
+
     from data import db_sessions
     from data.contacts import record_message
     db = db_sessions.create_session()
@@ -503,8 +517,10 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  fwd_from_tg_chat_id=fwd_chat_id,
                                  tg_topic_id=int(topic_id) if topic_id else None,
                                  tg_topic_title=topic_title,
-                                 tg_is_forum=is_forum_chat)
-        if data is not None and kind is not None:
+                                 tg_is_forum=is_forum_chat,
+                                 text_html=text_html)
+        # message is None — контакт в блок-листе, медиа тоже пропускаем.
+        if message is not None and data is not None and kind is not None:
             _save_attachment(db, _owner_user_id(), message.id, kind, data, msg)
     finally:
         db.close()
@@ -996,6 +1012,10 @@ async def _fetch_participants(chat_id):
         result.append({
             "name": _sender_name(p),
             "username": ("@" + p.username) if getattr(p, "username", None) else None,
+            # tg_user_id нужен, чтобы клик по участнику в правой панели
+            # мог найти Contact по этому id в нашей БД или открыть
+            # https://t.me/<username> в новой вкладке.
+            "tg_user_id": getattr(p, "id", None),
         })
     return result
 
@@ -1015,28 +1035,185 @@ def get_participants(chat_id):
     return data
 
 
-async def _send_message(chat_id, text, reply_to=None):
+# Кэш для расширенной информации профиля Telegram-контакта.
+# 5 минут — компромисс между свежестью и числом запросов к Telegram API.
+_user_info_cache = {}
+_common_chats_cache = {}
+
+
+async def _fetch_user_info(chat_id):
+    """Через GetFullUserRequest достаём bio (about), phone и username."""
+    from telethon.tl.functions.users import GetFullUserRequest
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    input_user = await client.get_input_entity(int(chat_id))
+    full = await client(GetFullUserRequest(input_user))
+    user = full.users[0] if getattr(full, "users", None) else None
+    about = getattr(full.full_user, "about", None) if full.full_user else None
+    return {
+        "about": about or None,
+        "phone": getattr(user, "phone", None) if user else None,
+        "username": getattr(user, "username", None) if user else None,
+        "first_name": getattr(user, "first_name", None) if user else None,
+        "last_name": getattr(user, "last_name", None) if user else None,
+        "is_bot": bool(getattr(user, "bot", False)) if user else False,
+        "is_self": bool(getattr(user, "is_self", False)) if user else False,
+    }
+
+
+def get_user_info(chat_id):
+    """Bio / телефон / @username Telegram-контакта. Кэш 5 минут."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    key = int(chat_id)
+    now = time.monotonic()
+    cached = _user_info_cache.get(key)
+    if cached and now - cached[1] < 300:
+        return cached[0]
+    data = _call(_fetch_user_info(key), timeout=30)
+    _user_info_cache[key] = (data, now)
+    return data
+
+
+async def _fetch_common_chats(chat_id, limit):
+    """Общие группы с пользователем через GetCommonChatsRequest."""
+    from telethon.tl.functions.messages import GetCommonChatsRequest
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    input_user = await client.get_input_entity(int(chat_id))
+    res = await client(GetCommonChatsRequest(
+        user_id=input_user, max_id=0, limit=int(limit)))
+    out = []
+    for c in getattr(res, "chats", []) or []:
+        out.append({
+            "id": getattr(c, "id", None),
+            "title": getattr(c, "title", "") or "",
+            "is_channel": bool(getattr(c, "broadcast", False)),
+            "participants_count": getattr(c, "participants_count", None),
+        })
+    return out
+
+
+def get_common_chats(chat_id, limit=20):
+    """Общие группы/каналы с пользователем. Кэш 5 минут."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    key = (int(chat_id), int(limit))
+    now = time.monotonic()
+    cached = _common_chats_cache.get(key)
+    if cached and now - cached[1] < 300:
+        return cached[0]
+    data = _call(_fetch_common_chats(key[0], key[1]), timeout=30)
+    _common_chats_cache[key] = (data, now)
+    return data
+
+
+async def _resolve_entity_info(chat_id):
+    """Получает имя/тип Telegram-сущности (пользователь / группа / канал)
+    по её peer-id. Нужно, чтобы создавать локальный Contact для
+    пользователей, с которыми мы ещё не переписывались (клик по
+    участнику группы или по общему чату в профиле)."""
+    from telethon.tl.types import User as _User, Chat as _Chat, Channel as _Channel
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    e = await client.get_entity(int(chat_id))
+    if isinstance(e, _User):
+        name = " ".join(filter(None, [
+            getattr(e, "first_name", None),
+            getattr(e, "last_name", None),
+        ])) or getattr(e, "username", None) or f"user{e.id}"
+        return {
+            "kind": "private",
+            "chat_id": int(e.id),
+            "title": name,
+            "username": getattr(e, "username", None),
+        }
+    if isinstance(e, _Channel):
+        return {
+            "kind": "channel" if getattr(e, "broadcast", False) else "group",
+            "chat_id": int(e.id),
+            "title": getattr(e, "title", "") or f"chat{e.id}",
+            "username": getattr(e, "username", None),
+        }
+    if isinstance(e, _Chat):
+        return {
+            "kind": "group",
+            "chat_id": int(e.id),
+            "title": getattr(e, "title", "") or f"chat{e.id}",
+            "username": None,
+        }
+    raise RuntimeError("Неизвестный тип Telegram-сущности")
+
+
+def resolve_entity_info(chat_id):
+    """Sync-обёртка для _resolve_entity_info."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_resolve_entity_info(chat_id), timeout=30)
+
+
+async def _set_block(chat_id, block):
+    """Block/Unblock пользователя в Telegram. block=True — заблокировать,
+    block=False — снять блокировку."""
+    from telethon.tl.functions.contacts import (BlockRequest,
+                                                 UnblockRequest)
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    input_user = await client.get_input_entity(int(chat_id))
+    if block:
+        await client(BlockRequest(id=input_user))
+    else:
+        await client(UnblockRequest(id=input_user))
+
+
+def set_block(chat_id, block=True):
+    """Заблокировать (или разблокировать) пользователя в самом Telegram."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    _call(_set_block(chat_id, bool(block)), timeout=30)
+
+
+async def _send_message(chat_id, text, reply_to=None, parse_mode=None):
     client = await _get_client()
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     # Регистрируем ДО отправки: Telegram пришлёт это сообщение обратно
     # как исходящее событие, и обработчик должен его узнать и не дублировать.
-    _recent_self_sent.append((int(chat_id), text, time.monotonic()))
-    sent = await client.send_message(int(chat_id), text, reply_to=reply_to)
+    # При parse_mode='md' Telethon снимает markdown-метки из text — мы
+    # кладём в self-sent тот же plain, что web-panel уже сохранила в БД,
+    # чтобы дедупликация по тексту совпала.
+    if parse_mode == 'md':
+        try:
+            from telethon.extensions import markdown as _tg_md
+            plain, _ = _tg_md.parse(text)
+            _recent_self_sent.append((int(chat_id), plain, time.monotonic()))
+        except Exception:  # noqa: BLE001
+            _recent_self_sent.append((int(chat_id), text, time.monotonic()))
+    else:
+        _recent_self_sent.append((int(chat_id), text, time.monotonic()))
+    sent = await client.send_message(int(chat_id), text,
+                                      reply_to=reply_to,
+                                      parse_mode=parse_mode)
     return getattr(sent, "id", None)
 
 
-def send_message(chat_id, text, reply_to=None):
+def send_message(chat_id, text, reply_to=None, parse_mode=None):
     """Отправляет текст в Telegram-чат от имени владельца аккаунта.
     `reply_to` — id telegram-сообщения, на которое отвечаем (или None).
-    Возвращает id отправленного сообщения. Бросает исключение, если
-    мост не настроен/не авторизован."""
+    `parse_mode='md'` — Telethon разберёт markdown (**bold**, ||spoiler||,
+    `code`, [text](url)) и пошлёт entities в Telegram. None — plain text.
+    Возвращает id отправленного сообщения."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_send_message(chat_id, text, reply_to))
+    return _call(_send_message(chat_id, text, reply_to, parse_mode))
 
 
-async def _send_file(chat_id, data, filename, caption, reply_to=None):
+async def _send_file(chat_id, data, filename, caption, reply_to=None,
+                     parse_mode=None):
     client = await _get_client()
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
@@ -1045,11 +1222,13 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None):
     bio.name = filename or "file"
     sent = await client.send_file(int(chat_id), bio,
                                    caption=caption or None,
-                                   reply_to=reply_to)
+                                   reply_to=reply_to,
+                                   parse_mode=parse_mode)
     return getattr(sent, "id", None)
 
 
-def send_file(chat_id, data, filename, caption="", reply_to=None):
+def send_file(chat_id, data, filename, caption="", reply_to=None,
+              parse_mode=None):
     """Отправляет файл (фото/видео/документ) в Telegram-чат.
     `reply_to` — id telegram-сообщения, на которое отвечаем (или None).
     Возвращает id отправленного Telegram-сообщения — нужно вызывающему,
@@ -1059,22 +1238,26 @@ def send_file(chat_id, data, filename, caption="", reply_to=None):
     anti-dupe в `_handle_message` по `tg_message_id`."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_send_file(chat_id, data, filename, caption, reply_to),
+    return _call(_send_file(chat_id, data, filename, caption, reply_to,
+                             parse_mode),
                  timeout=120)
 
 
-async def _delete_message(chat_id, message_id):
+async def _delete_message(chat_id, message_id, revoke):
     client = await _get_client()
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
-    await client.delete_messages(int(chat_id), [int(message_id)], revoke=True)
+    await client.delete_messages(int(chat_id), [int(message_id)],
+                                 revoke=bool(revoke))
 
 
-def delete_message(chat_id, message_id):
-    """Удаляет сообщение в самом Telegram (revoke — у всех, где возможно)."""
+def delete_message(chat_id, message_id, revoke=True):
+    """Удаляет сообщение в самом Telegram. revoke=True — у всех (где это
+    разрешено правилами TG: своё личное/групповое сообщение, либо если ты
+    админ группы). revoke=False — удалить только из своего клиента."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_delete_message(chat_id, message_id))
+    _call(_delete_message(chat_id, message_id, revoke))
 
 
 async def _edit_message(chat_id, message_id, text):
@@ -1089,6 +1272,37 @@ def edit_message(chat_id, message_id, text):
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     _call(_edit_message(chat_id, message_id, text))
+
+
+async def _pin_message(chat_id, message_id, notify):
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    await client.pin_message(int(chat_id), int(message_id),
+                             notify=notify)
+
+
+def pin_message(chat_id, message_id, notify=False):
+    """Закрепляет сообщение в Telegram-чате. `notify=False` — закрепляем
+    «тихо» (без шумного «вы закрепили это сообщение» всем участникам).
+    Это симметрично UI-сценарию «📌 в контекстном меню»."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    _call(_pin_message(chat_id, message_id, notify))
+
+
+async def _unpin_message(chat_id, message_id):
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    await client.unpin_message(int(chat_id), int(message_id))
+
+
+def unpin_message(chat_id, message_id):
+    """Снимает закреп с сообщения в Telegram-чате."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    _call(_unpin_message(chat_id, message_id))
 
 
 async def _fetch_forum_topics(chat_id: int) -> list:
