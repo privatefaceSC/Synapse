@@ -254,6 +254,10 @@
         </div>
     </div>
 
+    {# Плашка «Клиент для Android» показывается только пока устройство
+       не подключено: дальше она не нужна, и доступ к скачиванию остаётся
+       в меню-шестерёнке (пункт «Клиент для Android»). #}
+    {% if not device_connected %}
     <div class="home-card card-soft mb-3" style="padding: 20px;">
         <div class="d-flex justify-content-between align-items-center mb-1">
             <strong>Клиент для Android</strong>
@@ -265,13 +269,10 @@
             <button type="button" class="copy-btn" id="copy-code">Копировать</button>
         </div>
         <div class="form-text mt-2">
-            {% if device_connected %}
-                Устройство уже привязано.
-            {% else %}
-                Откройте Synapse на телефоне и введите этот код.
-            {% endif %}
+            Откройте Synapse на телефоне и введите этот код.
         </div>
     </div>
+    {% endif %}
 
     <div class="home-card d-grid gap-2">
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть портал мессенджеров</a>

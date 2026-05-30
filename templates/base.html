@@ -28,7 +28,83 @@
             overflow: hidden;
         }
         .avatar img { width: 100%; height: 100%; object-fit: cover; }
-        #theme-toggle { width: 36px; padding: 0; }
+        /* Меню-шестерёнка в правом верхнем углу: «Связи», «Устройства»,
+           «Telegram», «Пользователи» (для админа) + переключатель темы
+           живут здесь, а не торчат в navbar'е по одной кнопке. */
+        .gear-wrap { position: relative; display: inline-block; }
+        .gear-btn {
+            width: 38px; height: 38px; padding: 0; border-radius: 10px;
+            font-size: 18px; line-height: 1;
+            display: inline-flex; align-items: center; justify-content: center;
+        }
+        .gear-menu {
+            position: absolute; top: calc(100% + 6px); right: 0;
+            min-width: 220px; background: #fff;
+            border: 1px solid #e2e8f0; border-radius: 12px;
+            box-shadow: 0 12px 32px rgba(15,23,42,.18);
+            padding: 6px; z-index: 1050;
+            display: none;
+        }
+        .gear-menu.open { display: block; }
+        .gear-menu a, .gear-menu button {
+            display: flex; align-items: center; gap: 10px;
+            width: 100%; padding: 8px 12px; border-radius: 8px;
+            text-decoration: none; color: #1e293b;
+            background: transparent; border: none;
+            font-size: 14px; cursor: pointer; text-align: left;
+        }
+        .gear-menu a:hover, .gear-menu button:hover { background: #f1f5f9; }
+        .gear-menu .gm-ico {
+            font-size: 16px; width: 22px; text-align: center;
+        }
+        .gear-menu hr {
+            margin: 6px 4px; border: 0; border-top: 1px solid #e2e8f0;
+        }
+        [data-bs-theme="dark"] .gear-menu {
+            background: #1a1d24; border-color: #2a2f3a;
+        }
+        [data-bs-theme="dark"] .gear-menu a,
+        [data-bs-theme="dark"] .gear-menu button { color: #e2e8f0; }
+        [data-bs-theme="dark"] .gear-menu a:hover,
+        [data-bs-theme="dark"] .gear-menu button:hover { background: #232831; }
+        [data-bs-theme="dark"] .gear-menu hr { border-top-color: #2a2f3a; }
+        /* Блок с connect_code в шестерёнке. */
+        .gm-code-block {
+            padding: 8px 10px 6px 10px;
+            background: #f8fafc; border-radius: 8px;
+            margin: 4px 2px;
+        }
+        .gm-code-label {
+            font-size: 11px; color: #64748b; text-transform: uppercase;
+            letter-spacing: .04em; margin-bottom: 4px;
+        }
+        .gm-code-row {
+            display: flex; align-items: center; gap: 8px;
+        }
+        .gm-code-row code {
+            font-size: 16px; font-weight: 700; color: #1d4ed8;
+            font-family: ui-monospace, monospace; letter-spacing: .08em;
+            background: transparent; padding: 0;
+        }
+        .gm-code-row button {
+            margin-left: auto; padding: 4px 8px;
+            background: transparent; border: 1px solid #cbd5e1;
+            border-radius: 6px; cursor: pointer; font-size: 13px;
+            transition: background .12s ease;
+        }
+        .gm-code-row button:hover { background: #e0e7ff; }
+        .gm-code-row button.done {
+            background: #16a34a; color: #fff; border-color: #16a34a;
+        }
+        [data-bs-theme="dark"] .gm-code-block {
+            background: #232831;
+        }
+        [data-bs-theme="dark"] .gm-code-label { color: #94a3b8; }
+        [data-bs-theme="dark"] .gm-code-row code { color: #93c5fd; }
+        [data-bs-theme="dark"] .gm-code-row button {
+            border-color: #2f3540; color: #e2e8f0;
+        }
+        [data-bs-theme="dark"] .gm-code-row button:hover { background: #1c2c44; }
     </style>
 </head>
 <body>
@@ -39,19 +115,60 @@
                 {% if session.get('user_id') %}
                     <a class="btn btn-sm btn-primary" href="/contacts">Контакты</a>
                     <a class="btn btn-sm btn-outline-primary" href="/messenger">Сообщения</a>
-                    <a class="btn btn-sm btn-outline-secondary" href="/contacts/manage">Связи</a>
-                    <a class="btn btn-sm btn-outline-secondary" href="/devices">Устройства</a>
-                    <a class="btn btn-sm btn-outline-secondary" href="/telegram">Telegram</a>
-                    {% if session.get('user_id') == 1 %}
-                        <a class="btn btn-sm btn-outline-secondary" href="/users">Пользователи</a>
-                    {% endif %}
                     <a class="btn btn-sm btn-outline-danger" href="/logout">Выход</a>
+                    <div class="gear-wrap">
+                        <button id="gear-btn"
+                                class="btn btn-sm btn-outline-secondary gear-btn"
+                                title="Настройки и навигация"
+                                aria-label="Настройки"
+                                aria-haspopup="true"
+                                aria-expanded="false">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <circle cx="12" cy="12" r="3"></circle>
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                            </svg>
+                        </button>
+                        <div id="gear-menu" class="gear-menu" role="menu">
+                            <a href="/profile">
+                                <span class="gm-ico">👤</span>Профиль</a>
+                            <a href="/contacts/manage">
+                                <span class="gm-ico">🔗</span>Связи</a>
+                            <a href="/devices">
+                                <span class="gm-ico">📱</span>Устройства</a>
+                            <a href="/download">
+                                <span class="gm-ico">⤓</span>Клиент для Android</a>
+                            {% if gear_user and gear_user.connect_code %}
+                            <div class="gm-code-block" id="gm-code-block">
+                                <div class="gm-code-label">Код подключения</div>
+                                <div class="gm-code-row">
+                                    <code id="gear-connect-code">{{ gear_user.connect_code }}</code>
+                                    <button type="button" id="gear-copy-code"
+                                            title="Скопировать">📋</button>
+                                </div>
+                            </div>
+                            {% endif %}
+                            <a href="/telegram">
+                                <span class="gm-ico">✈</span>Telegram</a>
+                            {% if session.get('user_id') == 1 %}
+                            <a href="/users">
+                                <span class="gm-ico">👥</span>Пользователи</a>
+                            {% endif %}
+                            <hr>
+                            <button type="button" id="theme-toggle">
+                                <span class="gm-ico" id="theme-toggle-icon">🌙</span>
+                                <span id="theme-toggle-label">Тёмная тема</span>
+                            </button>
+                        </div>
+                    </div>
                 {% else %}
                     <a class="btn btn-sm btn-outline-primary" href="/login">Вход</a>
                     <a class="btn btn-sm btn-primary" href="/register">Регистрация</a>
+                    <button id="theme-toggle"
+                            class="btn btn-sm btn-outline-secondary gear-btn"
+                            title="Переключить тему" aria-label="Переключить тему">🌙</button>
                 {% endif %}
-                <button id="theme-toggle" class="btn btn-sm btn-outline-secondary"
-                        title="Переключить тему" aria-label="Переключить тему">🌙</button>
             </div>
         </div>
     </nav>
@@ -59,12 +176,72 @@
     {% block body %}{% endblock %}
 
     <script>
+        // Меню-шестерёнка: открытие/закрытие, закрытие по клику снаружи и Esc.
         (function() {
+            var gearBtn = document.getElementById('gear-btn');
+            var gearMenu = document.getElementById('gear-menu');
+            if (gearBtn && gearMenu) {
+                gearBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var open = gearMenu.classList.toggle('open');
+                    gearBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+                });
+                document.addEventListener('click', function(e) {
+                    if (!gearMenu.classList.contains('open')) return;
+                    if (gearMenu.contains(e.target) || e.target === gearBtn) return;
+                    gearMenu.classList.remove('open');
+                    gearBtn.setAttribute('aria-expanded', 'false');
+                });
+                document.addEventListener('keydown', function(e) {
+                    if (e.key === 'Escape' && gearMenu.classList.contains('open')) {
+                        gearMenu.classList.remove('open');
+                        gearBtn.setAttribute('aria-expanded', 'false');
+                    }
+                });
+            }
+            // Копирование connect_code из шестерёнки.
+            var copyBtn = document.getElementById('gear-copy-code');
+            var codeEl = document.getElementById('gear-connect-code');
+            if (copyBtn && codeEl) {
+                copyBtn.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    var text = codeEl.textContent.trim();
+                    function done() {
+                        copyBtn.textContent = '✓';
+                        copyBtn.classList.add('done');
+                        setTimeout(function() {
+                            copyBtn.textContent = '📋';
+                            copyBtn.classList.remove('done');
+                        }, 1600);
+                    }
+                    if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(text).then(done).catch(done);
+                    } else {
+                        var ta = document.createElement('textarea');
+                        ta.value = text; ta.style.position = 'fixed';
+                        ta.style.opacity = '0';
+                        document.body.appendChild(ta);
+                        ta.select(); document.execCommand('copy');
+                        ta.remove(); done();
+                    }
+                });
+            }
+            // Переключатель темы — работает и в шестерёнке, и в гостевом режиме.
             var btn = document.getElementById('theme-toggle');
             if (!btn) return;
+            var ico = document.getElementById('theme-toggle-icon');
+            var label = document.getElementById('theme-toggle-label');
             function sync() {
                 var cur = document.documentElement.getAttribute('data-bs-theme');
-                btn.textContent = cur === 'dark' ? '☀' : '🌙';
+                if (ico) {
+                    ico.textContent = cur === 'dark' ? '☀' : '🌙';
+                } else {
+                    btn.textContent = cur === 'dark' ? '☀' : '🌙';
+                }
+                if (label) {
+                    label.textContent = cur === 'dark'
+                        ? 'Светлая тема' : 'Тёмная тема';
+                }
             }
             sync();
             btn.addEventListener('click', function() {

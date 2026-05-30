@@ -1,0 +1,119 @@
+{% extends 'base.html' %}
+{% block title %}Профиль{% endblock %}
+{% block body %}
+<style>
+    .profile-shell {
+        max-width: 520px; margin: 30px auto; padding: 0 16px;
+    }
+    .profile-shell .card-soft {
+        background: #fff; border-radius: 16px;
+        padding: 24px; box-shadow: 0 2px 14px rgba(15,23,42,.06);
+    }
+    .profile-shell h4 { margin-bottom: 18px; font-weight: 700; }
+    .profile-shell form label {
+        display: block; font-size: 13px; color: #475569;
+        margin-bottom: 4px; margin-top: 12px;
+    }
+    .profile-shell form input[type="text"],
+    .profile-shell form input[type="email"],
+    .profile-shell form input[type="password"] {
+        width: 100%; padding: 8px 12px;
+        border: 1px solid #cbd5e1; border-radius: 8px;
+        font-size: 14px;
+    }
+    .profile-shell form input:focus {
+        outline: none; border-color: #3b82f6;
+        box-shadow: 0 0 0 3px rgba(59,130,246,.15);
+    }
+    .profile-shell .alert {
+        padding: 10px 14px; border-radius: 10px; font-size: 14px;
+        margin-bottom: 14px;
+    }
+    .alert.alert-error {
+        background: #fee2e2; color: #991b1b;
+        border: 1px solid #fecaca;
+    }
+    .alert.alert-success {
+        background: #dcfce7; color: #166534;
+        border: 1px solid #bbf7d0;
+    }
+    .profile-shell button[type="submit"] {
+        margin-top: 16px; padding: 10px 22px;
+        background: #2563eb; color: #fff; border: 0;
+        border-radius: 10px; font-weight: 600; cursor: pointer;
+        font-size: 14px;
+    }
+    .profile-shell button[type="submit"]:hover { background: #1d4ed8; }
+    .profile-shell .hint {
+        font-size: 12px; color: #94a3b8; margin-top: 4px;
+    }
+
+    [data-bs-theme="dark"] .profile-shell .card-soft {
+        background: #1a1d24; box-shadow: 0 2px 14px rgba(0,0,0,.4);
+    }
+    [data-bs-theme="dark"] .profile-shell h4 { color: #f1f5f9; }
+    [data-bs-theme="dark"] .profile-shell form label { color: #cbd5e1; }
+    [data-bs-theme="dark"] .profile-shell form input[type="text"],
+    [data-bs-theme="dark"] .profile-shell form input[type="email"],
+    [data-bs-theme="dark"] .profile-shell form input[type="password"] {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .profile-shell .hint { color: #64748b; }
+</style>
+<div class="profile-shell">
+    <div class="card-soft">
+        <h4>Личные данные</h4>
+        {% if info_error %}
+        <div class="alert alert-error">{{ info_error }}</div>
+        {% endif %}
+        {% if info_success %}
+        <div class="alert alert-success">{{ info_success }}</div>
+        {% endif %}
+        <form method="post" action="/profile/update" autocomplete="off">
+            <label for="name">Имя</label>
+            <input type="text" id="name" name="name"
+                   value="{{ user.name or '' }}" required>
+
+            <label for="surname">Фамилия</label>
+            <input type="text" id="surname" name="surname"
+                   value="{{ user.surname or '' }}">
+
+            <label for="email">Email</label>
+            <input type="email" id="email" name="email"
+                   value="{{ user.email or '' }}" required>
+
+            <label for="username">User ID</label>
+            <input type="text" id="username" name="username"
+                   value="{{ user.username or '' }}" required>
+            <div class="hint">Латиница, цифры и «_»; 3–20 символов.</div>
+
+            <button type="submit">Сохранить</button>
+        </form>
+    </div>
+
+    <div class="card-soft" style="margin-top: 16px;">
+        <h4>Смена пароля</h4>
+        {% if pw_error %}
+        <div class="alert alert-error">{{ pw_error }}</div>
+        {% endif %}
+        {% if pw_success %}
+        <div class="alert alert-success">{{ pw_success }}</div>
+        {% endif %}
+        <form method="post" action="/profile/password" autocomplete="off">
+            <label for="old_password">Текущий пароль</label>
+            <input type="password" id="old_password" name="old_password"
+                   autocomplete="current-password" required>
+
+            <label for="new_password">Новый пароль</label>
+            <input type="password" id="new_password" name="new_password"
+                   autocomplete="new-password" minlength="4" required>
+
+            <label for="new_password2">Повторите новый пароль</label>
+            <input type="password" id="new_password2" name="new_password2"
+                   autocomplete="new-password" minlength="4" required>
+
+            <button type="submit">Сохранить пароль</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

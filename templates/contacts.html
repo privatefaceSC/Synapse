@@ -253,9 +253,9 @@
     .feed-back-btn:hover { background: #f1f3f5; color: #1a2230; }
     .popover-menu {
         position: absolute; z-index: 100; background: #fff;
-        border: 1px solid #e5e7eb; border-radius: 14px;
-        box-shadow: 0 14px 36px rgba(16,24,40,.18), 0 2px 8px rgba(16,24,40,.08);
-        min-width: 196px; padding: 6px;
+        border: 1px solid #e5e7eb; border-radius: 11px;
+        box-shadow: 0 12px 28px rgba(16,24,40,.18), 0 2px 6px rgba(16,24,40,.08);
+        min-width: 164px; padding: 4px;
         transform-origin: top right;
         animation: popoverIn 0.16s cubic-bezier(.34,1.3,.64,1) both;
     }
@@ -265,36 +265,36 @@
     }
     .popover-menu button {
         width: 100%; background: transparent; border: 0;
-        text-align: left; padding: 9px 12px; cursor: pointer;
-        font-size: 14px; color: #1a2230; line-height: 1.2;
-        border-radius: 9px;
-        display: flex; align-items: center; gap: 10px;
+        text-align: left; padding: 6px 10px; cursor: pointer;
+        font-size: 13px; color: #1a2230; line-height: 1.15;
+        border-radius: 7px;
+        display: flex; align-items: center; gap: 8px;
         transition: background 0.12s ease;
     }
     .popover-menu button:hover { background: #eef2ff; color: #1d4ed8; }
     .popover-menu button.danger { color: #b91c1c; }
     .popover-menu button.danger:hover { background: #fef2f2; color: #b91c1c; }
     .popover-menu .menu-ico {
-        width: 22px; flex: 0 0 auto; font-size: 15px; text-align: center;
+        width: 18px; flex: 0 0 auto; font-size: 14px; text-align: center;
         opacity: .9;
     }
     .popover-menu .menu-divider {
-        height: 1px; background: #eef0f3; margin: 4px 6px;
+        height: 1px; background: #eef0f3; margin: 3px 4px;
     }
     [data-bs-theme="dark"] .popover-menu .menu-divider { background: #2a2f3a; }
     .popover-menu .menu-note {
-        font-size: 12px; color: #6b7280; padding: 8px 12px 4px;
-        line-height: 1.35; max-width: 240px;
+        font-size: 11px; color: #6b7280; padding: 6px 10px 3px;
+        line-height: 1.3; max-width: 220px;
     }
     [data-bs-theme="dark"] .popover-menu .menu-note { color: #9ca3af; }
     /* Полоска эмодзи-реакций внутри контекстного меню сообщения */
     .popover-menu .menu-reactions {
-        display: flex; gap: 2px; padding: 4px 4px 6px; justify-content: space-between;
+        display: flex; gap: 1px; padding: 2px 2px 4px; justify-content: space-between;
     }
     .popover-menu .menu-reactions .rp-emoji {
         background: transparent; border: 0; cursor: pointer;
-        font-size: 22px; line-height: 1; padding: 6px 7px;
-        border-radius: 9px;
+        font-size: 18px; line-height: 1; padding: 4px 5px;
+        border-radius: 7px;
         transition: background .12s ease, transform .12s ease;
     }
     .popover-menu .menu-reactions .rp-emoji:hover {
@@ -521,6 +521,7 @@
     .bubble.deleted .reply-quote,
     .bubble.deleted .media-img,
     .bubble.deleted .media-video,
+    .bubble.deleted .media-video-note,
     .bubble.deleted .media-audio,
     .bubble.deleted .media-file,
     .bubble.deleted .sticker-img { opacity: .72; }
@@ -1017,6 +1018,23 @@
         display: block; margin-top: 8px; max-width: 280px; max-height: 360px;
         border-radius: 14px; background: #000;
     }
+    /* Видеосообщение-«кружочек» (Telegram video note): круглый плеер без
+       нативной панели управления — клик по кружку играет/паузит. */
+    .bubble .media-vnote-wrap {
+        position: relative; display: inline-block;
+        width: 200px; height: 200px; cursor: pointer;
+    }
+    .bubble .media-video-note {
+        display: block; width: 200px; height: 200px;
+        border-radius: 50%; object-fit: cover; background: #000;
+    }
+    /* Кружок показываем «голым», как в Telegram — без фона и рамки бабла. */
+    .bubble:has(.media-vnote-wrap) {
+        background: transparent !important;
+        box-shadow: none !important;
+        border: none !important;
+        padding: 0 !important;
+    }
     .bubble .media-audio {
         display: block; margin-top: 8px; max-width: 280px; height: 40px;
     }
@@ -1174,24 +1192,72 @@
     .composer textarea:focus {
         border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
     }
-    .composer .attach-btn {
+    .composer .attach-btn,
+    .composer .emoji-btn,
+    .composer .voice-btn {
         flex: 0 0 auto; border: 1px solid #d6dae2; border-radius: 12px;
         background: #fff; font-size: 18px; line-height: 1;
         padding: 8px 12px; cursor: pointer; transition: background .12s ease;
     }
-    .composer .attach-btn:hover { background: #f1f3f5; }
-    .composer .attach-btn:disabled { opacity: .5; cursor: default; }
-    [data-bs-theme="dark"] .composer .attach-btn {
+    .composer .attach-btn:hover,
+    .composer .emoji-btn:hover,
+    .composer .voice-btn:hover { background: #f1f3f5; }
+    .composer .attach-btn:disabled,
+    .composer .emoji-btn:disabled,
+    .composer .voice-btn:disabled { opacity: .5; cursor: default; }
+    [data-bs-theme="dark"] .composer .attach-btn,
+    [data-bs-theme="dark"] .composer .emoji-btn,
+    [data-bs-theme="dark"] .composer .voice-btn {
         background: #232831; border-color: #2f3540;
+    }
+    /* Запись голосового — пульсирующая красная кнопка. */
+    .composer .voice-btn.recording {
+        background: #ef4444; color: #fff; border-color: #ef4444;
+        animation: voice-rec-pulse 1s ease-in-out infinite;
+    }
+    @keyframes voice-rec-pulse {
+        0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.5); }
+        50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
     }
     .composer .send-btn {
         flex: 0 0 auto; border: 0; border-radius: 12px; color: #fff;
-        background: #3b82f6; font-weight: 600; padding: 10px 18px;
+        background: #3b82f6; font-weight: 600; padding: 10px 14px;
         cursor: pointer; transition: background .15s ease, transform .12s ease;
+        display: none;
+        align-items: center; justify-content: center;
+        min-width: 42px; font-size: 18px; line-height: 1;
     }
     .composer .send-btn:hover { background: #2563eb; }
     .composer .send-btn:active { transform: scale(.97); }
     .composer .send-btn:disabled { opacity: .5; cursor: default; }
+    /* Toggle «микрофон ↔ отправка»: когда текст пуст — виден мик (если
+       чат поддерживает голосовые), как только что-то напечатано —
+       мик исчезает, появляется стрелка отправки. Класс has-text
+       ставится JS-обработчиком input'а в textarea. На десктопе можно
+       и Enter'ом, но иконка нужна как сигнал «сообщение готово». */
+    .composer.has-text .send-btn { display: inline-flex; }
+    .composer.has-text .voice-btn { display: none; }
+    /* Поповер emoji-picker — выезжает над composer'ом. */
+    .emoji-picker {
+        position: absolute; bottom: 56px; right: 12px;
+        background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
+        box-shadow: 0 12px 32px rgba(15,23,42,.18);
+        padding: 8px;
+        display: grid; grid-template-columns: repeat(8, 28px);
+        gap: 4px; z-index: 30;
+        max-height: 240px; overflow-y: auto;
+    }
+    .emoji-picker[hidden] { display: none; }
+    .emoji-picker button {
+        background: transparent; border: none; cursor: pointer;
+        font-size: 20px; line-height: 1; padding: 2px;
+        border-radius: 6px;
+    }
+    .emoji-picker button:hover { background: #f1f5f9; }
+    [data-bs-theme="dark"] .emoji-picker {
+        background: #1a1d24; border-color: #2a2f3a;
+    }
+    [data-bs-theme="dark"] .emoji-picker button:hover { background: #232831; }
     [data-bs-theme="dark"] .composer {
         background: rgba(19,21,25,.94); border-top-color: #242832;
     }
@@ -1385,8 +1451,10 @@
         width: 72px; height: 72px; font-size: 28px; border-radius: 50%;
         display: inline-flex; align-items: center; justify-content: center;
         color: #fff; font-weight: 700; flex: 0 0 72px;
-        overflow: hidden;
+        overflow: hidden; cursor: pointer;
+        transition: transform .15s ease;
     }
+    .profile-id-block .avatar:hover { transform: scale(1.04); }
     .profile-id-block .avatar img {
         width: 100%; height: 100%; object-fit: cover;
     }
@@ -1507,6 +1575,260 @@
             height: 100vh; max-height: 100vh;
             border-radius: 0;
         }
+    }
+
+    /* --- Лайтбокс для просмотра всех аватарок --- */
+    .avatar-lightbox {
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,.88);
+        opacity: 0; pointer-events: none;
+        transition: opacity .2s ease;
+        z-index: 1080;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .avatar-lightbox.open { opacity: 1; pointer-events: auto; }
+    .avatar-lightbox[hidden] { display: none; }
+    .avatar-lightbox img {
+        max-width: 92vw; max-height: 88vh;
+        object-fit: contain;
+        box-shadow: 0 12px 40px rgba(0,0,0,.6);
+    }
+    .avatar-lightbox .al-close {
+        position: absolute; top: 18px; right: 24px;
+        font-size: 38px; line-height: 1; color: #fff;
+        cursor: pointer; opacity: .8; user-select: none;
+    }
+    .avatar-lightbox .al-close:hover { opacity: 1; }
+    .avatar-lightbox .al-nav {
+        position: absolute; top: 50%; transform: translateY(-50%);
+        width: 56px; height: 56px; border-radius: 50%;
+        background: rgba(255,255,255,.1); color: #fff;
+        border: none; cursor: pointer;
+        font-size: 32px; line-height: 1;
+        display: flex; align-items: center; justify-content: center;
+        transition: background .15s ease;
+    }
+    .avatar-lightbox .al-nav:hover { background: rgba(255,255,255,.2); }
+    .avatar-lightbox .al-prev { left: 24px; }
+    .avatar-lightbox .al-next { right: 24px; }
+    .avatar-lightbox .al-counter {
+        position: absolute; bottom: 24px; left: 50%;
+        transform: translateX(-50%);
+        color: #fff; opacity: .8; font-size: 14px;
+        background: rgba(0,0,0,.4); padding: 4px 12px;
+        border-radius: 12px;
+    }
+
+    /* Кнопка «💬 Комментарии» под bubble в канальных чатах. Лениво
+       вешается на каждый bubble JS-обозревателем — см. блок ниже. */
+    .channel-comments-btn {
+        background: transparent; border: 1px solid rgba(59,130,246,.25);
+        cursor: pointer;
+        padding: 4px 10px; margin-top: 6px;
+        font-size: 12px; color: #2563eb; font-weight: 600;
+        display: inline-flex; align-items: center; gap: 6px;
+        border-radius: 10px;
+        transition: background .12s ease, border-color .12s ease;
+    }
+    .channel-comments-btn:hover {
+        background: rgba(59,130,246,.1); border-color: rgba(59,130,246,.5);
+    }
+    .channel-comments-btn svg {
+        width: 14px; height: 14px;
+    }
+    [data-bs-theme="dark"] .channel-comments-btn {
+        color: #60a5fa; border-color: rgba(96,165,250,.3);
+    }
+    [data-bs-theme="dark"] .channel-comments-btn:hover {
+        background: rgba(96,165,250,.15);
+    }
+
+    /* --- «Комментарии» — полноэкранный чат поверх канала. Закрытие —
+       стрелка ← в верхнем левом углу (как в Telegram при заходе из
+       поста в обсуждение). --- */
+    .cmt-backdrop { display: none; }
+    .cmt-modal {
+        position: fixed; inset: 0;
+        background: #1e2533; color: #f8fafc;
+        transform: translateX(40px);
+        opacity: 0; pointer-events: none;
+        transition: transform .22s ease, opacity .22s ease;
+        z-index: 1075;
+        display: flex; flex-direction: column; overflow: hidden;
+    }
+    .cmt-modal.open {
+        transform: translateX(0);
+        opacity: 1; pointer-events: auto;
+    }
+    .cmt-modal[hidden] { display: none; }
+    .cmt-head {
+        padding: 12px 16px; border-bottom: 1px solid #2a3346;
+        display: flex; align-items: center; gap: 10px;
+        background: #1e2533;
+    }
+    .cmt-title { font-size: 16px; font-weight: 700; flex: 1; color: #fff; }
+    .cmt-close {
+        width: 38px; height: 38px; border-radius: 50%;
+        border: none; background: transparent; cursor: pointer;
+        font-size: 24px; line-height: 1; color: #cbd5e1;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .cmt-close:hover { background: rgba(255,255,255,.08); }
+    .cmt-close svg { width: 22px; height: 22px; }
+    .cmt-list {
+        flex: 1 1 auto; overflow-y: auto; padding: 12px 16px;
+        display: flex; flex-direction: column; gap: 8px;
+        max-width: 760px; width: 100%; margin: 0 auto;
+    }
+    .cmt-list-wrap {
+        flex: 1 1 auto; overflow-y: auto; display: flex;
+        background: #0f172a;
+    }
+    .cmt-media {
+        display: block; margin: 4px 0 6px;
+        max-width: 100%; max-height: 280px; border-radius: 8px;
+        cursor: pointer; background: #0f172a;
+    }
+    .cmt-media-loading {
+        font-size: 12px; color: #94a3b8; padding: 4px 0;
+    }
+    .cmt-empty {
+        text-align: center; color: #94a3b8; padding: 24px;
+    }
+    .cmt-item {
+        background: #2a3346; border-radius: 10px; padding: 8px 12px;
+    }
+    .cmt-item.outgoing { background: #1e3a8a; }
+    .cmt-author {
+        font-size: 12px; font-weight: 700; color: #93c5fd;
+        margin-bottom: 2px;
+    }
+    .cmt-item.outgoing .cmt-author { color: #fff; }
+    .cmt-text {
+        font-size: 14px; color: #f1f5f9;
+        white-space: pre-wrap; word-wrap: break-word;
+    }
+    .cmt-date { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+    .cmt-input {
+        display: flex; gap: 8px; padding: 12px 14px;
+        border-top: 1px solid #2a3346;
+    }
+    .cmt-input textarea {
+        flex: 1; resize: none; border-radius: 10px;
+        border: 1px solid #2a3346; background: #2a3346; color: #f1f5f9;
+        padding: 8px 12px; font-size: 14px;
+        font-family: inherit; line-height: 1.4;
+    }
+    .cmt-input textarea:focus {
+        outline: none; border-color: #3b82f6;
+    }
+    .cmt-send {
+        background: #3b82f6; color: #fff; border: none;
+        border-radius: 10px; padding: 0 16px; font-size: 16px;
+        cursor: pointer; transition: background .12s ease;
+    }
+    .cmt-send:hover { background: #2563eb; }
+    .cmt-send:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* --- Режим выбора сообщений (для массовой пересылки) --- */
+    .selection-bar {
+        position: fixed; top: 76px; left: 50%;
+        transform: translateX(-50%);
+        background: #1e2533; color: #f8fafc; border-radius: 14px;
+        padding: 8px 12px;
+        box-shadow: 0 8px 24px rgba(0,0,0,.4);
+        z-index: 1030;
+        display: flex; align-items: center; gap: 12px;
+        animation: popoverIn .18s cubic-bezier(.34,1.3,.64,1) both;
+    }
+    .selection-bar[hidden] { display: none; }
+    .sb-cancel, .sb-forward {
+        background: transparent; color: inherit;
+        border: 1px solid rgba(255,255,255,.18);
+        border-radius: 8px; padding: 6px 12px; cursor: pointer;
+        font-size: 13px; font-weight: 600;
+    }
+    .sb-cancel:hover { background: rgba(255,255,255,.08); }
+    .sb-count {
+        font-size: 13px; font-weight: 600;
+        font-variant-numeric: tabular-nums;
+    }
+    .sb-forward {
+        background: #3b82f6; border-color: #3b82f6; color: #fff;
+    }
+    .sb-forward:hover { background: #2563eb; border-color: #2563eb; }
+    .sb-forward:disabled { opacity: .5; cursor: not-allowed; }
+    #messages-container.selecting .bubble-row { cursor: pointer; }
+    #messages-container.selecting .bubble-row .bubble {
+        transition: outline .12s ease, background .12s ease;
+    }
+    #messages-container.selecting .bubble-row.selected .bubble {
+        outline: 2px solid #3b82f6; outline-offset: 2px;
+    }
+    #messages-container.selecting .bubble-row:hover .bubble {
+        background: rgba(59,130,246,.04);
+    }
+
+    /* --- Мини-меню «Отправить без звука / Позже» (ПКМ по кнопке) --- */
+    .send-menu {
+        position: fixed; z-index: 1100;
+        background: #1e2533; color: #f1f5f9;
+        border-radius: 10px; padding: 4px;
+        box-shadow: 0 12px 28px rgba(0,0,0,.45);
+        min-width: 200px;
+        animation: popoverIn 0.14s cubic-bezier(.34,1.3,.64,1) both;
+    }
+    .send-menu[hidden] { display: none; }
+    .send-menu button {
+        display: flex; align-items: center; gap: 10px;
+        width: 100%; padding: 7px 12px; border: none;
+        background: transparent; color: inherit; cursor: pointer;
+        font-size: 13px; text-align: left; border-radius: 6px;
+    }
+    .send-menu button:hover { background: #2a3346; }
+    .send-menu .sm-ico {
+        font-size: 14px; width: 18px; text-align: center;
+    }
+
+    /* --- Диалог «Отправить позже» (выбор даты-времени) --- */
+    .sched-backdrop {
+        position: fixed; inset: 0; background: rgba(15,23,42,.55);
+        opacity: 0; pointer-events: none;
+        transition: opacity .18s ease; z-index: 1110;
+    }
+    .sched-backdrop.open { opacity: 1; pointer-events: auto; }
+    .sched-modal {
+        position: fixed; top: 50%; left: 50%;
+        width: 380px; max-width: 92vw;
+        background: #1e2533; color: #f8fafc;
+        border-radius: 14px; padding: 18px 18px 14px 18px;
+        box-shadow: 0 20px 60px rgba(0,0,0,.5);
+        transform: translate(-50%, -50%) scale(.94);
+        opacity: 0; pointer-events: none;
+        transition: transform .18s ease, opacity .18s ease;
+        z-index: 1120;
+    }
+    .sched-modal.open {
+        transform: translate(-50%, -50%) scale(1);
+        opacity: 1; pointer-events: auto;
+    }
+    .sched-modal[hidden] { display: none; }
+    .sched-title {
+        font-size: 17px; font-weight: 700; color: #fff;
+        margin-bottom: 10px;
+    }
+    .sched-text {
+        font-size: 14px; color: #cbd5e1; margin-bottom: 12px;
+    }
+    .sched-input {
+        width: 100%; padding: 9px 12px;
+        background: #2a3346; color: #f1f5f9;
+        border: 1px solid #36405a; border-radius: 8px;
+        font-size: 14px; margin-bottom: 16px;
+    }
+    .sched-input:focus { outline: none; border-color: #3b82f6; }
+    .sched-actions {
+        display: flex; gap: 8px; justify-content: flex-end;
     }
 
     /* --- Кастомный confirm-диалог --- */
@@ -1630,6 +1952,7 @@
                     <div class="feed-header{% if _expandable %} expandable{% endif %}"
                          id="feed-header" data-contact-id="{{ selected.id }}"
                          data-is-group="{{ '1' if is_group else '' }}"
+                         data-chat-type="{{ chat_type or '' }}"
                          data-messengers="{{ (messengers or [])|join(',') }}">
                         <div class="feed-header-top">
                             <a href="/contacts" class="feed-back-btn d-md-none" aria-label="Назад">←</a>
@@ -1701,6 +2024,11 @@
                                         {% if a.kind == 'sticker' %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
                                              loading="lazy" alt="стикер">
+                                        {% elif a.kind == 'video_note' %}
+                                        <span class="media-vnote-wrap">
+                                            <video class="media-video-note" src="/attachments/{{ a.id }}"
+                                                   loop playsinline preload="metadata"></video>
+                                        </span>
                                         {% elif a.kind == 'video' %}
                                         <video class="media-video" src="/attachments/{{ a.id }}"
                                                controls preload="none"></video>
@@ -1777,7 +2105,21 @@
                         {% endif %}
                         <textarea id="composer-text" rows="1"
                                   placeholder="Сообщение…"></textarea>
-                        <button type="submit" class="send-btn" id="composer-send">Отправить</button>
+                        <button type="button" class="emoji-btn" id="composer-emoji"
+                                title="Смайлики"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg></button>
+                        {% if reply_via == 'telegram' %}
+                        <button type="button" class="voice-btn" id="composer-voice"
+                                title="Записать голосовое"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></button>
+                        {% endif %}
+                        <button type="submit" class="send-btn" id="composer-send" title="Отправить">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.4"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M22 2L11 13"></path>
+                                <path d="M22 2l-7 20-4-9-9-4 20-7z"></path>
+                            </svg>
+                        </button>
+                        <div class="emoji-picker" id="emoji-picker" hidden></div>
                     </form>
                     {% endif %}
                 {% else %}
@@ -1815,6 +2157,82 @@
 <!-- Кастомный confirm-диалог: единый стиль для всех «точно удалить?» /
      «точно заблокировать?» подтверждений. Заменяет нативный confirm(),
      который выглядит дёшево («Подтвердите действие на 172.18.0.1»). -->
+<!-- Лайтбокс для аватарок контакта: открывается кликом по фото в шапке
+     профиля, поддерживает листание стрелками если фоток несколько. -->
+<div class="avatar-lightbox" id="avatar-lightbox" hidden aria-hidden="true">
+    <span class="al-close" id="al-close" title="Закрыть">&times;</span>
+    <button type="button" class="al-nav al-prev" id="al-prev"
+            aria-label="Предыдущее фото">‹</button>
+    <img id="al-img" src="" alt="фото профиля">
+    <button type="button" class="al-nav al-next" id="al-next"
+            aria-label="Следующее фото">›</button>
+    <div class="al-counter" id="al-counter"></div>
+</div>
+
+<!-- Мини-меню «как отправить»: правый клик / удержание по кнопке
+     отправки в composer'е. -->
+<!-- Плавающая панель режима выбора сообщений (для массовой пересылки).
+     Показывается над лентой, когда выбран хотя бы один bubble. -->
+<div class="selection-bar" id="selection-bar" hidden role="toolbar"
+     aria-label="Действия с выбранными сообщениями">
+    <button type="button" class="sb-cancel" id="sb-cancel"
+            aria-label="Отменить выбор">✕</button>
+    <span class="sb-count" id="sb-count">0 выбрано</span>
+    <button type="button" class="sb-forward" id="sb-forward">
+        ↪ Переслать</button>
+</div>
+
+<div class="send-menu" id="send-menu" hidden role="menu">
+    <button type="button" data-action="silent">
+        <span class="sm-ico">🔕</span>Отправить без звука
+    </button>
+    <button type="button" data-action="schedule">
+        <span class="sm-ico">🕓</span>Отправить позже…
+    </button>
+</div>
+
+<!-- Диалог выбора даты/времени для отложенной отправки. -->
+<div class="sched-backdrop" id="sched-backdrop" aria-hidden="true"></div>
+<div class="sched-modal" id="sched-modal" hidden role="dialog" aria-modal="true">
+    <div class="sched-title">Отправить позже</div>
+    <div class="sched-text">Когда отправить?</div>
+    <input type="datetime-local" id="sched-input" class="sched-input">
+    <div class="sched-actions">
+        <button type="button" class="confirm-btn cancel" id="sched-cancel">
+            Отмена</button>
+        <button type="button" class="confirm-btn ok" id="sched-ok">
+            Запланировать</button>
+    </div>
+</div>
+
+<!-- Полноэкранный экран комментариев под постом канала. Закрытие —
+     стрелка ← в шапке (возвращает в канал автора). -->
+<div class="cmt-backdrop" id="cmt-backdrop" aria-hidden="true"></div>
+<div class="cmt-modal" id="cmt-modal" hidden role="dialog" aria-modal="true">
+    <div class="cmt-head">
+        <button type="button" class="cmt-close" id="cmt-close"
+                aria-label="Назад в канал" title="Назад в канал">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round"
+                 stroke-linejoin="round">
+                <path d="M19 12H5"></path>
+                <path d="M12 19l-7-7 7-7"></path>
+            </svg>
+        </button>
+        <div class="cmt-title">Комментарии</div>
+    </div>
+    <div class="cmt-list-wrap">
+        <div class="cmt-list" id="cmt-list">
+            <div class="cmt-empty">Загрузка…</div>
+        </div>
+    </div>
+    <form class="cmt-input" id="cmt-input">
+        <textarea id="cmt-text" rows="1"
+                  placeholder="Написать комментарий…"></textarea>
+        <button type="submit" class="cmt-send" id="cmt-send">▶</button>
+    </form>
+</div>
+
 <div class="confirm-backdrop" id="confirm-backdrop" aria-hidden="true"></div>
 <div class="confirm-modal" id="confirm-modal" hidden role="dialog"
      aria-modal="true" aria-labelledby="confirm-title">
@@ -1827,6 +2245,314 @@
                 id="confirm-ok">OK</button>
     </div>
 </div>
+
+<script>
+// --- Лениво вешает кнопку «💬 Комментарии» под каждое bubble в
+//     канальных чатах. data-chat-type='channel' проставляется на
+//     feed-header из бэка (есть и для старых сообщений — всё, что
+//     в канал-чате, получает кнопку). MutationObserver покрывает
+//     и новые сообщения из поллинга. ---
+(function() {
+    const COMMENTS_SVG = '<svg viewBox="0 0 24 24" fill="none"'
+        + ' stroke="currentColor" stroke-width="2" stroke-linecap="round"'
+        + ' stroke-linejoin="round">'
+        + '<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7'
+        + ' 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8'
+        + ' 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5'
+        + 'a8.48 8.48 0 0 1 8 8v.5z"></path></svg>';
+
+    function isChannelChat() {
+        const fh = document.querySelector('.feed-header');
+        return !!(fh && fh.dataset.chatType === 'channel');
+    }
+
+    function attachCommentsBtn(row) {
+        if (!row || row.dataset.commentsBtn === '1') return;
+        const bubble = row.querySelector('.bubble');
+        if (!bubble) return;
+        const msgId = row.dataset.messageId;
+        if (!msgId) return;
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'channel-comments-btn';
+        btn.dataset.msgId = msgId;
+        btn.innerHTML = COMMENTS_SVG + '<span>Комментарии</span>';
+        bubble.appendChild(btn);
+        row.dataset.commentsBtn = '1';
+    }
+
+    function ensureAll() {
+        if (!isChannelChat()) return;
+        document.querySelectorAll('.bubble-row').forEach(attachCommentsBtn);
+    }
+
+    // Первый проход — после загрузки страницы (либо немедленно, если уже).
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ensureAll);
+    } else {
+        ensureAll();
+    }
+
+    // Поллинг и клиентская навигация добавляют новые bubble — отслеживаем.
+    const obs = new MutationObserver(function(mutations) {
+        if (!isChannelChat()) return;
+        for (const m of mutations) {
+            for (const node of m.addedNodes) {
+                if (node.nodeType !== 1) continue;
+                if (node.classList && node.classList.contains('bubble-row')) {
+                    attachCommentsBtn(node);
+                } else if (node.querySelectorAll) {
+                    node.querySelectorAll('.bubble-row').forEach(
+                        attachCommentsBtn);
+                }
+            }
+        }
+    });
+    obs.observe(document.body,
+                {childList: true, subtree: true});
+
+    document.addEventListener('click', function(e) {
+        const btn = e.target.closest('.channel-comments-btn');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (window.__skillwoodOpenComments) {
+            window.__skillwoodOpenComments(btn.dataset.msgId);
+        }
+    });
+})();
+</script>
+
+<script>
+// --- Модал комментариев под постом канала. Открывается через
+//     window.__skillwoodOpenComments(messageId). Делает GET на
+//     /messages/<id>/comments.json для списка и POST для новых. ---
+(function() {
+    const backdrop = document.getElementById('cmt-backdrop');
+    const modal = document.getElementById('cmt-modal');
+    const list = document.getElementById('cmt-list');
+    const closeBtn = document.getElementById('cmt-close');
+    const form = document.getElementById('cmt-input');
+    const ta = document.getElementById('cmt-text');
+    const sendBtn = document.getElementById('cmt-send');
+    if (!backdrop || !modal || !list || !form || !ta) return;
+
+    let currentMsgId = null;
+    let currentDiscChat = null;
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;',
+            '"': '&quot;', "'": '&#39;'
+        }[c]));
+    }
+
+    function close() {
+        modal.classList.remove('open');
+        backdrop.classList.remove('open');
+        backdrop.setAttribute('aria-hidden', 'true');
+        setTimeout(() => {
+            if (!modal.classList.contains('open')) {
+                modal.hidden = true; list.innerHTML = '';
+            }
+        }, 220);
+        currentMsgId = null;
+        currentDiscChat = null;
+    }
+
+    async function load() {
+        list.innerHTML = '<div class="cmt-empty">Загрузка…</div>';
+        try {
+            const r = await fetch('/messages/' + currentMsgId
+                                   + '/comments.json',
+                                   {credentials: 'same-origin'});
+            const d = await r.json().catch(() => ({}));
+            if (!d.available) {
+                const reason = d.reason || '';
+                let msg = 'Комментарии недоступны.';
+                if (reason === 'no_discussion') {
+                    msg = 'У этого канала нет группы для обсуждений — '
+                        + 'комментировать нельзя.';
+                } else if (reason === 'not_telegram') {
+                    msg = 'Это сообщение не из Telegram.';
+                } else if (reason === 'telegram_not_configured') {
+                    msg = 'Telegram-мост не настроен.';
+                } else if (d.detail) {
+                    msg += ' ' + d.detail;
+                }
+                list.innerHTML = '<div class="cmt-empty">'
+                    + esc(msg) + '</div>';
+                if (form) form.style.display = 'none';
+                return;
+            }
+            if (form) form.style.display = '';
+            currentDiscChat = d.discussion_chat_id || null;
+            renderItems(d.items || []);
+        } catch (err) {
+            list.innerHTML = '<div class="cmt-empty">'
+                + 'Сеть недоступна.</div>';
+        }
+    }
+
+    function fmtTime(iso) {
+        if (!iso) return '';
+        try {
+            return new Date(iso).toLocaleTimeString('ru-RU',
+                {hour: '2-digit', minute: '2-digit'});
+        } catch (e) { return ''; }
+    }
+
+    function renderItems(items) {
+        if (!items.length) {
+            list.innerHTML = '<div class="cmt-empty">'
+                + 'Пока нет комментариев. Будьте первым.</div>';
+            return;
+        }
+        list.innerHTML = items.map(c => {
+            const time = fmtTime(c.date);
+            const mediaHtml = (c.has_media && currentDiscChat)
+                ? '<img class="cmt-media" src="/comments/media/'
+                  + currentDiscChat + '/' + c.id
+                  + '" loading="lazy" alt="">'
+                : '';
+            return '<div class="cmt-item'
+                + (c.outgoing ? ' outgoing' : '') + '">'
+                + '<div class="cmt-author">'
+                + esc(c.author || 'Аноним') + '</div>'
+                + mediaHtml
+                + (c.text
+                    ? '<div class="cmt-text">' + esc(c.text) + '</div>'
+                    : '')
+                + (time
+                    ? '<div class="cmt-date">' + esc(time) + '</div>'
+                    : '')
+                + '</div>';
+        }).join('');
+        // Прокрутка к низу — свежие комменты внизу.
+        list.scrollTop = list.scrollHeight;
+    }
+
+    window.__skillwoodOpenComments = function(messageId) {
+        currentMsgId = messageId;
+        ta.value = '';
+        if (form) form.style.display = '';
+        modal.hidden = false;
+        requestAnimationFrame(() => {
+            modal.classList.add('open');
+            backdrop.classList.add('open');
+            backdrop.setAttribute('aria-hidden', 'false');
+        });
+        load();
+    };
+
+    closeBtn.addEventListener('click', close);
+    backdrop.addEventListener('click', close);
+    document.addEventListener('keydown', (e) => {
+        if (modal.hidden) return;
+        if (e.key === 'Escape') close();
+    });
+
+    // Enter в textarea — отправить (Shift+Enter — перенос).
+    ta.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            form.requestSubmit();
+        }
+    });
+
+    form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        if (!currentMsgId) return;
+        const text = ta.value.trim();
+        if (!text) return;
+        sendBtn.disabled = true;
+        try {
+            const r = await fetch('/messages/' + currentMsgId + '/comments',
+                {method: 'POST', credentials: 'same-origin',
+                 body: new URLSearchParams({text})});
+            const d = await r.json().catch(() => ({}));
+            if (r.ok && d.ok) {
+                ta.value = '';
+                // Перезагружаем список: новые могут быть от других людей,
+                // не только наш.
+                load();
+            } else if (window.confirmDialog) {
+                window.confirmDialog({
+                    title: 'Не отправилось',
+                    text: d.detail || d.error || 'Попробуйте ещё.',
+                    okLabel: 'Закрыть', cancelLabel: 'Отмена',
+                });
+            }
+        } catch (err) {} finally {
+            sendBtn.disabled = false;
+        }
+    });
+})();
+</script>
+
+<script>
+// --- Лайтбокс для аватарок контакта: список URL-ов с навигацией.
+//     Открывается через window.__skillwoodOpenAvatars(urls). ---
+(function() {
+    const box = document.getElementById('avatar-lightbox');
+    const img = document.getElementById('al-img');
+    const closeBtn = document.getElementById('al-close');
+    const prevBtn = document.getElementById('al-prev');
+    const nextBtn = document.getElementById('al-next');
+    const counter = document.getElementById('al-counter');
+    if (!box || !img) return;
+
+    let urls = [];
+    let idx = 0;
+
+    function show(i) {
+        if (!urls.length) return;
+        idx = (i + urls.length) % urls.length;
+        img.src = urls[idx];
+        if (counter) {
+            counter.textContent = urls.length > 1
+                ? (idx + 1) + ' / ' + urls.length : '';
+        }
+        if (prevBtn) prevBtn.style.display = urls.length > 1 ? '' : 'none';
+        if (nextBtn) nextBtn.style.display = urls.length > 1 ? '' : 'none';
+    }
+
+    function open(urlList) {
+        urls = (urlList || []).slice();
+        if (!urls.length) return;
+        idx = 0;
+        show(0);
+        box.hidden = false;
+        requestAnimationFrame(() => {
+            box.classList.add('open');
+            box.setAttribute('aria-hidden', 'false');
+        });
+    }
+
+    function close() {
+        box.classList.remove('open');
+        box.setAttribute('aria-hidden', 'true');
+        setTimeout(() => {
+            if (!box.classList.contains('open')) {
+                box.hidden = true; img.src = '';
+            }
+        }, 220);
+    }
+
+    closeBtn.addEventListener('click', close);
+    prevBtn.addEventListener('click', () => show(idx - 1));
+    nextBtn.addEventListener('click', () => show(idx + 1));
+    box.addEventListener('click', (e) => { if (e.target === box) close(); });
+    document.addEventListener('keydown', (e) => {
+        if (box.hidden) return;
+        if (e.key === 'Escape') { e.preventDefault(); close(); }
+        else if (e.key === 'ArrowLeft') { e.preventDefault(); show(idx - 1); }
+        else if (e.key === 'ArrowRight') { e.preventDefault(); show(idx + 1); }
+    });
+
+    window.__skillwoodOpenAvatars = open;
+})();
+</script>
 
 <script>
 // --- Кастомный confirm: единый стиль вместо нативного браузерного диалога,
@@ -1919,6 +2645,20 @@
     document.getElementById('lb-close').addEventListener('click', close);
     document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape') close();
+    });
+})();
+
+// Видеосообщения-«кружочки»: круглый плеер без нативной панели — клик по
+// кружку играет/паузит. Делегирование на document, чтобы работало и для
+// сообщений, дорисованных поллингом.
+(function() {
+    document.addEventListener('click', function(e) {
+        const wrap = e.target.closest && e.target.closest('.media-vnote-wrap');
+        if (!wrap) return;
+        const v = wrap.querySelector('video.media-video-note');
+        if (!v) return;
+        e.preventDefault();
+        if (v.paused) { v.play(); } else { v.pause(); }
     });
 })();
 </script>
@@ -2381,6 +3121,8 @@
             if (isTelegram) {
                 items.push('<button class="forward-msg-btn" type="button">'
                     + '<span class="menu-ico">↪</span>Переслать…</button>');
+                items.push('<button class="select-msg-btn" type="button">'
+                    + '<span class="menu-ico">☑</span>Выбрать сообщения</button>');
             }
             items.push('<button class="copy-btn" type="button">'
                 + '<span class="menu-ico">📋</span>Копировать</button>');
@@ -2398,6 +3140,13 @@
                 + '<span class="menu-ico">📌</span>'
                 + (isPinned ? 'Открепить' : 'Прикрепить')
                 + '</button>');
+            // Комментарии — для постов канала. Бэк сам проверит, что
+            // у канала есть linked discussion group; если нет —
+            // покажет уведомление, что комментариев нет.
+            if (isTelegram) {
+                items.push('<button class="comments-msg-btn" type="button">'
+                    + '<span class="menu-ico">💬</span>Комментарии</button>');
+            }
             if (outgoing) {
                 items.push('<button class="edit-msg-btn" type="button">'
                     + '<span class="menu-ico">✏</span>Изменить</button>');
@@ -2497,6 +3246,16 @@
                 openForwardModal(messageId);
             });
         }
+        const selBtn = menu.querySelector('.select-msg-btn');
+        if (selBtn) {
+            selBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeMenu();
+                if (window.__skillwoodEnterSelection) {
+                    window.__skillwoodEnterSelection(messageId);
+                }
+            });
+        }
 
         menu.querySelector('.copy-btn').addEventListener('click', async (e) => {
             e.stopPropagation();
@@ -2592,6 +3351,16 @@
                     }
                 } catch (err) {
                     alert('Сеть недоступна — сообщение не изменено.');
+                }
+            });
+        }
+        const cmtBtn = menu.querySelector('.comments-msg-btn');
+        if (cmtBtn) {
+            cmtBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                closeMenu();
+                if (window.__skillwoodOpenComments) {
+                    window.__skillwoodOpenComments(messageId);
                 }
             });
         }
@@ -2739,11 +3508,11 @@
     const fwdSearch = document.getElementById('forward-search');
     const fwdList = document.getElementById('forward-list');
     let fwdAllContacts = [];
-    let fwdMessageId = null;
+    let fwdMessageIds = [];
 
     function closeForwardModal() {
         if (fwdModal) fwdModal.classList.remove('open');
-        fwdMessageId = null;
+        fwdMessageIds = [];
     }
 
     function renderForwardList() {
@@ -2774,9 +3543,13 @@
         }).join('');
     }
 
-    window.openForwardModal = async function(messageId) {
+    window.openForwardModal = async function(messageIdOrIds) {
         if (!fwdModal) return;
-        fwdMessageId = messageId;
+        // Поддерживаем и единичный id (старый путь из ПКМ-меню), и массив
+        // (новый путь — массовая пересылка из режима выбора).
+        fwdMessageIds = Array.isArray(messageIdOrIds)
+            ? messageIdOrIds.slice()
+            : [messageIdOrIds];
         fwdSearch.value = '';
         fwdList.innerHTML = '<div class="fwd-empty">Загрузка…</div>';
         fwdModal.classList.add('open');
@@ -2797,19 +3570,29 @@
     if (fwdList) {
         fwdList.addEventListener('click', async (e) => {
             const row = e.target.closest('.fwd-row');
-            if (!row || fwdMessageId == null) return;
+            if (!row || !fwdMessageIds.length) return;
             const cid = row.dataset.cid;
             row.style.opacity = '.5';
             const fd = new FormData();
             fd.append('target_contact_id', cid);
+            const isBulk = fwdMessageIds.length > 1;
+            const url = isBulk
+                ? '/messages/forward-bulk'
+                : '/messages/' + fwdMessageIds[0] + '/forward';
+            if (isBulk) {
+                fd.append('ids', fwdMessageIds.join(','));
+            }
             try {
-                const r = await fetch('/messages/' + fwdMessageId + '/forward', {
+                const r = await fetch(url, {
                     method: 'POST', body: fd, credentials: 'same-origin',
                     headers: {'X-Requested-With': 'XMLHttpRequest'},
                 });
                 const d = await r.json().catch(() => ({}));
                 if (r.ok) {
                     closeForwardModal();
+                    if (window.__skillwoodExitSelection) {
+                        window.__skillwoodExitSelection();
+                    }
                 } else {
                     row.style.opacity = '';
                     alert('Не удалось переслать: '
@@ -3159,6 +3942,7 @@
                      data-is-group="${isGroup ? '1' : ''}"
                      data-is-forum="${isForum ? '1' : ''}"
                      data-topic-id="${topicId ? topicId : ''}"
+                     data-chat-type="${escapeHtml(c.chat_type || '')}"
                      data-messengers="${escapeHtml(chatMessengers.join(','))}">
             <div class="feed-header-top">
                 <button type="button" class="feed-back-btn d-md-none"
@@ -3299,6 +4083,9 @@
                 .map(a => {
                     if (a.kind === 'sticker')
                         return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`;
+                    if (a.kind === 'video_note')
+                        return `<span class="media-vnote-wrap">`
+                            + `<video class="media-video-note" src="/attachments/${a.id}" loop playsinline preload="metadata"></video></span>`;
                     if (a.kind === 'video')
                         return `<video class="media-video" src="/attachments/${a.id}" controls preload="none"></video>`;
                     if (a.kind === 'voice' || a.kind === 'audio')
@@ -3425,6 +4212,10 @@
                        title="Прикрепить фото или видео">📎</button>
                <input type="file" id="composer-file" accept="image/*,video/*" hidden>`
             : '';
+        const voice = isTg
+            ? `<button type="button" class="voice-btn" id="composer-voice"
+                       title="Записать голосовое"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></button>`
+            : '';
         return `<form class="composer" id="composer"
                       data-contact-id="${contact.id}"
                       data-messenger="${escapeHtml(contact.messenger || '')}"
@@ -3434,7 +4225,18 @@
             ${attach}
             <textarea id="composer-text" rows="1"
                       placeholder="${escapeHtml(placeholder)}"></textarea>
-            <button type="submit" class="send-btn" id="composer-send">Отправить</button>
+            <button type="button" class="emoji-btn" id="composer-emoji"
+                    title="Смайлики"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg></button>
+            ${voice}
+            <button type="submit" class="send-btn" id="composer-send" title="Отправить">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none"
+                                 stroke="currentColor" stroke-width="2.4"
+                                 stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M22 2L11 13"></path>
+                                <path d="M22 2l-7 20-4-9-9-4 20-7z"></path>
+                            </svg>
+                        </button>
+            <div class="emoji-picker" id="emoji-picker" hidden></div>
         </form>`;
     }
 
@@ -3912,6 +4714,16 @@
             const m = form.dataset.messenger;
             if (m) params.messenger = m;
             if (replyTarget) params.reply_to = replyTarget.id;
+            // Подхватываем флаги отправки (без звука / отложенно), которые
+            // ПКМ-меню кладёт в form как hidden input'ы.
+            const silentEl = form.querySelector(
+                'input[name="silent"][type="hidden"]');
+            if (silentEl && silentEl.value) params.silent = silentEl.value;
+            const schedEl = form.querySelector(
+                'input[name="schedule_at"][type="hidden"]');
+            if (schedEl && schedEl.value) {
+                params.schedule_at = schedEl.value;
+            }
             const r = await fetch('/contacts/' + cid + '/send', {
                 method: 'POST',
                 credentials: 'same-origin',
@@ -3920,6 +4732,31 @@
             });
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
+                // Отложенная отправка: локально ничего не рендерим
+                // (echo придёт когда сообщение реально уйдёт), просто
+                // сообщаем пользователю «запланировано на …».
+                if (data.scheduled) {
+                    if (window.__skillwoodResetSendFlags) {
+                        window.__skillwoodResetSendFlags(form);
+                    }
+                    ta.value = '';
+                    ta.style.height = '';
+                    form.classList.remove('has-text');
+                    clearReply();
+                    const whenText = data.when
+                        ? new Date(data.when).toLocaleString('ru-RU')
+                        : '';
+                    if (window.confirmDialog) {
+                        window.confirmDialog({
+                            title: 'Запланировано',
+                            text: 'Сообщение уйдёт ' + whenText
+                                + '. До этого момента его можно отменить в '
+                                + 'Telegram (раздел Scheduled Messages).',
+                            okLabel: 'Готово', cancelLabel: 'Закрыть',
+                        });
+                    }
+                    return;
+                }
                 // queued (notif-путь) — реальное сообщение прилетит поллингом
                 // как только Android отчитается; не дорисовываем оптимистично.
                 if (!data.queued
@@ -3953,6 +4790,10 @@
                 }
                 ta.value = '';
                 ta.style.height = '';
+                form.classList.remove('has-text');
+                if (window.__skillwoodResetSendFlags) {
+                    window.__skillwoodResetSendFlags(form);
+                }
                 clearReply();
                 if (data.queued && data.pending_id) {
                     watchPendingReply(data.pending_id);
@@ -3960,9 +4801,15 @@
             } else {
                 alert('Не удалось отправить: '
                       + (data.detail || data.error || ('HTTP ' + r.status)));
+                if (window.__skillwoodResetSendFlags) {
+                    window.__skillwoodResetSendFlags(form);
+                }
             }
         } catch (e) {
             alert('Сеть недоступна — сообщение не отправлено.');
+            if (window.__skillwoodResetSendFlags) {
+                window.__skillwoodResetSendFlags(form);
+            }
         } finally {
             btn.disabled = false;
             ta.focus();
@@ -4024,6 +4871,15 @@
         fd.append('text', ta ? ta.value.trim() : '');
         if (form.dataset.messenger) fd.append('messenger', form.dataset.messenger);
         if (replyTarget) fd.append('reply_to', replyTarget.id);
+        // Флаги из ПКМ-меню кнопки отправки (без звука / отложенно).
+        const silentEl = form.querySelector(
+            'input[name="silent"][type="hidden"]');
+        if (silentEl && silentEl.value) fd.append('silent', silentEl.value);
+        const schedEl = form.querySelector(
+            'input[name="schedule_at"][type="hidden"]');
+        if (schedEl && schedEl.value) {
+            fd.append('schedule_at', schedEl.value);
+        }
         try {
             const r = await fetch('/contacts/' + cid + '/send', {
                 method: 'POST',
@@ -4033,16 +4889,37 @@
             });
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
+                if (data.scheduled) {
+                    const whenText = data.when
+                        ? new Date(data.when).toLocaleString('ru-RU') : '';
+                    if (window.confirmDialog) {
+                        window.confirmDialog({
+                            title: 'Запланировано',
+                            text: 'Файл уйдёт ' + whenText + '.',
+                            okLabel: 'Готово', cancelLabel: 'Закрыть',
+                        });
+                    }
+                }
                 // Медиа-сообщение появится в ленте в течение ~5 c (поллинг).
                 if (ta) { ta.value = ''; ta.style.height = ''; }
+                form.classList.remove('has-text');
+                if (window.__skillwoodResetSendFlags) {
+                    window.__skillwoodResetSendFlags(form);
+                }
                 clearPreview();
                 clearReply();
             } else {
                 alert('Не удалось отправить файл: '
                       + (data.detail || data.error || ('HTTP ' + r.status)));
+                if (window.__skillwoodResetSendFlags) {
+                    window.__skillwoodResetSendFlags(form);
+                }
             }
         } catch (e) {
             alert('Сеть недоступна — файл не отправлен.');
+            if (window.__skillwoodResetSendFlags) {
+                window.__skillwoodResetSendFlags(form);
+            }
         } finally {
             if (btn) btn.disabled = false;
             if (attach) attach.disabled = false;
@@ -4654,12 +5531,14 @@
             return;
         }
     });
-    // Авторост поля ввода под текст.
+    // Авторост поля ввода + toggle has-text для замены mic ↔ send.
     feed.addEventListener('input', function(e) {
         const ta = e.target.closest('#composer-text');
         if (!ta) return;
         ta.style.height = 'auto';
         ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+        const form = ta.closest('#composer');
+        if (form) form.classList.toggle('has-text', !!ta.value.trim());
     });
     // Enter — отправить, Shift+Enter — перенос строки.
     feed.addEventListener('keydown', function(e) {
@@ -4851,6 +5730,457 @@
     // Поллинг перерисовывает список (innerHTML) — переналожить фильтр.
     new MutationObserver(() => { if (query) applyFilter(); })
         .observe(list, { childList: true });
+})();
+</script>
+
+<script>
+// --- Режим выбора сообщений для массовой пересылки (Telegram → Telegram).
+//     Активируется пунктом «☑ Выбрать сообщения» в ПКМ-меню. Клик по
+//     bubble в этом режиме toggle'ит выбор. Сверху ленты появляется
+//     панель с N выбрано / Переслать / Отмена. Выбираем только TG-
+//     сообщения с tg_message_id — иначе forward-bulk вернёт ошибку. ---
+(function() {
+    const bar = document.getElementById('selection-bar');
+    const countEl = document.getElementById('sb-count');
+    const cancelBtn = document.getElementById('sb-cancel');
+    const fwdBtn = document.getElementById('sb-forward');
+    if (!bar) return;
+
+    const selected = new Set();
+    let active = false;
+
+    function getContainer() {
+        return document.getElementById('messages-container');
+    }
+
+    function refresh() {
+        countEl.textContent = selected.size + ' выбрано';
+        fwdBtn.disabled = selected.size === 0;
+    }
+
+    function enter(initialMsgId) {
+        const c = getContainer();
+        if (!c) return;
+        active = true;
+        selected.clear();
+        c.classList.add('selecting');
+        bar.hidden = false;
+        if (initialMsgId) toggle(initialMsgId);
+        else refresh();
+    }
+
+    function exit() {
+        const c = getContainer();
+        if (c) c.classList.remove('selecting');
+        c && c.querySelectorAll('.bubble-row.selected').forEach(
+            r => r.classList.remove('selected'));
+        bar.hidden = true;
+        selected.clear();
+        active = false;
+    }
+
+    function toggle(msgId) {
+        const row = document.querySelector(
+            '.bubble-row[data-message-id="' + msgId + '"]');
+        // Не-Telegram — пропускаем тихо: bulk-forward требует tg_message_id.
+        if (!row || row.dataset.messenger !== 'Telegram') return;
+        if (selected.has(msgId)) {
+            selected.delete(msgId);
+            row.classList.remove('selected');
+        } else {
+            selected.add(String(msgId));
+            row.classList.add('selected');
+        }
+        refresh();
+    }
+
+    document.addEventListener('click', (e) => {
+        if (!active) return;
+        const row = e.target.closest('.bubble-row');
+        if (!row) return;
+        // В режиме выбора игнорируем все клики по интерактивным элементам
+        // внутри bubble (ссылки, кнопки реакций) — фокус на сам выбор.
+        const c = getContainer();
+        if (!c || !c.contains(row)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggle(row.dataset.messageId);
+    }, true);
+
+    cancelBtn.addEventListener('click', exit);
+    fwdBtn.addEventListener('click', () => {
+        if (!selected.size) return;
+        if (window.openForwardModal) {
+            window.openForwardModal(Array.from(selected));
+        }
+    });
+    document.addEventListener('keydown', (e) => {
+        if (active && e.key === 'Escape') exit();
+    });
+
+    window.__skillwoodEnterSelection = enter;
+    window.__skillwoodExitSelection = exit;
+})();
+</script>
+
+<script>
+// --- ПКМ по кнопке отправки: «без звука» / «позже». При выборе пункта
+//     в form composer'а добавляются скрытые input'ы (silent=1 или
+//     schedule_at=<datetime>), form сабмитится — sendMessage отдаёт их
+//     с FormData. После отправки input'ы чистятся, чтобы следующее
+//     обычное сообщение не унаследовало флаги. ---
+(function() {
+    const menu = document.getElementById('send-menu');
+    const schedBackdrop = document.getElementById('sched-backdrop');
+    const schedModal = document.getElementById('sched-modal');
+    const schedInput = document.getElementById('sched-input');
+    const schedOk = document.getElementById('sched-ok');
+    const schedCancel = document.getElementById('sched-cancel');
+    if (!menu) return;
+
+    let activeForm = null;
+
+    function closeMenu() {
+        menu.hidden = true;
+        activeForm = null;
+    }
+
+    function openMenu(x, y, form) {
+        activeForm = form;
+        menu.hidden = false;
+        // Якорим левый-нижний угол меню в точку клика, чтобы оно
+        // открывалось «над» кнопкой, а не уползало за экран.
+        menu.style.left = '0';
+        menu.style.top = '0';
+        const rect = menu.getBoundingClientRect();
+        let left = x;
+        let top = y - rect.height;
+        if (left + rect.width > window.innerWidth) {
+            left = window.innerWidth - rect.width - 8;
+        }
+        if (top < 8) top = y + 6;
+        menu.style.left = Math.max(8, left) + 'px';
+        menu.style.top = top + 'px';
+    }
+
+    function setHidden(form, name, value) {
+        let el = form.querySelector('input[name="' + name + '"][type="hidden"]');
+        if (value == null || value === '') {
+            if (el) el.remove();
+            return;
+        }
+        if (!el) {
+            el = document.createElement('input');
+            el.type = 'hidden';
+            el.name = name;
+            form.appendChild(el);
+        }
+        el.value = value;
+    }
+
+    function openSchedule() {
+        // Подставляем «через 10 минут» как разумный дефолт.
+        const d = new Date();
+        d.setMinutes(d.getMinutes() + 10);
+        const pad = (n) => String(n).padStart(2, '0');
+        const local = d.getFullYear() + '-' + pad(d.getMonth() + 1)
+            + '-' + pad(d.getDate()) + 'T'
+            + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        schedInput.value = local;
+        schedInput.min = local;
+        schedModal.hidden = false;
+        schedBackdrop.removeAttribute('hidden');
+        requestAnimationFrame(() => {
+            schedModal.classList.add('open');
+            schedBackdrop.classList.add('open');
+        });
+        setTimeout(() => schedInput.focus(), 50);
+    }
+
+    function closeSchedule() {
+        schedModal.classList.remove('open');
+        schedBackdrop.classList.remove('open');
+        setTimeout(() => {
+            if (!schedModal.classList.contains('open')) {
+                schedModal.hidden = true;
+            }
+        }, 200);
+    }
+
+    // ПКМ или Ctrl+клик / долгое нажатие — открывает меню.
+    document.addEventListener('contextmenu', (e) => {
+        const btn = e.target.closest('#composer-send');
+        if (!btn) return;
+        const form = btn.closest('#composer');
+        if (!form) return;
+        e.preventDefault();
+        openMenu(e.clientX, e.clientY, form);
+    });
+
+    // Долгое нажатие на мобильном (touchscreen) — тоже открывает меню.
+    let pressTimer = null;
+    document.addEventListener('touchstart', (e) => {
+        const btn = e.target.closest('#composer-send');
+        if (!btn) return;
+        const form = btn.closest('#composer');
+        if (!form) return;
+        if (pressTimer) clearTimeout(pressTimer);
+        pressTimer = setTimeout(() => {
+            const rect = btn.getBoundingClientRect();
+            openMenu(rect.right, rect.top, form);
+        }, 500);
+    }, {passive: true});
+    document.addEventListener('touchend', () => {
+        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    });
+    document.addEventListener('touchmove', () => {
+        if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+    });
+
+    document.addEventListener('click', (e) => {
+        // Клик по пункту меню.
+        const item = e.target.closest('.send-menu button[data-action]');
+        if (item) {
+            e.preventDefault();
+            const action = item.dataset.action;
+            const form = activeForm;
+            closeMenu();
+            if (!form) return;
+            if (action === 'silent') {
+                setHidden(form, 'silent', '1');
+                if (form.requestSubmit) form.requestSubmit();
+                else form.dispatchEvent(new Event('submit',
+                    {bubbles: true, cancelable: true}));
+            } else if (action === 'schedule') {
+                activeForm = form;
+                openSchedule();
+            }
+            return;
+        }
+        // Клик вне меню — закрыть.
+        if (!menu.hidden && !e.target.closest('#send-menu, #composer-send')) {
+            closeMenu();
+        }
+    });
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+            if (!menu.hidden) closeMenu();
+            if (!schedModal.hidden) closeSchedule();
+        }
+    });
+
+    schedCancel.addEventListener('click', () => {
+        closeSchedule();
+        activeForm = null;
+    });
+    schedBackdrop.addEventListener('click', () => {
+        closeSchedule();
+        activeForm = null;
+    });
+    schedOk.addEventListener('click', () => {
+        const value = schedInput.value;
+        if (!value) return;
+        const form = activeForm;
+        closeSchedule();
+        activeForm = null;
+        if (!form) return;
+        setHidden(form, 'schedule_at', value);
+        if (form.requestSubmit) form.requestSubmit();
+        else form.dispatchEvent(new Event('submit',
+            {bubbles: true, cancelable: true}));
+    });
+
+    // Хелперы для sendMessage: после успешной отправки сбрасываем флаги.
+    window.__skillwoodResetSendFlags = function(form) {
+        if (!form) return;
+        setHidden(form, 'silent', '');
+        setHidden(form, 'schedule_at', '');
+    };
+})();
+</script>
+
+<script>
+// --- Emoji-picker для composer'а: кнопка 😀 справа от textarea.
+//     При клике выезжает поповер со смайликами; клик по смайлу вставляет
+//     его в textarea на текущей позиции курсора. ---
+(function() {
+    const EMOJIS = [
+        '😀','😁','😂','🤣','😃','😄','😅','😆',
+        '😉','😊','😋','😎','😍','😘','🥰','😗',
+        '🙂','🙃','🤩','🤔','🤨','😐','😑','😶',
+        '🙄','😏','😣','😥','😮','🤐','😯','😪',
+        '😴','😌','😛','😜','😝','🤤','😒','😓',
+        '😔','😕','🙁','☹','😖','😞','😟','😤',
+        '😢','😭','😦','😧','😨','😩','🤯','😬',
+        '😰','😱','🥵','🥶','😳','🤪','😵','😡',
+        '😠','🤬','😷','🤒','🤕','🤢','🤮','🤧',
+        '😇','🥳','🥴','🥺','🤠','🤡','🥸','😈',
+        '👻','💀','☠','👽','🤖','🎃','😺','😸',
+        '👍','👎','👌','✌','🤞','🤘','🤙','🙏',
+        '👏','🙌','🤝','💪','🫶','❤','🧡','💛',
+        '💚','💙','💜','🖤','🤍','🤎','💔','❣',
+        '💕','💞','💓','💗','💖','💘','💝','💟',
+        '🔥','💯','⭐','🌟','✨','⚡','💥','💫',
+        '🎉','🎊','🎁','🎂','🍰','☕','🍕','🍔',
+    ];
+
+    function getPicker(form) {
+        let picker = form.querySelector('#emoji-picker');
+        if (!picker) return null;
+        if (!picker.childElementCount) {
+            picker.innerHTML = EMOJIS.map(e =>
+                '<button type="button" data-emoji="' + e + '">'
+                + e + '</button>').join('');
+        }
+        return picker;
+    }
+
+    function insertAtCursor(ta, text) {
+        const start = ta.selectionStart || 0;
+        const end = ta.selectionEnd || 0;
+        const before = ta.value.slice(0, start);
+        const after = ta.value.slice(end);
+        ta.value = before + text + after;
+        const pos = start + text.length;
+        ta.selectionStart = ta.selectionEnd = pos;
+        ta.focus();
+        // Триггер input-события, чтобы auto-resize textarea сработал.
+        ta.dispatchEvent(new Event('input', {bubbles: true}));
+    }
+
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('#composer-emoji');
+        if (btn) {
+            e.preventDefault();
+            e.stopPropagation();
+            const form = btn.closest('#composer');
+            const picker = getPicker(form);
+            if (!picker) return;
+            picker.hidden = !picker.hidden;
+            return;
+        }
+        const emoji = e.target.closest('.emoji-picker button[data-emoji]');
+        if (emoji) {
+            e.preventDefault();
+            const form = emoji.closest('#composer');
+            const ta = form && form.querySelector('#composer-text');
+            if (ta) insertAtCursor(ta, emoji.dataset.emoji);
+            const picker = emoji.closest('.emoji-picker');
+            if (picker) picker.hidden = true;
+            return;
+        }
+        // Клик где-то снаружи — закрываем все открытые picker'ы.
+        if (!e.target.closest('.emoji-picker, #composer-emoji')) {
+            document.querySelectorAll('.emoji-picker').forEach(p => {
+                p.hidden = true;
+            });
+        }
+    });
+})();
+</script>
+
+<script>
+// --- Микрофон: запись голосового через MediaRecorder.
+//     Первый клик по 🎤 запускает запись (кнопка пульсирует красным),
+//     второй клик — останавливает и отправляет blob через тот же
+//     /contacts/<id>/send, что и обычное вложение. ---
+(function() {
+    let recorder = null;
+    let chunks = [];
+    let stream = null;
+    let activeBtn = null;
+
+    async function start(btn) {
+        if (recorder) return;
+        try {
+            stream = await navigator.mediaDevices.getUserMedia({audio: true});
+        } catch (err) {
+            await (window.confirmDialog || (() => Promise.resolve()))({
+                title: 'Нет доступа к микрофону',
+                text: 'Браузер не дал разрешение на запись звука.',
+                okLabel: 'Закрыть', cancelLabel: 'Отмена',
+            });
+            return;
+        }
+        chunks = [];
+        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+            ? 'audio/webm;codecs=opus'
+            : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
+               ? 'audio/ogg;codecs=opus' : '');
+        try {
+            recorder = mime ? new MediaRecorder(stream, {mimeType: mime})
+                            : new MediaRecorder(stream);
+        } catch (err) {
+            recorder = new MediaRecorder(stream);
+        }
+        recorder.addEventListener('dataavailable', (e) => {
+            if (e.data && e.data.size > 0) chunks.push(e.data);
+        });
+        recorder.addEventListener('stop', () => {
+            const blob = new Blob(chunks,
+                {type: recorder.mimeType || 'audio/webm'});
+            const form = activeBtn && activeBtn.closest('#composer');
+            sendVoice(form, blob);
+            chunks = [];
+            recorder = null;
+            if (stream) {
+                stream.getTracks().forEach(t => t.stop());
+                stream = null;
+            }
+            if (activeBtn) {
+                activeBtn.classList.remove('recording');
+                activeBtn = null;
+            }
+        });
+        recorder.start();
+        activeBtn = btn;
+        btn.classList.add('recording');
+        btn.title = 'Остановить запись и отправить';
+    }
+
+    function stop() {
+        if (recorder && recorder.state !== 'inactive') {
+            recorder.stop();
+        }
+    }
+
+    async function sendVoice(form, blob) {
+        if (!form) return;
+        const contactId = form.dataset.contactId;
+        if (!contactId) return;
+        const fd = new FormData();
+        // Имя «voice.<ext>» — Telegram отобразит как audio.
+        const ext = (blob.type.includes('ogg') ? 'ogg' : 'webm');
+        fd.append('file', blob, 'voice.' + ext);
+        const m = form.dataset.messenger || '';
+        if (m) fd.append('messenger', m);
+        try {
+            await fetch('/contacts/' + contactId + '/send', {
+                method: 'POST', credentials: 'same-origin', body: fd,
+            });
+            // Поллинг сам подтянет отправленное голосовое в ленту.
+        } catch (err) {
+            if (window.confirmDialog) {
+                window.confirmDialog({
+                    title: 'Не отправилось',
+                    text: 'Не удалось отправить голосовое. Попробуйте ещё.',
+                    okLabel: 'Закрыть', cancelLabel: 'Отмена',
+                });
+            }
+        }
+    }
+
+    document.addEventListener('click', (e) => {
+        const btn = e.target.closest('#composer-voice');
+        if (!btn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        if (btn.classList.contains('recording')) {
+            stop();
+        } else {
+            start(btn);
+        }
+    });
 })();
 </script>
 
@@ -5090,11 +6420,14 @@
               + '</div>'
             : '';
 
+        // Личности — handles разных мессенджеров одного контакта.
+        // Клик переключает основной чат на этот мессенджер (?m=…).
         const handlesHtml = (d.messengers || []).length
             ? '<div class="profile-section">'
               + '<div class="profile-section-title">Личности</div>'
               + (d.messengers || []).map(m =>
-                  '<div class="profile-row">'
+                  '<div class="profile-row tappable handle-row"'
+                  + ' data-messenger="' + escapeHtml(m.name || '') + '">'
                   + '<span class="row-ico">💬</span>'
                   + '<div class="row-main">'
                   + '<div class="row-label">'
@@ -5299,7 +6632,8 @@
                 + '</div></a>').join('');
             return '<div class="gallery-list">' + rows + '</div>';
         }
-        // Список для файлов / аудио / голосовых.
+        // Аудио и голосовые — встроенный плеер прямо в строке списка.
+        // Файл клик качает (тег <a download>).
         const labelByBucket = {
             file:  '📎', audio: '🎵', voice: '🎤',
         };
@@ -5311,8 +6645,21 @@
             const date = it.created_at
                 ? new Date(it.created_at).toLocaleDateString('ru-RU') : '';
             const meta = [sizeKb, date].filter(Boolean).join(' · ');
+            if (bucket === 'voice' || bucket === 'audio') {
+                return '<div class="gallery-item gallery-audio">'
+                    + '<span class="gi-ico">'
+                    + (labelByBucket[bucket] || '🎵') + '</span>'
+                    + '<div style="min-width:0; flex:1;">'
+                    + '<div class="gi-name">' + escapeHtml(name) + '</div>'
+                    + (meta ? '<div class="gi-meta">' + escapeHtml(meta)
+                              + '</div>' : '')
+                    + '<audio controls preload="none" src="'
+                    + escapeHtml(it.url) + '" style="width:100%;'
+                    + ' margin-top:6px;"></audio>'
+                    + '</div></div>';
+            }
             return '<a class="gallery-item" href="' + escapeHtml(it.url) + '"'
-                + (bucket === 'file' ? ' download' : ' target="_blank"') + '>'
+                + ' download>'
                 + '<span class="gi-ico">'
                 + (labelByBucket[bucket] || '📎') + '</span>'
                 + '<div style="min-width:0; flex:1;">'
@@ -5324,10 +6671,39 @@
         return '<div class="gallery-list">' + rows + '</div>';
     }
 
+    async function openAvatarsGallery() {
+        if (!currentContactId) return;
+        try {
+            const r = await fetch('/contacts/' + currentContactId
+                                   + '/avatars.json',
+                                   {credentials: 'same-origin'});
+            const d = await r.json().catch(() => ({}));
+            const urls = ((d && d.items) || []).map(x => x.url)
+                .filter(Boolean);
+            if (urls.length && window.__skillwoodOpenAvatars) {
+                window.__skillwoodOpenAvatars(urls);
+                return;
+            }
+        } catch (err) { /* fall through */ }
+        // Фолбэк — если списка нет, но локальная аватарка есть, покажем её.
+        if (cachedProfile && cachedProfile.contact
+            && cachedProfile.contact.avatar_url
+            && window.__skillwoodOpenAvatars) {
+            window.__skillwoodOpenAvatars(
+                [cachedProfile.contact.avatar_url]);
+        }
+    }
+
     // --- Делегированные обработчики действий ---
     content.addEventListener('click', async (e) => {
         const closeBtn = e.target.closest('[data-action="close"]');
         if (closeBtn) { close(); return; }
+        // Клик по аватарке в шапке профиля → лайтбокс со всеми фото.
+        const avatar = e.target.closest('.profile-id-block .avatar');
+        if (avatar) {
+            await openAvatarsGallery();
+            return;
+        }
         const back = e.target.closest('[data-action="back"]');
         if (back) {
             if (cachedProfile) renderProfile(cachedProfile, cachedTgExtra);
@@ -5348,6 +6724,17 @@
         const common = e.target.closest('.common-chat-row');
         if (common) {
             await openCommonChat(common);
+            return;
+        }
+        const handle = e.target.closest('.handle-row');
+        if (handle && currentContactId) {
+            const m = handle.dataset.messenger || '';
+            // close() обнуляет currentContactId — поэтому фиксируем
+            // id заранее, иначе получится /contacts/null → 404.
+            const cid = currentContactId;
+            close();
+            window.location.href = '/contacts/' + cid
+                + (m ? '?m=' + encodeURIComponent(m) : '');
             return;
         }
         const cell = e.target.closest('.gallery-cell');

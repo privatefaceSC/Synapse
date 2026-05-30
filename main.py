@@ -717,6 +717,21 @@ def _dm_load_conversation(db, me_id, partner, mark_read=False):
 
 def register_routes(app: Flask) -> None:
 
+    @app.context_processor
+    def inject_gear_user():
+        """Передаёт текущего пользователя во все шаблоны под именем
+        `gear_user` — нужно base.html'у, чтобы показать connect_code
+        в выпадающем меню шестерёнки. Если не залогинен — None."""
+        uid = session.get('user_id')
+        if not uid:
+            return {'gear_user': None}
+        try:
+            db = get_db()
+            return {'gear_user': db.query(User)
+                    .filter(User.id == uid).first()}
+        except Exception:  # noqa: BLE001
+            return {'gear_user': None}
+
     @app.route('/')
     def main_menu():
         if session.get('user_id'):
@@ -771,6 +786,81 @@ def register_routes(app: Flask) -> None:
         if is_xhr:
             return jsonify({'ok': True, 'username': new})
         return redirect('/home')
+
+    @app.route('/profile')
+    def profile_page():
+        """Страница профиля: личные данные + форма смены пароля."""
+        if not session.get('user_id'):
+            return redirect('/login')
+        db = get_db()
+        me = db.query(User).filter(User.id == session['user_id']).first()
+        return render_template('profile.html', user=me)
+
+    @app.route('/profile/password', methods=['POST'])
+    def profile_password():
+        """Смена пароля: требуется подтверждение текущего."""
+        if not session.get('user_id'):
+            return redirect('/login')
+        db = get_db()
+        me = db.query(User).filter(User.id == session['user_id']).first()
+        old = request.form.get('old_password') or ''
+        new1 = request.form.get('new_password') or ''
+        new2 = request.form.get('new_password2') or ''
+        error = None
+        if not check_password_hash(me.hashed_password, old):
+            error = "Текущий пароль введён неверно"
+        elif len(new1) < 4:
+            error = "Новый пароль слишком короткий (минимум 4 символа)"
+        elif new1 != new2:
+            error = "Новые пароли не совпадают"
+        elif new1 == old:
+            error = "Новый пароль совпадает со старым"
+        if error:
+            return render_template('profile.html', user=me, pw_error=error)
+        me.hashed_password = generate_password_hash(new1)
+        db.commit()
+        return render_template('profile.html', user=me,
+                               pw_success="Пароль обновлён")
+
+    @app.route('/profile/update', methods=['POST'])
+    def profile_update():
+        """Смена личных данных: имя, фамилия, email, User ID. Email
+        и username уникальны — конфликт даёт ошибку, профиль остаётся
+        с прежними значениями."""
+        if not session.get('user_id'):
+            return redirect('/login')
+        import re as _re_email
+        db = get_db()
+        me = db.query(User).filter(User.id == session['user_id']).first()
+        name = (request.form.get('name') or '').strip()
+        surname = (request.form.get('surname') or '').strip()
+        email = (request.form.get('email') or '').strip()
+        username = _normalize_username(request.form.get('username'))
+        error = None
+        if not name:
+            error = "Имя не может быть пустым"
+        elif not email or '@' not in email:
+            error = "Введите корректный email"
+        elif (db.query(User)
+              .filter(User.email == email, User.id != me.id).first()):
+            error = "Этот email уже занят другим аккаунтом"
+        else:
+            uname_err = _validate_username(username)
+            if uname_err:
+                error = uname_err
+            elif (db.query(User)
+                  .filter(User.username == username,
+                          User.id != me.id).first()):
+                error = "Этот User ID уже занят"
+        if error:
+            return render_template('profile.html', user=me, info_error=error)
+        me.name = name
+        me.surname = surname or None
+        me.email = email
+        me.username = username
+        db.commit()
+        return render_template('profile.html', user=me,
+                               info_success="Данные сохранены")
 
     @app.route('/home/lang', methods=['POST'])
     def change_lang():
@@ -1355,6 +1445,10 @@ def register_routes(app: Flask) -> None:
         reply_via = ('telegram' if _tg_handle is not None
                      else ('notif' if _notif_handle is not None else None))
         is_group = (_tg_handle is not None and _tg_handle.tg_chat_type == 'group')
+        # Тип чата нужен фронту, чтобы под канальными постами появлялась
+        # кнопка «💬 Комментарии» (linked discussion group).
+        chat_type = (_tg_handle.tg_chat_type
+                     if _tg_handle is not None else None)
         msgs = (
             db.query(Messages)
             .filter(Messages.handle_id.in_(handle_ids))
@@ -1371,7 +1465,7 @@ def register_routes(app: Flask) -> None:
         return render_template('contacts.html', contacts=contacts, selected=contact,
                                selected_handles=selected_handles, messages=msgs,
                                can_reply=can_reply, reply_via=reply_via,
-                               is_group=is_group,
+                               is_group=is_group, chat_type=chat_type,
                                messengers=available, current_messenger=current_m)
 
     @app.route('/contacts/<int:contact_id>/messages.json')
@@ -1470,6 +1564,8 @@ def register_routes(app: Flask) -> None:
                 'topic_id': topic_id_int,
                 'messengers': available,
                 'messenger': current_m,
+                'chat_type': (_tg_handle.tg_chat_type
+                              if _tg_handle is not None else None),
             },
             'topics': saved_topics,
             'messages': [
@@ -1540,6 +1636,29 @@ def register_routes(app: Flask) -> None:
                 md_html = None
                 md_plain = text
 
+        # Опции отправки: silent (без уведомления) и schedule_at (ISO
+        # datetime — отложенная отправка). Доступны только через Telegram.
+        silent = (request.form.get('silent') or '') in ('1', 'true', 'on')
+        schedule_at = None
+        schedule_raw = (request.form.get('schedule_at') or '').strip()
+        if schedule_raw:
+            try:
+                # input type="datetime-local" даёт "YYYY-MM-DDTHH:MM" —
+                # это локальное время браузера, парсим без таймзоны.
+                schedule_at = datetime.strptime(
+                    schedule_raw[:16], '%Y-%m-%dT%H:%M')
+            except ValueError:
+                try:
+                    schedule_at = datetime.fromisoformat(schedule_raw)
+                except ValueError:
+                    schedule_at = None
+            # В прошлом? Telegram отвергнет — отдадим понятную ошибку сразу.
+            if schedule_at is not None and schedule_at <= datetime.now():
+                return jsonify({
+                    'error': 'bad_schedule',
+                    'detail': 'Время отправки должно быть в будущем',
+                }), 400
+
         # Учитываем «какой мессенджер открыт у пользователя» (?m=… в URL ленты).
         # Если поле есть — пробуем отправить через этого мессенджера; иначе
         # глобально предпочитаем Telegram.
@@ -1588,14 +1707,24 @@ def register_routes(app: Flask) -> None:
                 # старыми моками в тестах.
                 _md_kw_f = ({'parse_mode': md_parse_mode}
                             if md_parse_mode else {})
+                _opts_f = {}
+                if silent:
+                    _opts_f['silent'] = True
+                if schedule_at is not None:
+                    _opts_f['schedule'] = schedule_at
                 try:
                     sent_id = telegram_bridge.send_file(
                         tg_handle.tg_chat_id, data,
                         upload.filename or 'file', text,
-                        **_md_kw_f, **reply_kw_tg)
+                        **_md_kw_f, **reply_kw_tg, **_opts_f)
                 except Exception as exc:  # noqa: BLE001
                     return jsonify({'error': 'send_failed',
                                     'detail': str(exc)}), 502
+                # Scheduled: Telegram пришлёт echo только когда оно реально
+                # отправится, поэтому локально записывать его сейчас не нужно.
+                if schedule_at is not None:
+                    return jsonify({'ok': True, 'scheduled': True,
+                                    'when': schedule_at.isoformat()})
                 # СРАЗУ пишем локальную запись Messages + Attachment —
                 # echo для своих media от Telethon приходит не всегда
                 # (зависит от версии/настроек клиента). Anti-dupe по
@@ -1661,12 +1790,21 @@ def register_routes(app: Flask) -> None:
             # старого API (text-only без kwarg). Поведение для plain-текста
             # не меняется.
             _md_kw = {'parse_mode': md_parse_mode} if md_parse_mode else {}
+            _opts = {}
+            if silent:
+                _opts['silent'] = True
+            if schedule_at is not None:
+                _opts['schedule'] = schedule_at
             try:
                 sent_id = telegram_bridge.send_message(
                     tg_handle.tg_chat_id, text,
-                    **_md_kw, **reply_kw_tg)
+                    **_md_kw, **reply_kw_tg, **_opts)
             except Exception as exc:  # noqa: BLE001
                 return jsonify({'error': 'send_failed', 'detail': str(exc)}), 502
+            # Scheduled — echo придёт только в момент реальной отправки.
+            if schedule_at is not None:
+                return jsonify({'ok': True, 'scheduled': True,
+                                'when': schedule_at.isoformat()})
             now = datetime.now()
             msg = Messages(
                 sender='Вы',
@@ -1720,6 +1858,87 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'queued': True, 'pending_id': pr.id,
                         'via': 'notif'})
+
+    @app.route('/contacts/<int:contact_id>/avatars.json')
+    def contact_avatars(contact_id):
+        """Список фотографий профиля контакта (для просмотра всех аватарок
+        в правой панели). Тянем id через Telethon iter_profile_photos —
+        сами бинарники грузятся лениво через /contacts/<id>/avatar/<pid>."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id, Contact.user_id == user_id).first()
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        handle = (db.query(MessengerHandle)
+                  .filter(MessengerHandle.contact_id == contact.id,
+                          MessengerHandle.tg_chat_id.isnot(None))
+                  .first())
+        # Без TG-handle или с выключенным мостом — отдаём хотя бы локальную
+        # сохранённую аватарку, если она вообще была подгружена раньше.
+        if handle is None or not telegram_bridge.is_configured():
+            items = ([{'photo_id': 'local',
+                       'url': f'/contacts/{contact.id}/photo'}]
+                     if contact.avatar_path else [])
+            return jsonify({'ok': True, 'items': items})
+        try:
+            photos = telegram_bridge.fetch_profile_photos(handle.tg_chat_id)
+        except Exception:  # noqa: BLE001
+            items = ([{'photo_id': 'local',
+                       'url': f'/contacts/{contact.id}/photo'}]
+                     if contact.avatar_path else [])
+            return jsonify({'ok': True, 'items': items})
+        items = [{'photo_id': p['id'],
+                  'url': f'/contacts/{contact.id}/avatar/{p["id"]}'}
+                 for p in photos if p.get('id')]
+        # Фолбэк: если TG ничего не отдал (например, фото скрыты), но
+        # локально у нас фото есть — покажем хотя бы его.
+        if not items and contact.avatar_path:
+            items = [{'photo_id': 'local',
+                      'url': f'/contacts/{contact.id}/photo'}]
+        return jsonify({'ok': True, 'items': items})
+
+    @app.route('/contacts/<int:contact_id>/avatar/<int:photo_id>')
+    def contact_avatar_one(contact_id, photo_id):
+        """Отдаёт бинарник конкретной фотографии профиля. Кэшируется
+        зашифрованной в _media_root()/<user>/tg_avatars/<contact_id>/."""
+        if not session.get('user_id'):
+            return 'Unauthorized', 401
+        from data.contacts import Contact, MessengerHandle
+        from data.crypto import encrypt_bytes, decrypt_bytes
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id, Contact.user_id == user_id).first()
+        if not contact:
+            return 'Not Found', 404
+        rel_path = f"{user_id}/tg_avatars/{contact.id}/{photo_id}.enc"
+        cache_full = os.path.join(_media_root(), rel_path)
+        if not os.path.exists(cache_full):
+            handle = (db.query(MessengerHandle)
+                      .filter(MessengerHandle.contact_id == contact.id,
+                              MessengerHandle.tg_chat_id.isnot(None))
+                      .first())
+            if handle is None or not telegram_bridge.is_configured():
+                return 'Not Found', 404
+            try:
+                data = telegram_bridge.download_profile_photo_by_id(
+                    handle.tg_chat_id, photo_id)
+            except Exception:  # noqa: BLE001
+                return 'Not Found', 404
+            if not data:
+                return 'Not Found', 404
+            os.makedirs(os.path.dirname(cache_full), exist_ok=True)
+            with open(cache_full, 'wb') as f:
+                f.write(encrypt_bytes(data))
+        with open(cache_full, 'rb') as f:
+            raw = decrypt_bytes(f.read())
+        return Response(raw, mimetype='image/jpeg')
 
     @app.route('/contacts/<int:contact_id>/photo')
     def contact_photo(contact_id):
@@ -2182,7 +2401,7 @@ def register_routes(app: Flask) -> None:
     # отдельной таблицы под них нет.
     _MEDIA_BUCKETS = {
         'photo': ('image', 'sticker'),
-        'video': ('video',),
+        'video': ('video', 'video_note'),
         'voice': ('voice',),
         'audio': ('audio',),
         'file':  ('file',),
@@ -2561,6 +2780,75 @@ def register_routes(app: Flask) -> None:
         # из Telethon как наше исходящее.
         return jsonify({'ok': True})
 
+    @app.route('/messages/forward-bulk', methods=['POST'])
+    def messages_forward_bulk():
+        """Массовая пересылка нескольких Telegram-сообщений в один чат.
+        Body: ids=<csv message_ids>, target_contact_id=<id>. Все сообщения
+        должны быть из ОДНОГО source-чата (Telegram forward_messages
+        требует одного peer-источника)."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        raw_ids = (request.form.get('ids') or '').strip()
+        if not raw_ids:
+            return jsonify({'error': 'no_ids'}), 400
+        try:
+            msg_ids = [int(x) for x in raw_ids.split(',') if x.strip()]
+        except ValueError:
+            return jsonify({'error': 'bad_ids'}), 400
+        if not msg_ids:
+            return jsonify({'error': 'no_ids'}), 400
+        msgs = (db.query(Messages)
+                .filter(Messages.id.in_(msg_ids),
+                        Messages.user_id == user_id)
+                .all())
+        if len(msgs) != len(msg_ids):
+            return jsonify({'error': 'some_not_found'}), 404
+        # Все должны быть из одного TG-чата и иметь tg_message_id.
+        sources = set()
+        tg_ids = []
+        for m in msgs:
+            if m.tg_message_id is None:
+                return jsonify({'error': 'not_telegram',
+                                'id': m.id}), 400
+            src = _msg_tg_chat_id(db, m)
+            if src is None:
+                return jsonify({'error': 'no_source_chat',
+                                'id': m.id}), 400
+            sources.add(src)
+            tg_ids.append(m.tg_message_id)
+        if len(sources) != 1:
+            return jsonify({'error': 'mixed_sources'}), 400
+        source_chat_id = sources.pop()
+        try:
+            target_cid = int(request.form.get('target_contact_id') or 0)
+        except ValueError:
+            target_cid = 0
+        if not target_cid:
+            return jsonify({'error': 'bad_target'}), 400
+        target = (db.query(Contact)
+                  .filter(Contact.id == target_cid,
+                          Contact.user_id == user_id).first())
+        if not target:
+            return jsonify({'error': 'target_not_found'}), 404
+        target_handles = (db.query(MessengerHandle)
+                          .filter(MessengerHandle.contact_id == target.id)
+                          .all())
+        tg_target = _telegram_reply_handle(target_handles)
+        if tg_target is None:
+            return jsonify({'error': 'target_not_telegram'}), 400
+        try:
+            sent_ids = telegram_bridge.forward_messages_bulk(
+                source_chat_id, tg_ids, tg_target.tg_chat_id)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'error': 'send_failed',
+                            'detail': str(exc)}), 502
+        return jsonify({'ok': True, 'count': len(sent_ids),
+                        'sent_ids': sent_ids})
+
     @app.route('/contacts/telegram.json')
     def contacts_telegram_json():
         """Только Telegram-контакты (с tg_chat_id) — для модалки пересылки."""
@@ -2695,6 +2983,88 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'tg_deleted': tg_deleted,
                         'scope': 'all' if for_all else 'self'})
+
+    @app.route('/messages/<int:message_id>/comments.json')
+    def message_comments(message_id):
+        """Список комментариев к посту канала через linked discussion
+        group. Если сообщение не из канала / нет discussion group —
+        возвращаем available=False, UI покажет «недоступно»."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        msg = db.query(Messages).filter(
+            Messages.id == message_id, Messages.user_id == user_id).first()
+        if not msg or msg.tg_message_id is None:
+            return jsonify({'available': False, 'reason': 'not_telegram',
+                            'items': []})
+        chat_id = _msg_tg_chat_id(db, msg)
+        if not chat_id:
+            return jsonify({'available': False, 'reason': 'no_chat_id',
+                            'items': []})
+        if not telegram_bridge.is_configured():
+            return jsonify({'available': False,
+                            'reason': 'telegram_not_configured',
+                            'items': []})
+        try:
+            data = telegram_bridge.get_comments(chat_id, msg.tg_message_id)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'available': False, 'reason': 'error',
+                            'detail': str(exc), 'items': []})
+        return jsonify({'ok': True, **data})
+
+    @app.route('/comments/media/<int:disc_chat_id>/<int:msg_id>')
+    def comment_media(disc_chat_id, msg_id):
+        """Отдаёт бинарник медиа конкретного комментария. Через Telethon
+        download_media. Без кэша на диске — комментариев потенциально
+        много и они меняются; экономим место. Если пользователь часто
+        пересматривает один и тот же тред, браузер закэширует на свой
+        стороне."""
+        if not session.get('user_id'):
+            return 'Unauthorized', 401
+        from data import telegram_bridge
+        if not telegram_bridge.is_configured():
+            return 'Not Found', 404
+        try:
+            data, mime = telegram_bridge.download_comment_media(
+                disc_chat_id, msg_id)
+        except Exception:  # noqa: BLE001
+            return 'Not Found', 404
+        if not data:
+            return 'Not Found', 404
+        return Response(data, mimetype=mime or 'application/octet-stream')
+
+    @app.route('/messages/<int:message_id>/comments', methods=['POST'])
+    def message_comments_send(message_id):
+        """Отправить новый комментарий к посту канала."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        msg = db.query(Messages).filter(
+            Messages.id == message_id, Messages.user_id == user_id).first()
+        if not msg or msg.tg_message_id is None:
+            return jsonify({'error': 'not_telegram'}), 400
+        chat_id = _msg_tg_chat_id(db, msg)
+        if not chat_id or not telegram_bridge.is_configured():
+            return jsonify({'error': 'unavailable'}), 502
+        text = (request.form.get('text') or '').strip()
+        if not text:
+            return jsonify({'error': 'empty'}), 400
+        try:
+            info = telegram_bridge.get_comments(
+                chat_id, msg.tg_message_id, 1)
+            if not info.get('available'):
+                return jsonify({'error': 'no_discussion'}), 400
+            result = telegram_bridge.send_comment(
+                info['discussion_chat_id'],
+                info['top_msg_id'], text)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'error': 'send_failed',
+                            'detail': str(exc)}), 502
+        return jsonify({'ok': True, 'id': result.get('id')})
 
     @app.route('/messages/<int:message_id>/pin', methods=['POST'])
     def message_pin(message_id):

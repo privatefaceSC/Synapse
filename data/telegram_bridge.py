@@ -256,8 +256,11 @@ def _media_kind(msg):
     document, поэтому общий `document`-файл проверяем последним."""
     if getattr(msg, "photo", None):
         return "image"
-    if getattr(msg, "video_note", None) or getattr(msg, "video", None) \
-            or getattr(msg, "gif", None):
+    # Кружочек (video note) — отдельный вид: в UI рисуем круглым плеером,
+    # поэтому отличаем его от обычного видео ещё на приёме.
+    if getattr(msg, "video_note", None):
+        return "video_note"
+    if getattr(msg, "video", None) or getattr(msg, "gif", None):
         return "video"
     if getattr(msg, "voice", None):
         return "voice"
@@ -278,6 +281,8 @@ def _media_placeholder(kind, msg):
     return {
         "image": "📷 Фото",
         "video": "🎬 Видео",
+        # Кружок показываем «голым» — без текстовой подписи в бабле.
+        "video_note": "",
         "voice": "🎤 Голосовое сообщение",
         "audio": "🎵 Аудио",
         "sticker": "🩷 Стикер",
@@ -354,6 +359,11 @@ async def _maybe_fetch_avatar(chat, chat_id):
 async def _handle_message(event):
     # Пропускаем чаты из архива и с выключенными уведомлениями.
     if event.chat_id in _skip_chat_ids:
+        return
+    # Discussion-группы каналов (комментарии) — не создаём из них
+    # отдельный Contact в БД. См. _known_discussion_groups.
+    _ensure_discussion_groups_loaded()
+    if event.chat_id in _known_discussion_groups:
         return
     msg = event.message
     is_out = bool(getattr(msg, "out", False))
@@ -894,6 +904,10 @@ async def _activate():
 
 
 async def _startup():
+    # Подгружаем известные discussion-группы каналов из БД, чтобы
+    # события о новых комментариях (приходящие сразу после старта моста)
+    # не успели породить «призрачный» Contact.
+    _ensure_discussion_groups_loaded()
     client = await _get_client()
     if await client.is_user_authorized():
         _state["authorized"] = True
@@ -1110,6 +1124,298 @@ def get_common_chats(chat_id, limit=20):
     return data
 
 
+# Множество id linked discussion-групп, известных нам как «комментарии
+# к каналу». Заполняется лениво при каждом get_comments/send_comment
+# и из БД при первом обращении (см. _ensure_discussion_groups_loaded).
+# Используется в _handle_message чтобы НЕ создавать в БД Contact с именем
+# «Комментарии» — события из этих групп игнорируются.
+_known_discussion_groups = set()
+_discussion_groups_loaded = False
+
+
+def _persist_discussion_group(chat_id):
+    """Пишем id discussion-группы в БД. После рестарта Flask in-memory
+    set обнуляется, а эта запись остаётся — следующее событие из этой
+    группы (новый комментарий от другого пользователя, например)
+    корректно игнорируется."""
+    try:
+        from data import db_sessions
+        from data.discussion_groups import DiscussionGroup
+        db = db_sessions.create_session()
+        try:
+            existing = (db.query(DiscussionGroup)
+                        .filter(DiscussionGroup.tg_chat_id == int(chat_id))
+                        .first())
+            if existing is None:
+                db.add(DiscussionGroup(tg_chat_id=int(chat_id)))
+                db.commit()
+        finally:
+            db.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _ensure_discussion_groups_loaded():
+    """Lazy-load discussion-групп из БД в in-memory set. Делается один
+    раз за процесс — флаг `_discussion_groups_loaded`. Заодно чистим
+    уже сохранённые в контактах «призрачные» чаты — на случай если
+    Contact успел создаться до того, как мы зарегистрировали группу
+    (или до этого фикса)."""
+    global _discussion_groups_loaded
+    if _discussion_groups_loaded:
+        return
+    try:
+        from data import db_sessions
+        from data.discussion_groups import DiscussionGroup
+        db = db_sessions.create_session()
+        try:
+            chat_ids = [int(d.tg_chat_id)
+                        for d in db.query(DiscussionGroup).all()]
+        finally:
+            db.close()
+        for cid in chat_ids:
+            _known_discussion_groups.add(cid)
+            try:
+                _cleanup_discussion_contact(cid)
+            except Exception:  # noqa: BLE001
+                pass
+    except Exception:  # noqa: BLE001
+        pass
+    _discussion_groups_loaded = True
+
+
+def _cleanup_discussion_contact(chat_id):
+    """Если для discussion-группы канала уже успел создаться Contact
+    (комментарий пришёл echo'м до того, как мы пометили чат как
+    discussion) — удаляем его и связанные handle'ы/сообщения.
+    Контакт пользователя, который реально вёл переписку в этой группе
+    как в обычной (а не через комментарии), мы здесь тоже снесём — это
+    рассматривается как редкий edge-case."""
+    from data import db_sessions
+    from data.contacts import Contact, MessengerHandle
+    from data.users import Messages as _Messages
+    db = db_sessions.create_session()
+    try:
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.tg_chat_id == int(chat_id))
+                   .all())
+        contact_ids = {h.contact_id for h in handles}
+        if handles:
+            handle_ids = [h.id for h in handles]
+            db.query(_Messages).filter(
+                _Messages.handle_id.in_(handle_ids)).delete(
+                synchronize_session=False)
+            db.query(MessengerHandle).filter(
+                MessengerHandle.id.in_(handle_ids)).delete(
+                synchronize_session=False)
+        for cid in contact_ids:
+            remaining = (db.query(MessengerHandle)
+                         .filter(MessengerHandle.contact_id == cid)
+                         .count())
+            if remaining == 0:
+                db.query(Contact).filter(Contact.id == cid).delete(
+                    synchronize_session=False)
+        db.commit()
+    finally:
+        db.close()
+
+
+def _comment_media_kind(m):
+    """Какого вида медиа в комментарии (грубо: photo / video / file / None)."""
+    if getattr(m, "photo", None):
+        return "photo"
+    if getattr(m, "video", None):
+        return "video"
+    if getattr(m, "voice", None):
+        return "voice"
+    if getattr(m, "media", None):
+        return "file"
+    return None
+
+
+async def _get_comments(chat_id, msg_id, limit):
+    """Получает комментарии к посту канала через linked discussion group.
+    Возвращает dict: {available, items, discussion_chat_id, top_msg_id}.
+    Если у канала нет discussion group — available=False."""
+    from telethon.tl.functions.messages import GetDiscussionMessageRequest
+    from telethon.tl.types import PeerChannel
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    peer = await client.get_input_entity(int(chat_id))
+    try:
+        res = await client(GetDiscussionMessageRequest(
+            peer=peer, msg_id=int(msg_id)))
+    except Exception as exc:  # noqa: BLE001
+        # Канал без discussion group — Telegram возвращает ошибку.
+        return {"available": False, "reason": "no_discussion",
+                "detail": str(exc), "items": []}
+    if not getattr(res, "messages", None):
+        return {"available": False, "reason": "no_discussion", "items": []}
+    top = res.messages[0]
+    # peer_id у top — PeerChannel(channel_id) discussion-группы.
+    disc_peer = getattr(top, "peer_id", None)
+    if isinstance(disc_peer, PeerChannel):
+        disc_id = int(disc_peer.channel_id)
+    else:
+        disc_id = int(getattr(disc_peer, "channel_id", 0)
+                       or getattr(disc_peer, "chat_id", 0)
+                       or getattr(disc_peer, "user_id", 0))
+    # Запоминаем discussion-группу — события из неё не должны рождать
+    # «призрачный» Contact в нашей БД. Дублируем в БД, чтобы пережило
+    # рестарт Flask (in-memory set обнуляется).
+    if disc_id:
+        _known_discussion_groups.add(disc_id)
+        _persist_discussion_group(disc_id)
+    items = []
+    try:
+        async for m in client.iter_messages(disc_peer,
+                                             reply_to=top.id,
+                                             limit=int(limit)):
+            sender = await m.get_sender() if m.from_id else None
+            author = "Аноним"
+            if sender is not None:
+                author = (" ".join(filter(None, [
+                    getattr(sender, "first_name", None),
+                    getattr(sender, "last_name", None),
+                ])) or getattr(sender, "username", None)
+                    or getattr(sender, "title", None) or "Аноним")
+            media_kind = _comment_media_kind(m)
+            items.append({
+                "id": int(m.id),
+                "author": author,
+                "text": m.text or "",
+                "date": m.date.isoformat() if m.date else None,
+                "outgoing": bool(getattr(m, "out", False)),
+                "has_media": media_kind is not None,
+                "media_kind": media_kind,
+            })
+    except Exception:  # noqa: BLE001
+        # iter_messages может упасть если у канала нет comments вообще.
+        pass
+    # iter_messages возвращает свежие сверху — переворачиваем, чтобы
+    # старые шли первыми (как в самом Telegram).
+    items.reverse()
+    return {"available": True, "items": items,
+            "discussion_chat_id": disc_id, "top_msg_id": int(top.id)}
+
+
+def get_comments(chat_id, msg_id, limit=50):
+    """Sync-обёртка для _get_comments."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    data = _call(_get_comments(chat_id, msg_id, limit), timeout=60)
+    # Если discussion-группа известна, заодно подчистим «фейковый»
+    # Contact (если он уже успел создаться до того, как мы её узнали).
+    disc_id = data.get("discussion_chat_id") if isinstance(data, dict) else None
+    if disc_id:
+        try:
+            _cleanup_discussion_contact(disc_id)
+        except Exception:  # noqa: BLE001
+            pass
+    return data
+
+
+async def _download_comment_media(disc_chat_id, msg_id):
+    """Скачивает медиа конкретного комментария по (disc_chat_id, msg_id).
+    Возвращает (bytes, mime) или (None, None)."""
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    msg = await client.get_messages(int(disc_chat_id), ids=int(msg_id))
+    if msg is None or msg.media is None:
+        return None, None
+    data = await client.download_media(msg, file=bytes)
+    mime = "image/jpeg"
+    doc = getattr(msg, "document", None)
+    if doc is not None and getattr(doc, "mime_type", None):
+        mime = doc.mime_type
+    return data, mime
+
+
+def download_comment_media(disc_chat_id, msg_id):
+    """Sync-обёртка."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_download_comment_media(disc_chat_id, msg_id), timeout=60)
+
+
+async def _send_comment(discussion_chat_id, top_msg_id, text):
+    """Отправляет комментарий в linked discussion group канала."""
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    sent = await client.send_message(int(discussion_chat_id), text,
+                                      reply_to=int(top_msg_id))
+    return {"id": int(sent.id) if sent else None}
+
+
+def send_comment(discussion_chat_id, top_msg_id, text):
+    """Sync-обёртка для _send_comment."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    # Запоминаем discussion-группу ДО отправки, чтобы echo собственного
+    # сообщения не успел породить Contact. Параллельно сохраняем
+    # в БД — для устойчивости к рестарту.
+    _known_discussion_groups.add(int(discussion_chat_id))
+    _persist_discussion_group(int(discussion_chat_id))
+    result = _call(_send_comment(discussion_chat_id, top_msg_id, text),
+                   timeout=30)
+    # И на всякий случай чистим, если он всё-таки успел создаться.
+    try:
+        _cleanup_discussion_contact(int(discussion_chat_id))
+    except Exception:  # noqa: BLE001
+        pass
+    return result
+
+
+async def _fetch_profile_photos(chat_id, limit):
+    """Возвращает список id всех фотографий профиля пользователя/чата.
+    Бинарник каждого скачивается лениво по запросу — здесь только id."""
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    try:
+        entity = await client.get_entity(int(chat_id))
+    except Exception:  # noqa: BLE001
+        return []
+    photos = []
+    async for ph in client.iter_profile_photos(entity, limit=int(limit)):
+        photos.append({"id": int(getattr(ph, "id", 0))})
+    return photos
+
+
+def fetch_profile_photos(chat_id, limit=20):
+    """Sync-обёртка."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_fetch_profile_photos(chat_id, limit), timeout=60)
+
+
+async def _download_profile_photo_by_id(chat_id, photo_id):
+    """Скачивает конкретное фото профиля по id (через iter_profile_photos
+    с лимитом 50 — обычно у людей сильно меньше)."""
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    try:
+        entity = await client.get_entity(int(chat_id))
+    except Exception:  # noqa: BLE001
+        return None
+    async for ph in client.iter_profile_photos(entity, limit=50):
+        if int(getattr(ph, "id", 0)) == int(photo_id):
+            return await client.download_media(ph, file=bytes)
+    return None
+
+
+def download_profile_photo_by_id(chat_id, photo_id):
+    """Sync-обёртка."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_download_profile_photo_by_id(chat_id, photo_id),
+                 timeout=120)
+
+
 async def _resolve_entity_info(chat_id):
     """Получает имя/тип Telegram-сущности (пользователь / группа / канал)
     по её peer-id. Нужно, чтобы создавать локальный Contact для
@@ -1177,7 +1483,8 @@ def set_block(chat_id, block=True):
     _call(_set_block(chat_id, bool(block)), timeout=30)
 
 
-async def _send_message(chat_id, text, reply_to=None, parse_mode=None):
+async def _send_message(chat_id, text, reply_to=None, parse_mode=None,
+                         silent=False, schedule=None):
     client = await _get_client()
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
@@ -1186,60 +1493,68 @@ async def _send_message(chat_id, text, reply_to=None, parse_mode=None):
     # При parse_mode='md' Telethon снимает markdown-метки из text — мы
     # кладём в self-sent тот же plain, что web-panel уже сохранила в БД,
     # чтобы дедупликация по тексту совпала.
-    if parse_mode == 'md':
-        try:
-            from telethon.extensions import markdown as _tg_md
-            plain, _ = _tg_md.parse(text)
-            _recent_self_sent.append((int(chat_id), plain, time.monotonic()))
-        except Exception:  # noqa: BLE001
+    # Для scheduled-сообщений echo не придёт сразу, поэтому в self_sent
+    # не пишем — оно нужно только для дедупа реального события.
+    if not schedule:
+        if parse_mode == 'md':
+            try:
+                from telethon.extensions import markdown as _tg_md
+                plain, _ = _tg_md.parse(text)
+                _recent_self_sent.append((int(chat_id), plain, time.monotonic()))
+            except Exception:  # noqa: BLE001
+                _recent_self_sent.append((int(chat_id), text, time.monotonic()))
+        else:
             _recent_self_sent.append((int(chat_id), text, time.monotonic()))
-    else:
-        _recent_self_sent.append((int(chat_id), text, time.monotonic()))
-    sent = await client.send_message(int(chat_id), text,
-                                      reply_to=reply_to,
-                                      parse_mode=parse_mode)
+    kwargs = {"reply_to": reply_to, "parse_mode": parse_mode}
+    if silent:
+        kwargs["silent"] = True
+    if schedule:
+        kwargs["schedule"] = schedule
+    sent = await client.send_message(int(chat_id), text, **kwargs)
     return getattr(sent, "id", None)
 
 
-def send_message(chat_id, text, reply_to=None, parse_mode=None):
+def send_message(chat_id, text, reply_to=None, parse_mode=None,
+                  silent=False, schedule=None):
     """Отправляет текст в Telegram-чат от имени владельца аккаунта.
     `reply_to` — id telegram-сообщения, на которое отвечаем (или None).
-    `parse_mode='md'` — Telethon разберёт markdown (**bold**, ||spoiler||,
-    `code`, [text](url)) и пошлёт entities в Telegram. None — plain text.
-    Возвращает id отправленного сообщения."""
+    `parse_mode='md'` — Telethon разберёт markdown.
+    `silent=True` — сообщение без уведомления у получателя.
+    `schedule=datetime` — отправить отложенно (попадёт в Scheduled).
+    Возвращает id отправленного сообщения (для scheduled — id будущего)."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_send_message(chat_id, text, reply_to, parse_mode))
+    return _call(_send_message(chat_id, text, reply_to, parse_mode,
+                                silent, schedule))
 
 
 async def _send_file(chat_id, data, filename, caption, reply_to=None,
-                     parse_mode=None):
+                     parse_mode=None, silent=False, schedule=None):
     client = await _get_client()
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     import io
     bio = io.BytesIO(data)
     bio.name = filename or "file"
-    sent = await client.send_file(int(chat_id), bio,
-                                   caption=caption or None,
-                                   reply_to=reply_to,
-                                   parse_mode=parse_mode)
+    kwargs = {"caption": caption or None, "reply_to": reply_to,
+              "parse_mode": parse_mode}
+    if silent:
+        kwargs["silent"] = True
+    if schedule:
+        kwargs["schedule"] = schedule
+    sent = await client.send_file(int(chat_id), bio, **kwargs)
     return getattr(sent, "id", None)
 
 
 def send_file(chat_id, data, filename, caption="", reply_to=None,
-              parse_mode=None):
-    """Отправляет файл (фото/видео/документ) в Telegram-чат.
-    `reply_to` — id telegram-сообщения, на которое отвечаем (или None).
-    Возвращает id отправленного Telegram-сообщения — нужно вызывающему,
-    чтобы СРАЗУ создать локальную запись Messages+Attachment (echo от
-    Telethon для собственных media приходит не всегда, и на него
-    рассчитывать нельзя). От дубля при возможном echo защищает
-    anti-dupe в `_handle_message` по `tg_message_id`."""
+              parse_mode=None, silent=False, schedule=None):
+    """Отправляет файл в Telegram-чат. Поддерживает `silent` (без звука)
+    и `schedule` (отложенная отправка — datetime). Возвращает id
+    отправленного Telegram-сообщения."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_send_file(chat_id, data, filename, caption, reply_to,
-                             parse_mode),
+                             parse_mode, silent, schedule),
                  timeout=120)
 
 
@@ -1416,6 +1731,56 @@ def forward_message(source_chat_id, message_id, target_chat_id):
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_forward_message(source_chat_id, message_id, target_chat_id))
+
+
+async def _forward_messages_bulk(source_chat_id, message_ids, target_chat_id):
+    """Массовый forward — одним запросом гонит несколько сообщений.
+    Telegram сохраняет порядок и группирует медиа-альбомы. Локально для
+    каждого результата пишем Messages+Attachment, чтобы UI не ждал echo."""
+    client = await _get_client()
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    ids = [int(x) for x in message_ids]
+    res = await client.forward_messages(
+        int(target_chat_id), ids, int(source_chat_id))
+    msgs = res if isinstance(res, list) else [res]
+    sent_ids = []
+    try:
+        chat = await client.get_entity(int(target_chat_id))
+        chat_key = _chat_title(chat)
+        from telethon.tl.types import (User as _TgUser, Chat as _TgChat,
+                                       Channel as _TgChannel)
+        if isinstance(chat, _TgUser):
+            chat_type = "private"
+        elif isinstance(chat, _TgChannel) and not getattr(
+                chat, "megagroup", False):
+            chat_type = "channel"
+        else:
+            chat_type = "group"
+        for msg in msgs:
+            if msg is None:
+                continue
+            sent_ids.append(int(getattr(msg, "id", 0)))
+            try:
+                kind = _media_kind(msg)
+                text = getattr(msg, "message", None) or ""
+                if text or kind is not None:
+                    await _persist_telegram_message(
+                        msg, int(target_chat_id), chat, chat_key,
+                        chat_type, True, "Вы", kind, text)
+            except Exception as exc:  # noqa: BLE001
+                _state["error"] = f"forward_bulk_persist: {exc}"
+    except Exception as exc:  # noqa: BLE001
+        _state["error"] = f"forward_bulk_entity: {exc}"
+    return sent_ids
+
+
+def forward_messages_bulk(source_chat_id, message_ids, target_chat_id):
+    """Sync-обёртка: пересылает список сообщений одним вызовом."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_forward_messages_bulk(
+        source_chat_id, message_ids, target_chat_id), timeout=120)
 
 
 async def _send_reaction(chat_id, message_id, emoji):
