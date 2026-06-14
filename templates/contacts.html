@@ -548,6 +548,13 @@
         transition: background 0.25s ease, box-shadow 0.18s ease;
     }
     .bubble:hover { box-shadow: 0 4px 14px rgba(16,24,40,.10); }
+    .bubble.media-only {
+        background: transparent !important;
+        box-shadow: none !important;
+        border: none !important;
+        padding: 0 !important;
+    }
+    .bubble.media-only:hover { box-shadow: none !important; }
     .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; word-break: break-word; }
     /* Форматирование текста из Telegram entities. */
     .bubble .text b, .bubble .text strong { font-weight: 700; }
@@ -1018,6 +1025,14 @@
         display: block; margin-top: 8px; max-width: 280px; max-height: 360px;
         border-radius: 14px; background: #000;
     }
+    .bubble.media-only .media-img,
+    .bubble.media-only .media-video,
+    .bubble.media-only .media-audio,
+    .bubble.media-only .media-file,
+    .bubble.media-only .sticker-img,
+    .bubble.media-only .media-vnote-wrap {
+        margin-top: 0;
+    }
     /* Видеосообщение-«кружочек» (Telegram video note): круглый плеер без
        нативной панели управления — клик по кружку играет/паузит. */
     .bubble .media-vnote-wrap {
@@ -1037,6 +1052,10 @@
     }
     .bubble .media-audio {
         display: block; margin-top: 8px; max-width: 280px; height: 40px;
+    }
+    .bubble.media-only .media-audio {
+        width: min(280px, 72vw);
+        border-radius: 999px;
     }
     .bubble .media-file {
         display: inline-flex; align-items: center; gap: 9px; margin-top: 8px;
@@ -2118,12 +2137,13 @@
                     <div id="messages-container">
                         {% if messages %}
                             {% for m in messages %}
+                            {% set media_only = m.media and not m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
                             <div class="bubble-row{% if m.outgoing %} outgoing{% endif %}{% if m.pinned_at %} pinned{% endif %}"
                                  data-message-id="{{ m.id }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
                                  {% if m.edit_history %}data-edits-json='{{ m.edit_history|tojson|forceescape }}'{% endif %}>
                                 <span class="source">{% if m.outgoing %}Вы{% else %}{{ m.messenger_name }} · {{ m.display_author or m.sender }}{% endif %}</span>
-                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}">
+                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}">
                                     {% if m.deleted_at %}
                                     <div class="deleted-banner"
                                          title="Сообщение удалили в мессенджере, но мы успели сохранить">
@@ -3964,6 +3984,10 @@
     let navToken = 0;
     let pollTimer = null;
     let typingTimer = null;
+    let currentMessages = [];
+    let olderMessages = [];
+    let hasOlderMessages = false;
+    let loadingOlderMessages = false;
     let pendingFile = null;   // выбранный, но ещё не отправленный файл
     let pendingUrl = null;    // objectURL превью (для revoke)
     let replyTarget = null;   // сообщение, на которое отвечаем (reply)
@@ -4075,6 +4099,18 @@
         el.scrollTop = el.scrollHeight;
     }
 
+    function combinedMessages() {
+        const seen = new Set();
+        const out = [];
+        olderMessages.concat(currentMessages).forEach(m => {
+            const key = String(m.id || (m.time + m.text));
+            if (seen.has(key)) return;
+            seen.add(key);
+            out.push(m);
+        });
+        return out;
+    }
+
     /** Скролл в самый низ + автоподтяжка пока в ленте догружаются
      *  изображения/видео (их размеры приходят асинхронно, после первого
      *  scrollTop = scrollHeight реальная высота продолжает расти и пол
@@ -4091,6 +4127,26 @@
 
         let forcePeriod = true;
         let active = true;
+        let mo = null;
+        let ro = null;
+
+        const cleanup = () => {
+            active = false;
+            if (mo) try { mo.disconnect(); } catch (e) {}
+            if (ro) try { ro.disconnect(); } catch (e) {}
+            c.removeEventListener('scroll', cancelOnUserScroll);
+            c.removeEventListener('wheel', cancelOnUserIntent);
+            c.removeEventListener('touchstart', cancelOnUserIntent);
+        };
+
+        const cancelOnUserIntent = () => {
+            forcePeriod = false;
+        };
+
+        const cancelOnUserScroll = () => {
+            if (!forcePeriod) return;
+            if (!isNearBottom()) cleanup();
+        };
 
         const forceBump = () => {
             if (!active) return;
@@ -4098,9 +4154,12 @@
             else if (isNearBottom()) scrollToBottom();
         };
 
+        c.addEventListener('scroll', cancelOnUserScroll, {passive: true});
+        c.addEventListener('wheel', cancelOnUserIntent, {passive: true});
+        c.addEventListener('touchstart', cancelOnUserIntent, {passive: true});
+
         // 1) MutationObserver — на любые изменения DOM в контейнере
         //    (картинки получили src, добавились новые ноды и т.п.).
-        let mo = null;
         try {
             mo = new MutationObserver(forceBump);
             mo.observe(c, {childList: true, subtree: true,
@@ -4109,7 +4168,6 @@
 
         // 2) ResizeObserver — на изменение размеров контейнера
         //    (картинки/видео получили natural dimensions → высота выросла).
-        let ro = null;
         try {
             ro = new ResizeObserver(forceBump);
             ro.observe(c);
@@ -4127,11 +4185,7 @@
 
         // Выход из force-режима через 2с — дальше уважаем ручной скролл.
         setTimeout(() => { forcePeriod = false; }, 2000);
-        setTimeout(() => {
-            active = false;
-            if (mo) try { mo.disconnect(); } catch (e) {}
-            if (ro) try { ro.disconnect(); } catch (e) {}
-        }, 5000);
+        setTimeout(cleanup, 5000);
     }
 
     // FAB «к низу» — появляется при отскролле наверх и копит счётчик новых
@@ -4452,11 +4506,17 @@
                     ).join('')
                   + '</div>'
                 : '';
+            const mediaOnly = (m.attachments || []).length
+                && !m.deleted
+                && !m.reply_to
+                && !m.fwd_from
+                && !m.text
+                && !m.text_html;
             return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}${m.pinned ? ' pinned' : ''}"
                 data-message-id="${m.id}"
                 data-messenger="${escapeHtml(m.messenger_name || '')}"${editsJson}>
                 <span class="source">${source}</span>
-                <div class="bubble${m.deleted ? ' deleted' : ''}">
+                <div class="bubble${m.deleted ? ' deleted' : ''}${mediaOnly ? ' media-only' : ''}">
                     ${delBanner}
                     ${fwdHtml}
                     ${reply}
@@ -4669,7 +4729,8 @@
                     m => !prevIds.has(m.id || (m.time + m.text))).length;
                 const c = document.getElementById('messages-container');
                 if (c) {
-                    c.innerHTML = renderMessages(data.messages);
+                    currentMessages = data.messages || [];
+                    c.innerHTML = renderMessages(combinedMessages());
                     // Анимируем только bubble тех сообщений, которых не было
                     // в прошлом тике (а не вся лента при каждой перерисовке).
                     if (prevIds.size > 0) {
@@ -4691,6 +4752,52 @@
         } catch (e) { /* network blip */ }
     }
 
+    async function loadOlderMessages() {
+        if (!hasOlderMessages || loadingOlderMessages || currentContactId == null) {
+            return;
+        }
+        const all = combinedMessages();
+        if (!all.length || !all[0].id) return;
+        const c = document.getElementById('messages-container');
+        if (!c) return;
+        loadingOlderMessages = true;
+        const oldHeight = c.scrollHeight;
+        const oldTop = c.scrollTop;
+        try {
+            const sep = messengerQuery() ? '&' : '?';
+            const url = '/contacts/' + currentContactId + '/messages.json'
+                + messengerQuery() + sep + 'before_id='
+                + encodeURIComponent(all[0].id);
+            const r = await fetch(url, {credentials: 'same-origin'});
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || String(data.contact && data.contact.id)
+                    !== String(currentContactId)) {
+                return;
+            }
+            const incoming = data.messages || [];
+            if (incoming.length) {
+                olderMessages = incoming.concat(olderMessages);
+                hasOlderMessages = !!data.has_older;
+                c.innerHTML = renderMessages(combinedMessages());
+                c.scrollTop = c.scrollHeight - oldHeight + oldTop;
+                reapplyTopicHighlight();
+            } else {
+                hasOlderMessages = false;
+            }
+        } catch (e) {
+            // Тихо оставляем текущую ленту; следующая попытка будет при скролле.
+        } finally {
+            loadingOlderMessages = false;
+        }
+    }
+
+    document.addEventListener('scroll', function(e) {
+        const c = e.target && e.target.id === 'messages-container'
+            ? e.target : null;
+        if (!c || c.scrollTop > 80) return;
+        loadOlderMessages();
+    }, true);
+
     let currentTopicId = null;  // выбранная тема форум-чата (null = «все темы / не форум»)
 
     async function openContact(id, messenger, opts) {
@@ -4701,6 +4808,10 @@
         currentTopicId = opts.topicId
             ? String(opts.topicId) : null;
         lastSig = '';
+        currentMessages = [];
+        olderMessages = [];
+        hasOlderMessages = false;
+        loadingOlderMessages = false;
         clearPreview();  // сбрасываем выбранный файл при смене чата
         clearReply();    // и отменяем начатый ответ
         if (!opts.keepPendingForward) {
@@ -4721,6 +4832,9 @@
             if (token !== navToken) return;
             // Сервер мог выбрать мессенджер по умолчанию.
             currentMessenger = data.contact.messenger || null;
+            currentMessages = data.messages || [];
+            olderMessages = [];
+            hasOlderMessages = !!data.has_older;
             paint(data.contact, data.messages);
             renderForwardBanner();
             // Закреплённые «темы чата» — если уже анализировались, сразу
@@ -4798,6 +4912,10 @@
         opts = opts || {};
         currentContactId = null;
         lastSig = '';
+        currentMessages = [];
+        olderMessages = [];
+        hasOlderMessages = false;
+        loadingOlderMessages = false;
         stopPolling();
         clearForward();
         setActiveRow(null);

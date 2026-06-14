@@ -1488,9 +1488,11 @@ def register_routes(app: Flask) -> None:
         msgs = (
             db.query(Messages)
             .filter(Messages.handle_id.in_(handle_ids))
-            .order_by(Messages.created_at.asc().nullsfirst(), Messages.id.asc())
+            .order_by(Messages.created_at.desc().nullslast(), Messages.id.desc())
+            .limit(80)
             .all()
         )
+        msgs = list(reversed(msgs))
         for m in msgs:
             m.display_author = display_author(m.sender, contact.display_name)
         _attach_media(db, msgs)
@@ -1560,13 +1562,23 @@ def register_routes(app: Flask) -> None:
             topic_id_int = int(topic_id_q) if topic_id_q else None
         except ValueError:
             topic_id_int = None
-        msgs_q = (db.query(Messages)
-                  .filter(Messages.handle_id.in_(handle_ids))
-                  .order_by(Messages.created_at.asc().nullsfirst(),
-                            Messages.id.asc()))
+        page_limit = 80
+        try:
+            before_id = int(request.args.get('before_id') or 0)
+        except ValueError:
+            before_id = 0
+        msgs_q = db.query(Messages).filter(Messages.handle_id.in_(handle_ids))
         if topic_id_int is not None:
             msgs_q = msgs_q.filter(Messages.tg_topic_id == topic_id_int)
-        msgs = msgs_q.all()
+        if before_id:
+            msgs_q = msgs_q.filter(Messages.id < before_id)
+        msgs_desc = (msgs_q
+                     .order_by(Messages.created_at.desc().nullslast(),
+                               Messages.id.desc())
+                     .limit(page_limit + 1)
+                     .all())
+        has_older = len(msgs_desc) > page_limit
+        msgs = list(reversed(msgs_desc[:page_limit]))
         # Для того чтобы не обновлять страницу каждый раз как пришло уведомление
         if is_forum and topic_id_int is not None and tg_chat_handle is not None:
             # У форум-чата у каждой темы свой last_read — иначе открытие
@@ -1588,7 +1600,7 @@ def register_routes(app: Flask) -> None:
         # Для форум-чата отдаём темы LLM ТОЛЬКО открытой темы форума:
         # соседние темы форума имеют свои закрепы. Для обычного чата —
         # как раньше (topic_id=None).
-        saved_topics = _topics_with_time(
+        saved_topics = [] if before_id else _topics_with_time(
             db, _get_topics(db, contact_id, topic_id_int), handle_ids)
         return jsonify({
             'contact': {
@@ -1610,6 +1622,8 @@ def register_routes(app: Flask) -> None:
                 'notifications_muted': bool(contact.muted),
             },
             'topics': saved_topics,
+            'has_older': has_older,
+            'older_before_id': msgs[0].id if msgs else None,
             'messages': [
                 {'id': m.id, 'sender': m.sender, 'text': m.visible_text,
                  'text_html': m.visible_text_html,
