@@ -1141,13 +1141,16 @@ def _persist_discussion_group(chat_id):
     try:
         from data import db_sessions
         from data.discussion_groups import DiscussionGroup
+        from data.telegram_ids import chat_id_variants
+        variants = chat_id_variants(chat_id)
+        store_id = min((x for x in variants if x > 0), default=int(chat_id))
         db = db_sessions.create_session()
         try:
             existing = (db.query(DiscussionGroup)
-                        .filter(DiscussionGroup.tg_chat_id == int(chat_id))
+                        .filter(DiscussionGroup.tg_chat_id == int(store_id))
                         .first())
             if existing is None:
-                db.add(DiscussionGroup(tg_chat_id=int(chat_id)))
+                db.add(DiscussionGroup(tg_chat_id=int(store_id)))
                 db.commit()
         finally:
             db.close()
@@ -1167,6 +1170,7 @@ def _ensure_discussion_groups_loaded():
     try:
         from data import db_sessions
         from data.discussion_groups import DiscussionGroup
+        from data.telegram_ids import chat_id_variants
         db = db_sessions.create_session()
         try:
             chat_ids = [int(d.tg_chat_id)
@@ -1174,9 +1178,11 @@ def _ensure_discussion_groups_loaded():
         finally:
             db.close()
         for cid in chat_ids:
-            _known_discussion_groups.add(cid)
+            variants = chat_id_variants(cid)
+            _known_discussion_groups.update(variants)
             try:
-                _cleanup_discussion_contact(cid)
+                for v in variants:
+                    _cleanup_discussion_contact(v)
             except Exception:  # noqa: BLE001
                 pass
     except Exception:  # noqa: BLE001
@@ -1193,11 +1199,13 @@ def _cleanup_discussion_contact(chat_id):
     рассматривается как редкий edge-case."""
     from data import db_sessions
     from data.contacts import Contact, MessengerHandle
+    from data.telegram_ids import chat_id_variants
     from data.users import Messages as _Messages
     db = db_sessions.create_session()
     try:
+        variants = chat_id_variants(chat_id)
         handles = (db.query(MessengerHandle)
-                   .filter(MessengerHandle.tg_chat_id == int(chat_id))
+                   .filter(MessengerHandle.tg_chat_id.in_(variants))
                    .all())
         contact_ids = {h.contact_id for h in handles}
         if handles:
@@ -1265,7 +1273,8 @@ async def _get_comments(chat_id, msg_id, limit):
     # «призрачный» Contact в нашей БД. Дублируем в БД, чтобы пережило
     # рестарт Flask (in-memory set обнуляется).
     if disc_id:
-        _known_discussion_groups.add(disc_id)
+        from data.telegram_ids import chat_id_variants
+        _known_discussion_groups.update(chat_id_variants(disc_id))
         _persist_discussion_group(disc_id)
     items = []
     try:
@@ -1357,7 +1366,8 @@ def send_comment(discussion_chat_id, top_msg_id, text):
     # Запоминаем discussion-группу ДО отправки, чтобы echo собственного
     # сообщения не успел породить Contact. Параллельно сохраняем
     # в БД — для устойчивости к рестарту.
-    _known_discussion_groups.add(int(discussion_chat_id))
+    from data.telegram_ids import chat_id_variants
+    _known_discussion_groups.update(chat_id_variants(discussion_chat_id))
     _persist_discussion_group(int(discussion_chat_id))
     result = _call(_send_comment(discussion_chat_id, top_msg_id, text),
                    timeout=30)

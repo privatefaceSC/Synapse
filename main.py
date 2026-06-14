@@ -88,11 +88,39 @@ def _enrich_with_last_message(db, contacts):
     return contacts
 
 
+def _filter_discussion_contacts(db, contacts):
+    """Убирает из UI контакты linked discussion-групп каналов.
+
+    Комментарии живут в отдельной шторке под конкретным постом, а не как
+    самостоятельные чаты в левом списке.
+    """
+    if not contacts:
+        return contacts
+    try:
+        from data.contacts import MessengerHandle
+        from data.discussion_groups import DiscussionGroup
+        from data.telegram_ids import chat_id_variants
+        disc_ids = set()
+        for (tg_chat_id,) in db.query(DiscussionGroup.tg_chat_id).all():
+            disc_ids.update(chat_id_variants(tg_chat_id))
+        if not disc_ids:
+            return contacts
+        contact_ids = {cid for (cid,) in db.query(
+            MessengerHandle.contact_id
+        ).filter(MessengerHandle.tg_chat_id.in_(disc_ids)).all()}
+        if not contact_ids:
+            return contacts
+        return [c for c in contacts if c.id not in contact_ids]
+    except Exception:  # noqa: BLE001
+        return contacts
+
+
 def _telegram_reply_handle(handles):
     """Возвращает Telegram-личность контакта с известным chat_id (на неё
     можно отправить ответ из веб-панели), либо None."""
     for h in handles:
-        if h.messenger_name == 'Telegram' and h.tg_chat_id is not None:
+        if (h.messenger_name == 'Telegram' and h.tg_chat_id is not None
+                and h.tg_chat_type != 'channel'):
             return h
     return None
 
@@ -1296,6 +1324,7 @@ def register_routes(app: Flask) -> None:
             .filter(Contact.user_id == user_id)
             .all()
         )
+        contacts = _filter_discussion_contacts(db, contacts)
         _enrich_with_last_message(db, contacts)
         return render_template('contacts.html', contacts=contacts,
                                selected=None, selected_handles=[], messages=None)
@@ -1312,6 +1341,7 @@ def register_routes(app: Flask) -> None:
             .filter(Contact.user_id == user_id)
             .all()
         )
+        contacts = _filter_discussion_contacts(db, contacts)
         _enrich_with_last_message(db, contacts)
         return jsonify({'contacts': [
             {
@@ -1351,6 +1381,7 @@ def register_routes(app: Flask) -> None:
         user_id = session['user_id']
 
         contacts = db.query(Contact).filter(Contact.user_id == user_id).all()
+        contacts = _filter_discussion_contacts(db, contacts)
         contact_by_id = {c.id: c for c in contacts}
         matched_by_name = {c.id for c in contacts
                            if q in (c.display_name or '').lower()}
@@ -1425,6 +1456,7 @@ def register_routes(app: Flask) -> None:
             .filter(Contact.user_id == user_id)
             .all()
         )
+        contacts = _filter_discussion_contacts(db, contacts)
         _enrich_with_last_message(db, contacts)
         _avatar_for(contact)
 
@@ -1440,15 +1472,19 @@ def register_routes(app: Flask) -> None:
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
         ]
+        tg_chat_handle = next((h for h in m_handles
+                               if h.messenger_name == 'Telegram'
+                               and h.tg_chat_id is not None), None)
         _tg_handle, _notif_handle = _reply_channel(m_handles)
         can_reply = _tg_handle is not None or _notif_handle is not None
         reply_via = ('telegram' if _tg_handle is not None
                      else ('notif' if _notif_handle is not None else None))
-        is_group = (_tg_handle is not None and _tg_handle.tg_chat_type == 'group')
+        is_group = (tg_chat_handle is not None
+                    and tg_chat_handle.tg_chat_type == 'group')
         # Тип чата нужен фронту, чтобы под канальными постами появлялась
         # кнопка «💬 Комментарии» (linked discussion group).
-        chat_type = (_tg_handle.tg_chat_type
-                     if _tg_handle is not None else None)
+        chat_type = (tg_chat_handle.tg_chat_type
+                     if tg_chat_handle is not None else None)
         msgs = (
             db.query(Messages)
             .filter(Messages.handle_id.in_(handle_ids))
@@ -1466,6 +1502,7 @@ def register_routes(app: Flask) -> None:
                                selected_handles=selected_handles, messages=msgs,
                                can_reply=can_reply, reply_via=reply_via,
                                is_group=is_group, chat_type=chat_type,
+                               notifications_muted=bool(contact.muted),
                                messengers=available, current_messenger=current_m)
 
     @app.route('/contacts/<int:contact_id>/messages.json')
@@ -1492,22 +1529,26 @@ def register_routes(app: Flask) -> None:
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
         ]
+        tg_chat_handle = next((h for h in m_handles
+                               if h.messenger_name == 'Telegram'
+                               and h.tg_chat_id is not None), None)
         _tg_handle, _notif_handle = _reply_channel(m_handles)
         can_reply = _tg_handle is not None or _notif_handle is not None
         reply_via = ('telegram' if _tg_handle is not None
                      else ('notif' if _notif_handle is not None else None))
-        is_group = (_tg_handle is not None and _tg_handle.tg_chat_type == 'group')
-        is_forum = bool(_tg_handle is not None and _tg_handle.tg_is_forum)
+        is_group = (tg_chat_handle is not None
+                    and tg_chat_handle.tg_chat_type == 'group')
+        is_forum = bool(tg_chat_handle is not None and tg_chat_handle.tg_is_forum)
         # Lazy-определение форума: для tg-группы/канала, где tg_is_forum
         # ещё не выставлен (handle создан до фичи или это новый чат),
         # один раз дёргаем MTProto. Кэш `_forum_topics_cache` на 60 сек
         # защищает от повторных вызовов — последующие открытия мгновенные.
-        if (not is_forum and _tg_handle is not None
-                and _tg_handle.tg_chat_type in ('group', 'channel')):
+        if (not is_forum and tg_chat_handle is not None
+                and tg_chat_handle.tg_chat_type in ('group', 'channel')):
             from data import telegram_bridge as _tg
-            live = _tg.fetch_forum_topics(_tg_handle.tg_chat_id)
+            live = _tg.fetch_forum_topics(tg_chat_handle.tg_chat_id)
             if live:
-                _tg_handle.tg_is_forum = True
+                tg_chat_handle.tg_is_forum = True
                 db.commit()
                 is_forum = True
         _avatar_for(contact)
@@ -1527,11 +1568,11 @@ def register_routes(app: Flask) -> None:
             msgs_q = msgs_q.filter(Messages.tg_topic_id == topic_id_int)
         msgs = msgs_q.all()
         # Для того чтобы не обновлять страницу каждый раз как пришло уведомление
-        if is_forum and topic_id_int is not None and _tg_handle is not None:
+        if is_forum and topic_id_int is not None and tg_chat_handle is not None:
             # У форум-чата у каждой темы свой last_read — иначе открытие
             # одной темы тушит «непрочитанное» во всех остальных.
             from data.topic_reads import mark_topic_read
-            mark_topic_read(db, _tg_handle.id, topic_id_int)
+            mark_topic_read(db, tg_chat_handle.id, topic_id_int)
         else:
             contact.last_read_at = datetime.now()
         db.commit()
@@ -1564,8 +1605,9 @@ def register_routes(app: Flask) -> None:
                 'topic_id': topic_id_int,
                 'messengers': available,
                 'messenger': current_m,
-                'chat_type': (_tg_handle.tg_chat_type
-                              if _tg_handle is not None else None),
+                'chat_type': (tg_chat_handle.tg_chat_type
+                              if tg_chat_handle is not None else None),
+                'notifications_muted': bool(contact.muted),
             },
             'topics': saved_topics,
             'messages': [
@@ -1613,7 +1655,22 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'not_found'}), 404
         text = (request.form.get('text') or '').strip()
         upload = request.files.get('file')
-        if not text and upload is None:
+        forward_raw = (request.form.get('forward_message_id') or '').strip()
+        forward_source = None
+        if forward_raw:
+            try:
+                forward_id = int(forward_raw)
+            except (TypeError, ValueError):
+                forward_id = None
+            if forward_id:
+                forward_source = db.query(Messages).filter(
+                    Messages.id == forward_id,
+                    Messages.user_id == user_id).first()
+            if forward_source is None:
+                return jsonify({'error': 'forward_not_found'}), 404
+            if forward_source.tg_message_id is None:
+                return jsonify({'error': 'forward_not_telegram'}), 400
+        if not text and upload is None and forward_source is None:
             return jsonify({'error': 'empty'}), 400
 
         # Распознаём markdown: если текст содержит **жирный**, ||спойлер||,
@@ -1673,6 +1730,8 @@ def register_routes(app: Flask) -> None:
             tg_handle, notif_handle = _reply_channel(handles)
         if tg_handle is None and notif_handle is None:
             return jsonify({'error': 'no_reply_channel'}), 400
+        if forward_source is not None and tg_handle is None:
+            return jsonify({'error': 'target_not_telegram'}), 400
 
         # Reply-to: id нашей Messages, на которую отвечаем. Подходит, если в
         # том же чате (handle совпадает с тем, через который шлём).
@@ -1698,6 +1757,30 @@ def register_routes(app: Flask) -> None:
 
         # --- Telegram (Telethon) — текст или медиа, с reply_to ---
         if tg_handle is not None:
+            forwarded_tg_id = None
+            if forward_source is not None:
+                source_chat_id = _msg_tg_chat_id(db, forward_source)
+                if source_chat_id is None:
+                    return jsonify({'error': 'no_source_chat'}), 400
+                try:
+                    forwarded_tg_id = telegram_bridge.forward_message(
+                        source_chat_id, forward_source.tg_message_id,
+                        tg_handle.tg_chat_id)
+                except Exception as exc:  # noqa: BLE001
+                    return jsonify({'error': 'send_failed',
+                                    'detail': str(exc)}), 502
+                if forwarded_tg_id is not None:
+                    forwarded_local = db.query(Messages).filter(
+                        Messages.user_id == user_id,
+                        Messages.handle_id == tg_handle.id,
+                        Messages.tg_message_id == forwarded_tg_id).first()
+                    if forwarded_local is not None:
+                        reply_target = forwarded_local
+                    reply_kw_tg['reply_to'] = forwarded_tg_id
+                if not text and upload is None:
+                    return jsonify({'ok': True, 'forwarded': True,
+                                    'forward_tg_message_id': forwarded_tg_id})
+
             if upload is not None:
                 data = upload.read()
                 if not data:
@@ -1783,7 +1866,8 @@ def register_routes(app: Flask) -> None:
                 )
                 db.add(att)
                 db.commit()
-                return jsonify({'ok': True, 'media': True, 'id': msg.id})
+                return jsonify({'ok': True, 'media': True, 'id': msg.id,
+                                'forwarded': forward_source is not None})
 
             # parse_mode передаём ТОЛЬКО когда нашли markdown — иначе
             # ломаются унаследованные моки в тестах, у которых сигнатура
@@ -1838,7 +1922,8 @@ def register_routes(app: Flask) -> None:
             # уже отформатированную версию.
             return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
                             'text': md_plain, 'text_html': md_html,
-                            'reply_to': reply_quote})
+                            'reply_to': reply_quote,
+                            'forwarded': forward_source is not None})
 
         # --- Notification reply через Android (только текст) ---
         if upload is not None:
@@ -2858,6 +2943,7 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         user_id = session['user_id']
         contacts = db.query(Contact).filter(Contact.user_id == user_id).all()
+        contacts = _filter_discussion_contacts(db, contacts)
         ids = [c.id for c in contacts]
         handles_by_contact = {}
         if ids:
@@ -2868,7 +2954,7 @@ def register_routes(app: Flask) -> None:
                 handles_by_contact.setdefault(h.contact_id, []).append(h)
         out = []
         for c in contacts:
-            if c.id not in handles_by_contact:
+            if _telegram_reply_handle(handles_by_contact.get(c.id, [])) is None:
                 continue
             _avatar_for(c)
             out.append({

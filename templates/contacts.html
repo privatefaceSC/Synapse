@@ -1160,28 +1160,44 @@
         background: #232831; border-color: #2f3540;
     }
     [data-bs-theme="dark"] .composer-preview .cp-name { color: #e5e7eb; }
-    /* Плашка «отвечаем на сообщение» над полем ввода. */
-    .composer-reply {
+    /* Плашки над полем ввода: ответ и подготовленная пересылка. */
+    .composer-reply,
+    .composer-forward {
         width: 100%; display: flex; align-items: center; gap: 9px;
         padding: 6px 11px; background: #eef2f7;
         border-left: 3px solid #3b82f6; border-radius: 8px; font-size: 13px;
     }
+    .composer-forward {
+        background: #ecfdf5; border-left-color: #16a34a;
+    }
     .composer-reply .cr-body { flex: 1 1 auto; min-width: 0; }
-    .composer-reply .cr-author { font-weight: 600; color: #2563eb; display: block; }
-    .composer-reply .cr-text {
+    .composer-forward .cf-body { flex: 1 1 auto; min-width: 0; }
+    .composer-reply .cr-author,
+    .composer-forward .cf-title {
+        font-weight: 600; color: #2563eb; display: block;
+    }
+    .composer-forward .cf-title { color: #15803d; }
+    .composer-reply .cr-text,
+    .composer-forward .cf-text {
         color: #5b6472; display: block; overflow: hidden;
         text-overflow: ellipsis; white-space: nowrap;
     }
-    .composer-reply .cr-remove {
+    .composer-reply .cr-remove,
+    .composer-forward .cf-remove {
         flex: 0 0 auto; border: 0; background: transparent; cursor: pointer;
         font-size: 20px; color: #9ca3af; line-height: 1; padding: 2px 7px;
     }
-    .composer-reply .cr-remove:hover { color: #ef4444; }
-    [data-bs-theme="dark"] .composer-reply {
+    .composer-reply .cr-remove:hover,
+    .composer-forward .cf-remove:hover { color: #ef4444; }
+    [data-bs-theme="dark"] .composer-reply,
+    [data-bs-theme="dark"] .composer-forward {
         background: #232831; border-left-color: #60a5fa;
     }
+    [data-bs-theme="dark"] .composer-forward { border-left-color: #22c55e; }
     [data-bs-theme="dark"] .composer-reply .cr-author { color: #93c5fd; }
-    [data-bs-theme="dark"] .composer-reply .cr-text { color: #9aa3b2; }
+    [data-bs-theme="dark"] .composer-forward .cf-title { color: #86efac; }
+    [data-bs-theme="dark"] .composer-reply .cr-text,
+    [data-bs-theme="dark"] .composer-forward .cf-text { color: #9aa3b2; }
     .composer textarea {
         flex: 1 1 auto; resize: none; border: 1px solid #d6dae2;
         border-radius: 12px; padding: 9px 13px; font-size: 14px;
@@ -1264,6 +1280,29 @@
     [data-bs-theme="dark"] .composer textarea {
         background: #232831; border-color: #2f3540; color: #e5e7eb;
     }
+    .channel-notice {
+        position: sticky; bottom: -18px;
+        margin: 10px -22px -18px; padding: 12px 22px 14px;
+        background: rgba(247,248,251,.94); backdrop-filter: blur(10px);
+        border-top: 1px solid #e6e8ee; border-radius: 0 0 16px 16px;
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; color: #5b6472; font-size: 13.5px;
+    }
+    .channel-notice .cn-title {
+        display: block; color: #1f2733; font-weight: 700; margin-bottom: 2px;
+    }
+    .channel-notice .cn-text { min-width: 0; }
+    .channel-notice .cn-toggle {
+        flex: 0 0 auto; border: 0; border-radius: 999px;
+        padding: 9px 14px; background: #2563eb; color: #fff;
+        font-size: 13px; font-weight: 700; cursor: pointer;
+    }
+    .channel-notice .cn-toggle:hover { background: #1d4ed8; }
+    [data-bs-theme="dark"] .channel-notice {
+        background: rgba(19,21,25,.94); border-top-color: #242832;
+        color: #9aa3b2;
+    }
+    [data-bs-theme="dark"] .channel-notice .cn-title { color: #e5e7eb; }
     .lightbox {
         display: flex; position: fixed; inset: 0; z-index: 1080;
         background: rgba(0, 0, 0, .92); align-items: center; justify-content: center;
@@ -1649,7 +1688,7 @@
     .cmt-backdrop { display: none; }
     .cmt-modal {
         position: fixed; inset: 0;
-        background: #1e2533; color: #f8fafc;
+        background: #0f172a; color: #f8fafc;
         transform: translateX(40px);
         opacity: 0; pointer-events: none;
         transition: transform .22s ease, opacity .22s ease;
@@ -1662,11 +1701,16 @@
     }
     .cmt-modal[hidden] { display: none; }
     .cmt-head {
-        padding: 12px 16px; border-bottom: 1px solid #2a3346;
+        padding: 10px 16px; border-bottom: 1px solid #1f2937;
         display: flex; align-items: center; gap: 10px;
-        background: #1e2533;
+        background: rgba(15,23,42,.96); backdrop-filter: blur(12px);
     }
-    .cmt-title { font-size: 16px; font-weight: 700; flex: 1; color: #fff; }
+    .cmt-head-text { flex: 1 1 auto; min-width: 0; }
+    .cmt-title { font-size: 16px; font-weight: 700; color: #fff; }
+    .cmt-subtitle {
+        margin-top: 2px; font-size: 12px; color: #94a3b8;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .cmt-close {
         width: 38px; height: 38px; border-radius: 50%;
         border: none; background: transparent; cursor: pointer;
@@ -1676,47 +1720,64 @@
     .cmt-close:hover { background: rgba(255,255,255,.08); }
     .cmt-close svg { width: 22px; height: 22px; }
     .cmt-list {
-        flex: 1 1 auto; overflow-y: auto; padding: 12px 16px;
-        display: flex; flex-direction: column; gap: 8px;
+        flex: 1 1 auto; overflow-y: auto; padding: 18px 16px;
+        display: flex; flex-direction: column; gap: 10px;
         max-width: 760px; width: 100%; margin: 0 auto;
     }
     .cmt-list-wrap {
         flex: 1 1 auto; overflow-y: auto; display: flex;
-        background: #0f172a;
+        background:
+            radial-gradient(circle at top left, rgba(37,99,235,.13), transparent 280px),
+            #0f172a;
     }
     .cmt-media {
-        display: block; margin: 4px 0 6px;
-        max-width: 100%; max-height: 280px; border-radius: 8px;
+        display: block; margin: 6px 0 7px;
+        max-width: 100%; max-height: 320px; border-radius: 10px;
         cursor: pointer; background: #0f172a;
     }
+    video.cmt-media, audio.cmt-media { width: 100%; }
     .cmt-media-loading {
         font-size: 12px; color: #94a3b8; padding: 4px 0;
     }
     .cmt-empty {
-        text-align: center; color: #94a3b8; padding: 24px;
+        align-self: center; text-align: center; color: #94a3b8;
+        padding: 18px 22px; margin-top: 20px;
+        border: 1px solid rgba(148,163,184,.18);
+        border-radius: 14px; background: rgba(15,23,42,.72);
     }
     .cmt-item {
-        background: #2a3346; border-radius: 10px; padding: 8px 12px;
+        align-self: flex-start; max-width: min(560px, 86%);
+        background: #1f2937; border-radius: 16px 16px 16px 5px;
+        padding: 8px 11px 7px;
+        box-shadow: 0 6px 18px rgba(0,0,0,.16);
     }
-    .cmt-item.outgoing { background: #1e3a8a; }
+    .cmt-item.outgoing {
+        align-self: flex-end; background: #1e3a8a;
+        border-radius: 16px 16px 5px 16px;
+    }
     .cmt-author {
         font-size: 12px; font-weight: 700; color: #93c5fd;
-        margin-bottom: 2px;
+        margin-bottom: 3px;
     }
     .cmt-item.outgoing .cmt-author { color: #fff; }
     .cmt-text {
         font-size: 14px; color: #f1f5f9;
-        white-space: pre-wrap; word-wrap: break-word;
+        line-height: 1.42; white-space: pre-wrap; word-wrap: break-word;
     }
-    .cmt-date { font-size: 11px; color: #94a3b8; margin-top: 4px; }
+    .cmt-date {
+        font-size: 11px; color: #94a3b8; margin-top: 4px;
+        text-align: right; font-variant-numeric: tabular-nums;
+    }
+    .cmt-item.outgoing .cmt-date { color: rgba(255,255,255,.72); }
     .cmt-input {
-        display: flex; gap: 8px; padding: 12px 14px;
-        border-top: 1px solid #2a3346;
+        display: flex; gap: 8px; padding: 12px 16px;
+        border-top: 1px solid #1f2937;
+        background: rgba(15,23,42,.96); backdrop-filter: blur(12px);
     }
     .cmt-input textarea {
-        flex: 1; resize: none; border-radius: 10px;
-        border: 1px solid #2a3346; background: #2a3346; color: #f1f5f9;
-        padding: 8px 12px; font-size: 14px;
+        flex: 1; resize: none; border-radius: 16px;
+        border: 1px solid #334155; background: #1f2937; color: #f1f5f9;
+        padding: 10px 13px; font-size: 14px;
         font-family: inherit; line-height: 1.4;
     }
     .cmt-input textarea:focus {
@@ -1724,11 +1785,73 @@
     }
     .cmt-send {
         background: #3b82f6; color: #fff; border: none;
-        border-radius: 10px; padding: 0 16px; font-size: 16px;
+        border-radius: 50%; width: 42px; height: 42px; padding: 0;
+        font-size: 16px; flex: 0 0 42px;
         cursor: pointer; transition: background .12s ease;
     }
     .cmt-send:hover { background: #2563eb; }
     .cmt-send:disabled { opacity: .5; cursor: not-allowed; }
+    .comments-thread {
+        height: 100%; display: flex; flex-direction: column;
+        background:
+            radial-gradient(circle at top left, rgba(37,99,235,.12), transparent 280px),
+            #0f172a; color: #f8fafc;
+        border-radius: 16px; overflow: hidden;
+    }
+    .comments-thread-head {
+        flex: 0 0 auto; padding: 10px 16px;
+        border-bottom: 1px solid #1f2937;
+        background: rgba(15,23,42,.96); backdrop-filter: blur(12px);
+        display: flex; align-items: center; gap: 10px;
+    }
+    .comments-back {
+        width: 38px; height: 38px; border-radius: 50%;
+        border: none; background: transparent; color: #cbd5e1;
+        display: inline-flex; align-items: center; justify-content: center;
+        cursor: pointer; flex: 0 0 auto;
+    }
+    .comments-back:hover { background: rgba(255,255,255,.08); }
+    .comments-back svg { width: 22px; height: 22px; }
+    .comments-thread-title {
+        min-width: 0; flex: 1 1 auto;
+    }
+    .comments-thread-title .main {
+        font-size: 16px; font-weight: 800; color: #fff;
+    }
+    .comments-thread-title .sub {
+        margin-top: 2px; font-size: 12px; color: #94a3b8;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .comments-thread-list {
+        flex: 1 1 auto; overflow-y: auto; padding: 16px;
+        display: flex; flex-direction: column; gap: 10px;
+        max-width: 780px; width: 100%; margin: 0 auto;
+    }
+    .comments-root-post {
+        align-self: stretch; background: rgba(30,41,59,.92);
+        border: 1px solid rgba(148,163,184,.18);
+        border-radius: 14px; padding: 12px 13px;
+        box-shadow: 0 10px 26px rgba(0,0,0,.18);
+    }
+    .comments-root-label {
+        font-size: 12px; font-weight: 800; color: #93c5fd;
+        margin-bottom: 5px;
+    }
+    .comments-root-source {
+        font-size: 13px; font-weight: 700; color: #e5e7eb;
+        margin-bottom: 4px;
+    }
+    .comments-root-text {
+        color: #f8fafc; font-size: 14px; line-height: 1.45;
+        white-space: pre-wrap; word-break: break-word;
+    }
+    .comments-root-time {
+        text-align: right; color: #94a3b8; font-size: 11px;
+        margin-top: 6px; font-variant-numeric: tabular-nums;
+    }
+    .comments-thread-input {
+        flex: 0 0 auto;
+    }
 
     /* --- Режим выбора сообщений (для массовой пересылки) --- */
     .selection-bar {
@@ -2095,6 +2218,7 @@
                           data-contact-id="{{ selected.id }}"
                           data-messenger="{{ current_messenger or '' }}"
                           data-reply-via="{{ reply_via or '' }}">
+                        <div class="composer-forward" id="composer-forward" hidden></div>
                         <div class="composer-reply" id="composer-reply" hidden></div>
                         <div class="composer-preview" id="composer-preview" hidden></div>
                         {% if reply_via == 'telegram' %}
@@ -2121,6 +2245,17 @@
                         </button>
                         <div class="emoji-picker" id="emoji-picker" hidden></div>
                     </form>
+                    {% elif chat_type == 'channel' %}
+                    <div class="channel-notice" data-contact-id="{{ selected.id }}">
+                        <div class="cn-text">
+                            <span class="cn-title">Канал только для чтения</span>
+                            Комментировать можно под отдельными постами.
+                        </div>
+                        <button type="button" class="cn-toggle"
+                                data-muted="{{ '1' if notifications_muted else '0' }}">
+                            {% if notifications_muted %}🔔 Включить уведомления{% else %}🔕 Выключить уведомления{% endif %}
+                        </button>
+                    </div>
                     {% endif %}
                 {% else %}
                     <div class="empty-state">
@@ -2219,7 +2354,10 @@
                 <path d="M12 19l-7-7 7-7"></path>
             </svg>
         </button>
-        <div class="cmt-title">Комментарии</div>
+        <div class="cmt-head-text">
+            <div class="cmt-title">Комментарии</div>
+            <div class="cmt-subtitle" id="cmt-subtitle"></div>
+        </div>
     </div>
     <div class="cmt-list-wrap">
         <div class="cmt-list" id="cmt-list">
@@ -2276,6 +2414,9 @@
         btn.type = 'button';
         btn.className = 'channel-comments-btn';
         btn.dataset.msgId = msgId;
+        const textEl = bubble.querySelector('.text');
+        const preview = textEl ? textEl.textContent.trim() : '';
+        if (preview) btn.dataset.preview = preview.slice(0, 180);
         btn.innerHTML = COMMENTS_SVG + '<span>Комментарии</span>';
         bubble.appendChild(btn);
         row.dataset.commentsBtn = '1';
@@ -2317,28 +2458,31 @@
         e.preventDefault();
         e.stopPropagation();
         if (window.__skillwoodOpenComments) {
-            window.__skillwoodOpenComments(btn.dataset.msgId);
+            window.__skillwoodOpenComments(btn.dataset.msgId,
+                                           btn.dataset.preview || '');
         }
     });
 })();
 </script>
 
 <script>
-// --- Модал комментариев под постом канала. Открывается через
-//     window.__skillwoodOpenComments(messageId). Делает GET на
-//     /messages/<id>/comments.json для списка и POST для новых. ---
+// --- Обсуждение поста канала внутри правой панели чата. Открывается через
+//     window.__skillwoodOpenComments(messageId). Левый список контактов
+//     остаётся видимым, а feed временно превращается в thread view:
+//     первый bubble — сам пост, ниже комментарии. ---
 (function() {
-    const backdrop = document.getElementById('cmt-backdrop');
-    const modal = document.getElementById('cmt-modal');
-    const list = document.getElementById('cmt-list');
-    const closeBtn = document.getElementById('cmt-close');
-    const form = document.getElementById('cmt-input');
-    const ta = document.getElementById('cmt-text');
-    const sendBtn = document.getElementById('cmt-send');
-    if (!backdrop || !modal || !list || !form || !ta) return;
+    const feed = document.getElementById('feed');
+    if (!feed) return;
 
     let currentMsgId = null;
     let currentDiscChat = null;
+    let currentPostPreview = '';
+    let currentReturnContact = null;
+    let currentRootPost = null;
+    let threadList = null;
+    let threadForm = null;
+    let threadTa = null;
+    let threadSend = null;
 
     function esc(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -2347,21 +2491,25 @@
         }[c]));
     }
 
-    function close() {
-        modal.classList.remove('open');
-        backdrop.classList.remove('open');
-        backdrop.setAttribute('aria-hidden', 'true');
-        setTimeout(() => {
-            if (!modal.classList.contains('open')) {
-                modal.hidden = true; list.innerHTML = '';
-            }
-        }, 220);
+    function closeThread() {
+        const cid = currentReturnContact;
+        const mid = currentMsgId;
         currentMsgId = null;
         currentDiscChat = null;
+        currentPostPreview = '';
+        currentReturnContact = null;
+        currentRootPost = null;
+        if (cid && window.openContactSPA) {
+            window.openContactSPA(cid, null, {scrollToMessageId: mid});
+        } else {
+            window.location = '/contacts';
+        }
     }
 
     async function load() {
-        list.innerHTML = '<div class="cmt-empty">Загрузка…</div>';
+        if (!threadList) return;
+        threadList.innerHTML = renderRootPost()
+            + '<div class="cmt-empty">Загрузка…</div>';
         try {
             const r = await fetch('/messages/' + currentMsgId
                                    + '/comments.json',
@@ -2380,17 +2528,18 @@
                 } else if (d.detail) {
                     msg += ' ' + d.detail;
                 }
-                list.innerHTML = '<div class="cmt-empty">'
-                    + esc(msg) + '</div>';
-                if (form) form.style.display = 'none';
+                threadList.innerHTML = renderRootPost()
+                    + '<div class="cmt-empty">' + esc(msg) + '</div>';
+                if (threadForm) threadForm.style.display = 'none';
+                updateThreadSubtitle(0);
                 return;
             }
-            if (form) form.style.display = '';
+            if (threadForm) threadForm.style.display = '';
             currentDiscChat = d.discussion_chat_id || null;
             renderItems(d.items || []);
         } catch (err) {
-            list.innerHTML = '<div class="cmt-empty">'
-                + 'Сеть недоступна.</div>';
+            threadList.innerHTML = renderRootPost()
+                + '<div class="cmt-empty">Сеть недоступна.</div>';
         }
     }
 
@@ -2402,19 +2551,86 @@
         } catch (e) { return ''; }
     }
 
+    function updateThreadSubtitle(count) {
+        const sub = feed.querySelector('[data-comments-subtitle]');
+        if (!sub) return;
+        const n = Number(count || 0);
+        sub.textContent = n
+            ? n + ' комментариев'
+            : 'Комментариев пока нет';
+    }
+
+    function collectRootPost(messageId, fallbackText) {
+        const row = document.querySelector(
+            '.bubble-row[data-message-id="' + messageId + '"]');
+        if (!row) {
+            return {
+                source: 'Пост канала',
+                text: fallbackText || '',
+                media: '',
+                time: '',
+            };
+        }
+        const sourceEl = row.querySelector('.source');
+        const textEl = row.querySelector('.bubble .text');
+        const timeEl = row.querySelector('.time-row .time');
+        const media = Array.from(row.querySelectorAll(
+            '.sticker-img, .media-img, .media-video, .media-video-note, '
+            + '.media-audio, .media-file'
+        )).map(el => el.outerHTML).join('');
+        return {
+            source: sourceEl ? sourceEl.textContent.trim() : 'Пост канала',
+            text: textEl ? textEl.textContent.trim() : (fallbackText || ''),
+            media: media,
+            time: timeEl ? timeEl.textContent.trim() : '',
+        };
+    }
+
+    function renderRootPost() {
+        const p = currentRootPost || {};
+        return '<div class="comments-root-post">'
+            + '<div class="comments-root-label">Пост автора</div>'
+            + '<div class="comments-root-source">'
+            + esc(p.source || 'Пост канала') + '</div>'
+            + (p.media || '')
+            + (p.text
+                ? '<div class="comments-root-text">' + esc(p.text) + '</div>'
+                : '')
+            + (p.time
+                ? '<div class="comments-root-time">' + esc(p.time) + '</div>'
+                : '')
+            + '</div>';
+    }
+
     function renderItems(items) {
+        updateThreadSubtitle(items.length);
         if (!items.length) {
-            list.innerHTML = '<div class="cmt-empty">'
+            threadList.innerHTML = renderRootPost()
+                + '<div class="cmt-empty">'
                 + 'Пока нет комментариев. Будьте первым.</div>';
             return;
         }
-        list.innerHTML = items.map(c => {
+        threadList.innerHTML = renderRootPost() + items.map(c => {
             const time = fmtTime(c.date);
-            const mediaHtml = (c.has_media && currentDiscChat)
-                ? '<img class="cmt-media" src="/comments/media/'
-                  + currentDiscChat + '/' + c.id
-                  + '" loading="lazy" alt="">'
-                : '';
+            let mediaHtml = '';
+            if (c.has_media && currentDiscChat) {
+                const url = '/comments/media/' + currentDiscChat + '/' + c.id;
+                if (c.media_kind === 'video') {
+                    mediaHtml = '<video class="cmt-media" src="' + url
+                        + '" controls preload="metadata"></video>';
+                } else if (c.media_kind === 'voice'
+                        || c.media_kind === 'audio') {
+                    mediaHtml = '<audio class="cmt-media" src="' + url
+                        + '" controls preload="none"></audio>';
+                } else if (c.media_kind === 'file') {
+                    mediaHtml = '<a class="media-file" href="' + url
+                        + '" download><span class="file-ico">📎</span>'
+                        + '<span class="file-name">Файл</span></a>';
+                } else {
+                    mediaHtml = '<img class="cmt-media" src="' + url
+                        + '" loading="lazy" alt="">';
+                }
+            }
             return '<div class="cmt-item'
                 + (c.outgoing ? ' outgoing' : '') + '">'
                 + '<div class="cmt-author">'
@@ -2429,50 +2645,89 @@
                 + '</div>';
         }).join('');
         // Прокрутка к низу — свежие комменты внизу.
-        list.scrollTop = list.scrollHeight;
+        threadList.scrollTop = threadList.scrollHeight;
     }
 
-    window.__skillwoodOpenComments = function(messageId) {
+    function renderShell() {
+        feed.innerHTML =
+            '<div class="comments-thread">'
+            + '<div class="comments-thread-head">'
+            + '<button type="button" class="comments-back"'
+            + ' title="Вернуться к посту" aria-label="Вернуться к посту">'
+            + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"'
+            + ' stroke-width="2.4" stroke-linecap="round"'
+            + ' stroke-linejoin="round"><path d="M19 12H5"></path>'
+            + '<path d="M12 19l-7-7 7-7"></path></svg></button>'
+            + '<div class="comments-thread-title">'
+            + '<div class="main">Обсуждение</div>'
+            + '<div class="sub" data-comments-subtitle>'
+            + 'Загрузка комментариев…</div>'
+            + '</div></div>'
+            + '<div class="comments-thread-list" id="comments-thread-list">'
+            + '</div>'
+            + '<form class="cmt-input comments-thread-input"'
+            + ' id="comments-thread-input">'
+            + '<textarea id="comments-thread-text" rows="1"'
+            + ' placeholder="Написать комментарий…"></textarea>'
+            + '<button type="submit" class="cmt-send"'
+            + ' id="comments-thread-send">▶</button>'
+            + '</form></div>';
+        threadList = document.getElementById('comments-thread-list');
+        threadForm = document.getElementById('comments-thread-input');
+        threadTa = document.getElementById('comments-thread-text');
+        threadSend = document.getElementById('comments-thread-send');
+        const back = feed.querySelector('.comments-back');
+        if (back) back.addEventListener('click', closeThread);
+        if (threadTa) {
+            threadTa.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    threadForm.requestSubmit();
+                }
+            });
+            threadTa.addEventListener('input', () => {
+                threadTa.style.height = 'auto';
+                threadTa.style.height = Math.min(
+                    threadTa.scrollHeight, 120) + 'px';
+            });
+            threadTa.focus();
+        }
+        if (threadForm) {
+            threadForm.addEventListener('submit', sendComment);
+        }
+    }
+
+    window.__skillwoodOpenComments = function(messageId, postPreview) {
+        const header = document.querySelector('.feed-header');
         currentMsgId = messageId;
-        ta.value = '';
-        if (form) form.style.display = '';
-        modal.hidden = false;
-        requestAnimationFrame(() => {
-            modal.classList.add('open');
-            backdrop.classList.add('open');
-            backdrop.setAttribute('aria-hidden', 'false');
-        });
+        currentPostPreview = postPreview || '';
+        currentReturnContact = header ? header.dataset.contactId : null;
+        currentRootPost = collectRootPost(messageId, currentPostPreview);
+        renderShell();
         load();
     };
 
-    closeBtn.addEventListener('click', close);
-    backdrop.addEventListener('click', close);
     document.addEventListener('keydown', (e) => {
-        if (modal.hidden) return;
-        if (e.key === 'Escape') close();
-    });
-
-    // Enter в textarea — отправить (Shift+Enter — перенос).
-    ta.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && !e.shiftKey) {
-            e.preventDefault();
-            form.requestSubmit();
+        if (!currentMsgId) return;
+        if (e.key === 'Escape') {
+            closeThread();
         }
     });
 
-    form.addEventListener('submit', async (e) => {
+    async function sendComment(e) {
         e.preventDefault();
         if (!currentMsgId) return;
-        const text = ta.value.trim();
+        const text = (threadTa && threadTa.value || '').trim();
         if (!text) return;
-        sendBtn.disabled = true;
+        if (threadSend) threadSend.disabled = true;
         try {
             const r = await fetch('/messages/' + currentMsgId + '/comments',
                 {method: 'POST', credentials: 'same-origin',
                  body: new URLSearchParams({text})});
             const d = await r.json().catch(() => ({}));
             if (r.ok && d.ok) {
-                ta.value = '';
+                threadTa.value = '';
+                threadTa.style.height = '';
                 // Перезагружаем список: новые могут быть от других людей,
                 // не только наш.
                 load();
@@ -2484,9 +2739,9 @@
                 });
             }
         } catch (err) {} finally {
-            sendBtn.disabled = false;
+            if (threadSend) threadSend.disabled = false;
         }
-    });
+    }
 })();
 </script>
 
@@ -3243,7 +3498,7 @@
             fwdBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
                 closeMenu();
-                openForwardModal(messageId);
+                openForwardModal(messageId, {author: author, text: text});
             });
         }
         const selBtn = menu.querySelector('.select-msg-btn');
@@ -3509,10 +3764,12 @@
     const fwdList = document.getElementById('forward-list');
     let fwdAllContacts = [];
     let fwdMessageIds = [];
+    let fwdPreview = null;
 
     function closeForwardModal() {
         if (fwdModal) fwdModal.classList.remove('open');
         fwdMessageIds = [];
+        fwdPreview = null;
     }
 
     function renderForwardList() {
@@ -3543,13 +3800,14 @@
         }).join('');
     }
 
-    window.openForwardModal = async function(messageIdOrIds) {
+    window.openForwardModal = async function(messageIdOrIds, preview) {
         if (!fwdModal) return;
         // Поддерживаем и единичный id (старый путь из ПКМ-меню), и массив
         // (новый путь — массовая пересылка из режима выбора).
         fwdMessageIds = Array.isArray(messageIdOrIds)
             ? messageIdOrIds.slice()
             : [messageIdOrIds];
+        fwdPreview = preview || null;
         fwdSearch.value = '';
         fwdList.innerHTML = '<div class="fwd-empty">Загрузка…</div>';
         fwdModal.classList.add('open');
@@ -3576,6 +3834,23 @@
             const fd = new FormData();
             fd.append('target_contact_id', cid);
             const isBulk = fwdMessageIds.length > 1;
+            if (!isBulk) {
+                const msgId = fwdMessageIds[0];
+                const preview = fwdPreview
+                    ? {author: fwdPreview.author, text: fwdPreview.text}
+                    : null;
+                closeForwardModal();
+                if (window.__skillwoodExitSelection) {
+                    window.__skillwoodExitSelection();
+                }
+                if (window.__skillwoodPrepareForward) {
+                    await window.__skillwoodPrepareForward(msgId, preview, cid);
+                } else {
+                    alert('Не удалось открыть чат для пересылки.');
+                    row.style.opacity = '';
+                }
+                return;
+            }
             const url = isBulk
                 ? '/messages/forward-bulk'
                 : '/messages/' + fwdMessageIds[0] + '/forward';
@@ -3692,6 +3967,7 @@
     let pendingFile = null;   // выбранный, но ещё не отправленный файл
     let pendingUrl = null;    // objectURL превью (для revoke)
     let replyTarget = null;   // сообщение, на которое отвечаем (reply)
+    let pendingForward = null; // сообщение, выбранное для пересылки через composer
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -4199,8 +4475,27 @@
         }).join('');
     }
 
+    function renderChannelNotice(contact) {
+        const muted = !!(contact && contact.notifications_muted);
+        return `<div class="channel-notice" data-contact-id="${contact.id}">
+            <div class="cn-text">
+                <span class="cn-title">Канал только для чтения</span>
+                Комментировать можно под отдельными постами.
+            </div>
+            <button type="button" class="cn-toggle"
+                    data-muted="${muted ? '1' : '0'}">
+                ${muted ? '🔔 Включить уведомления'
+                        : '🔕 Выключить уведомления'}
+            </button>
+        </div>`;
+    }
+
     function renderComposer(contact) {
-        if (!contact || !contact.can_reply) return '';
+        if (!contact) return '';
+        if (!contact.can_reply) {
+            return contact.chat_type === 'channel'
+                ? renderChannelNotice(contact) : '';
+        }
         const messenger = contact.messenger || 'Telegram';
         const isTg = (contact.reply_via || 'telegram') === 'telegram';
         // Один и тот же placeholder во всех мессенджерах — компактно
@@ -4220,6 +4515,7 @@
                       data-contact-id="${contact.id}"
                       data-messenger="${escapeHtml(contact.messenger || '')}"
                       data-reply-via="${escapeHtml(contact.reply_via || '')}">
+            <div class="composer-forward" id="composer-forward" hidden></div>
             <div class="composer-reply" id="composer-reply" hidden></div>
             <div class="composer-preview" id="composer-preview" hidden></div>
             ${attach}
@@ -4407,6 +4703,9 @@
         lastSig = '';
         clearPreview();  // сбрасываем выбранный файл при смене чата
         clearReply();    // и отменяем начатый ответ
+        if (!opts.keepPendingForward) {
+            clearForward();  // подготовленная пересылка живёт только в целевом чате
+        }
         setActiveRow(id);
         setMobileView('feed');
         const qsParts = [];
@@ -4423,6 +4722,7 @@
             // Сервер мог выбрать мессенджер по умолчанию.
             currentMessenger = data.contact.messenger || null;
             paint(data.contact, data.messages);
+            renderForwardBanner();
             // Закреплённые «темы чата» — если уже анализировались, сразу
             // показываем пин-бар сверху. Сервер их хранит в БД.
             setPinnedTopics(data.topics || []);
@@ -4499,6 +4799,7 @@
         currentContactId = null;
         lastSig = '';
         stopPolling();
+        clearForward();
         setActiveRow(null);
         setMobileView('list');
         feed.innerHTML =
@@ -4706,7 +5007,7 @@
         const btn = form.querySelector('#composer-send');
         if (!ta || !btn) return;
         const text = ta.value.trim();
-        if (!text) return;
+        if (!text && !pendingForward) return;
         const cid = form.dataset.contactId;
         btn.disabled = true;
         try {
@@ -4714,6 +5015,9 @@
             const m = form.dataset.messenger;
             if (m) params.messenger = m;
             if (replyTarget) params.reply_to = replyTarget.id;
+            if (pendingForward) {
+                params.forward_message_id = pendingForward.id;
+            }
             // Подхватываем флаги отправки (без звука / отложенно), которые
             // ПКМ-меню кладёт в form как hidden input'ы.
             const silentEl = form.querySelector(
@@ -4743,6 +5047,7 @@
                     ta.style.height = '';
                     form.classList.remove('has-text');
                     clearReply();
+                    clearForward();
                     const whenText = data.when
                         ? new Date(data.when).toLocaleString('ru-RU')
                         : '';
@@ -4759,7 +5064,7 @@
                 }
                 // queued (notif-путь) — реальное сообщение прилетит поллингом
                 // как только Android отчитается; не дорисовываем оптимистично.
-                if (!data.queued
+                if (!data.queued && data.id
                         && String(cid) === String(currentContactId)) {
                     const c = document.getElementById('messages-container');
                     if (c) {
@@ -4795,6 +5100,10 @@
                     window.__skillwoodResetSendFlags(form);
                 }
                 clearReply();
+                if (data.forwarded) {
+                    clearForward();
+                    pollMessages();
+                }
                 if (data.queued && data.pending_id) {
                     watchPendingReply(data.pending_id);
                 }
@@ -4871,6 +5180,7 @@
         fd.append('text', ta ? ta.value.trim() : '');
         if (form.dataset.messenger) fd.append('messenger', form.dataset.messenger);
         if (replyTarget) fd.append('reply_to', replyTarget.id);
+        if (pendingForward) fd.append('forward_message_id', pendingForward.id);
         // Флаги из ПКМ-меню кнопки отправки (без звука / отложенно).
         const silentEl = form.querySelector(
             'input[name="silent"][type="hidden"]');
@@ -4908,6 +5218,10 @@
                 }
                 clearPreview();
                 clearReply();
+                if (data.forwarded) {
+                    clearForward();
+                    pollMessages();
+                }
             } else {
                 alert('Не удалось отправить файл: '
                       + (data.detail || data.error || ('HTTP ' + r.status)));
@@ -4954,6 +5268,54 @@
         if (box) { box.hidden = true; box.innerHTML = ''; }
     }
 
+    function refreshComposerSendState(form) {
+        if (!form) form = feed.querySelector('#composer');
+        if (!form) return;
+        const ta = form.querySelector('#composer-text');
+        const hasText = !!(ta && ta.value.trim());
+        form.classList.toggle('has-text', hasText || !!pendingForward);
+    }
+
+    function renderForwardBanner() {
+        const box = feed.querySelector('#composer-forward');
+        if (!box) return;
+        if (!pendingForward) {
+            box.hidden = true;
+            box.innerHTML = '';
+            refreshComposerSendState();
+            return;
+        }
+        box.innerHTML =
+            '<div class="cf-body">'
+            + '<span class="cf-title">Пересылаем · '
+            + escapeHtml(pendingForward.author || 'сообщение') + '</span>'
+            + '<span class="cf-text">'
+            + escapeHtml(pendingForward.text || '📎 Вложение') + '</span>'
+            + '</div>'
+            + '<button type="button" class="cf-remove" '
+            + 'title="Отменить пересылку">×</button>';
+        box.hidden = false;
+        refreshComposerSendState();
+    }
+
+    function clearForward() {
+        pendingForward = null;
+        renderForwardBanner();
+    }
+
+    window.__skillwoodPrepareForward = async function(messageId, preview,
+                                                      targetContactId) {
+        pendingForward = {
+            id: messageId,
+            author: (preview && preview.author) || 'Сообщение',
+            text: (preview && preview.text) || '📎 Вложение',
+        };
+        await openContact(targetContactId, null, {keepPendingForward: true});
+        renderForwardBanner();
+        const ta = feed.querySelector('#composer-text');
+        if (ta) ta.focus();
+    };
+
     // --- Ответ на конкретное сообщение (reply) ---
     function renderReplyBanner() {
         const box = feed.querySelector('#composer-reply');
@@ -4995,8 +5357,42 @@
             clearPreview();
         } else if (e.target.closest('.cr-remove')) {
             clearReply();
+        } else if (e.target.closest('.cf-remove')) {
+            clearForward();
         }
     });
+
+    feed.addEventListener('click', async function(e) {
+        const btn = e.target.closest('.channel-notice .cn-toggle');
+        if (!btn) return;
+        const box = btn.closest('.channel-notice');
+        const cid = box && box.dataset.contactId;
+        if (!cid) return;
+        btn.disabled = true;
+        try {
+            const r = await fetch('/contacts/' + cid + '/mute', {
+                method: 'POST',
+                credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok || !d.ok) {
+                alert('Не удалось изменить уведомления: '
+                      + (d.error || 'HTTP ' + r.status));
+                return;
+            }
+            btn.dataset.muted = d.muted ? '1' : '0';
+            btn.textContent = d.muted
+                ? '🔔 Включить уведомления'
+                : '🔕 Выключить уведомления';
+            if (window.refreshContactsNow) window.refreshContactsNow();
+        } catch (err) {
+            alert('Сеть недоступна — уведомления не изменены.');
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
     // Клик по «Переслано от …» — SPA-переход в чат с оригинальным автором.
     feed.addEventListener('click', function(e) {
         const link = e.target.closest('.fwd-link');
@@ -5538,7 +5934,7 @@
         ta.style.height = 'auto';
         ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
         const form = ta.closest('#composer');
-        if (form) form.classList.toggle('has-text', !!ta.value.trim());
+        refreshComposerSendState(form);
     });
     // Enter — отправить, Shift+Enter — перенос строки.
     feed.addEventListener('keydown', function(e) {
