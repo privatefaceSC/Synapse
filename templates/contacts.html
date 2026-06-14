@@ -548,14 +548,28 @@
         transition: background 0.25s ease, box-shadow 0.18s ease;
     }
     .bubble:hover { box-shadow: 0 4px 14px rgba(16,24,40,.10); }
-    .bubble.media-only {
+    .bubble.media-only,
+    .bubble.media-caption {
         background: transparent !important;
         box-shadow: none !important;
         border: none !important;
         padding: 0 !important;
     }
-    .bubble.media-only:hover { box-shadow: none !important; }
+    .bubble.media-only:hover,
+    .bubble.media-caption:hover { box-shadow: none !important; }
     .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; word-break: break-word; }
+    .bubble.media-caption .text {
+        display: block;
+        margin-top: 6px;
+        padding: 9px 12px;
+        background: #ffffff;
+        border-radius: 6px 16px 16px 16px;
+        box-shadow: 0 2px 6px rgba(16,24,40,.07), 0 1px 2px rgba(16,24,40,.04);
+    }
+    .bubble-row.outgoing .bubble.media-caption .text {
+        background: #dbeafe;
+        border-radius: 16px 6px 16px 16px;
+    }
     /* Форматирование текста из Telegram entities. */
     .bubble .text b, .bubble .text strong { font-weight: 700; }
     .bubble .text i, .bubble .text em { font-style: italic; }
@@ -1022,15 +1036,99 @@
         object-fit: contain; background: transparent;
     }
     .bubble .media-video {
-        display: block; margin-top: 8px; max-width: 280px; max-height: 360px;
-        border-radius: 14px; background: #000;
+        display: block; width: 100%; height: 100%;
+        border-radius: 18px; background: #05070b; object-fit: cover;
+    }
+    .bubble .media-video-wrap {
+        position: relative; display: block; margin-top: 8px;
+        width: min(320px, 72vw); aspect-ratio: 4 / 5;
+        max-height: 420px; overflow: hidden; border-radius: 18px;
+        background:
+            radial-gradient(circle at 50% 36%, rgba(255,255,255,.12), transparent 44%),
+            #05070b;
+        box-shadow:
+            0 15px 38px rgba(15,23,42,.26),
+            inset 0 0 0 1px rgba(255,255,255,.10);
+        cursor: pointer;
+    }
+    .bubble .media-video-wrap.vertical {
+        width: min(235px, 62vw);
+    }
+    .bubble .media-video-wrap::before {
+        content: "";
+        position: absolute; inset: 0; pointer-events: none; z-index: 1;
+        background:
+            linear-gradient(180deg, rgba(0,0,0,.10) 0%,
+                                     rgba(0,0,0,0) 42%,
+                                     rgba(0,0,0,.52) 100%);
+    }
+    .bubble .media-video-wrap::after {
+        content: none;
+        position: absolute; left: 50%; top: 50%; z-index: 2;
+        width: 58px; height: 58px; transform: translate(-50%, -50%);
+        border-radius: 50%;
+        background:
+            linear-gradient(135deg, rgba(60,148,255,.96), rgba(36,108,224,.96));
+        box-shadow: 0 12px 30px rgba(0,0,0,.34),
+                    inset 0 1px 0 rgba(255,255,255,.25);
+        pointer-events: none;
+        transition: opacity .18s ease, transform .18s ease;
+    }
+    .bubble .media-video-wrap.playing::after {
+        opacity: 0; transform: translate(-50%, -50%) scale(.86);
+    }
+    .bubble .media-video-wrap:hover::after {
+        transform: translate(-50%, -50%) scale(1.06);
+    }
+    .bubble .media-video-ui {
+        position: absolute; left: 10px; right: 10px; bottom: 9px; z-index: 3;
+        display: flex; align-items: center; gap: 8px;
+        color: #fff; font-size: 11px; line-height: 1;
+        text-shadow: 0 1px 2px rgba(0,0,0,.55);
+        pointer-events: none;
+    }
+    .bubble .video-mini-btn {
+        width: 24px; height: 24px; border-radius: 50%;
+        background: rgba(0,0,0,.42);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.12);
+        position: relative; flex: 0 0 auto;
+    }
+    .bubble .video-mini-btn::before {
+        content: ""; position: absolute; left: 9px; top: 6px;
+        border-top: 6px solid transparent;
+        border-bottom: 6px solid transparent;
+        border-left: 9px solid #fff;
+    }
+    .bubble .media-video-wrap.playing .video-mini-btn::before {
+        left: 7px; top: 6px; width: 3px; height: 12px;
+        border: 0; background: #fff;
+        box-shadow: 7px 0 0 #fff;
+    }
+    .bubble .video-progress {
+        height: 3px; flex: 1 1 auto; overflow: hidden;
+        border-radius: 999px; background: rgba(255,255,255,.28);
+    }
+    .bubble .video-progress-fill {
+        display: block; width: 0%; height: 100%;
+        border-radius: inherit; background: #54a5ff;
+        box-shadow: 0 0 10px rgba(84,165,255,.55);
+    }
+    .bubble .video-duration {
+        flex: 0 0 auto; min-width: 34px; text-align: right;
+        font-variant-numeric: tabular-nums;
     }
     .bubble.media-only .media-img,
-    .bubble.media-only .media-video,
+    .bubble.media-only .media-video-wrap,
     .bubble.media-only .media-audio,
     .bubble.media-only .media-file,
     .bubble.media-only .sticker-img,
-    .bubble.media-only .media-vnote-wrap {
+    .bubble.media-only .media-vnote-wrap,
+    .bubble.media-caption .media-img,
+    .bubble.media-caption .media-video-wrap,
+    .bubble.media-caption .media-audio,
+    .bubble.media-caption .media-file,
+    .bubble.media-caption .sticker-img,
+    .bubble.media-caption .media-vnote-wrap {
         margin-top: 0;
     }
     /* Видеосообщение-«кружочек» (Telegram video note): круглый плеер без
@@ -1053,7 +1151,8 @@
     .bubble .media-audio {
         display: block; margin-top: 8px; max-width: 280px; height: 40px;
     }
-    .bubble.media-only .media-audio {
+    .bubble.media-only .media-audio,
+    .bubble.media-caption .media-audio {
         width: min(280px, 72vw);
         border-radius: 999px;
     }
@@ -1342,6 +1441,61 @@
         opacity: .85;
     }
     .lightbox .lb-close:hover { opacity: 1; }
+    .video-lightbox {
+        position: fixed; inset: 0; z-index: 1090;
+        display: flex; align-items: center; justify-content: center;
+        padding: 64px 22px 34px;
+        background: rgba(0,0,0,.94);
+        opacity: 0; visibility: hidden; pointer-events: none;
+        transition: opacity .2s ease, visibility .2s ease;
+    }
+    .video-lightbox.open {
+        opacity: 1; visibility: visible; pointer-events: auto;
+    }
+    .video-lightbox .vl-shell {
+        position: relative; width: min(1120px, 96vw); max-height: 88vh;
+        display: flex; flex-direction: column; gap: 12px;
+    }
+    .video-lightbox video {
+        display: block; width: 100%; max-height: calc(88vh - 64px);
+        background: #000; border-radius: 12px; object-fit: contain;
+        box-shadow: 0 24px 70px rgba(0,0,0,.65);
+    }
+    .video-lightbox .vl-topbar {
+        position: fixed; left: 18px; right: 18px; top: 16px; z-index: 2;
+        display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+        pointer-events: none;
+    }
+    .video-lightbox .vl-close,
+    .video-lightbox .vl-btn,
+    .video-lightbox .vl-rate {
+        pointer-events: auto;
+        border: 1px solid rgba(255,255,255,.16);
+        background: rgba(20,24,32,.78); color: #fff;
+        backdrop-filter: blur(12px);
+        border-radius: 999px; height: 36px;
+        display: inline-flex; align-items: center; justify-content: center;
+        cursor: pointer; font-size: 13px;
+    }
+    .video-lightbox .vl-close {
+        width: 38px; font-size: 24px; line-height: 1;
+    }
+    .video-lightbox .vl-btn { padding: 0 13px; text-decoration: none; }
+    .video-lightbox .vl-rate { padding: 0 12px; min-width: 48px; }
+    .video-lightbox .vl-rate.active {
+        background: #2563eb; border-color: rgba(147,197,253,.45);
+    }
+    .video-lightbox .vl-close:hover,
+    .video-lightbox .vl-btn:hover,
+    .video-lightbox .vl-rate:hover {
+        background: rgba(37,99,235,.9); color: #fff;
+    }
+    @media (max-width: 700px) {
+        .video-lightbox { padding: 58px 10px 18px; }
+        .video-lightbox .vl-topbar { left: 10px; right: 10px; gap: 5px; }
+        .video-lightbox .vl-btn { padding: 0 10px; }
+        .video-lightbox .vl-rate { padding: 0 9px; min-width: 42px; }
+    }
     .bubble .time {
         font-size: 10px; color: #9aa3b2; margin-top: 4px; text-align: right;
         font-variant-numeric: tabular-nums; letter-spacing: .02em;
@@ -1449,6 +1603,239 @@
     }
     [data-bs-theme="dark"] .contact-list::-webkit-scrollbar-thumb,
     [data-bs-theme="dark"] .feed::-webkit-scrollbar-thumb { background: #3a4150; background-clip: content-box; }
+
+    /* Экспериментальный тёмный слой: более современный, мягкий вид страницы контактов. */
+    [data-bs-theme="dark"] body.contacts-locked {
+        background:
+            radial-gradient(900px 420px at 18% -18%, rgba(59,130,246,.16), transparent 62%),
+            radial-gradient(760px 360px at 88% 0%, rgba(34,197,94,.08), transparent 58%),
+            linear-gradient(180deg, #0d1118 0%, #111722 100%);
+    }
+    [data-bs-theme="dark"] .contacts-shell {
+        padding-top: 14px;
+        padding-bottom: 14px;
+    }
+    [data-bs-theme="dark"] .contact-search input {
+        background: rgba(24,30,42,.78);
+        border-color: rgba(148,163,184,.16);
+        color: #f1f5f9;
+        border-radius: 15px;
+        box-shadow: 0 12px 34px rgba(0,0,0,.18);
+    }
+    [data-bs-theme="dark"] .contact-search input:focus {
+        border-color: rgba(96,165,250,.62);
+        box-shadow: 0 0 0 3px rgba(59,130,246,.18),
+                    0 12px 34px rgba(0,0,0,.24);
+    }
+    [data-bs-theme="dark"] .contact-search::before { opacity: .7; }
+    [data-bs-theme="dark"] .messenger-folders {
+        margin-bottom: 12px;
+        padding: 2px 2px 7px;
+    }
+    [data-bs-theme="dark"] .mf-btn {
+        background: rgba(24,30,42,.72);
+        border-color: rgba(148,163,184,.16);
+        color: #aeb8c8;
+        box-shadow: 0 8px 22px rgba(0,0,0,.12);
+    }
+    [data-bs-theme="dark"] .mf-btn:hover {
+        background: rgba(36,44,59,.86);
+        color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .mf-btn.active {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        border-color: rgba(147,197,253,.55);
+        box-shadow: 0 10px 26px rgba(37,99,235,.28);
+    }
+    [data-bs-theme="dark"] .contact-list {
+        padding: 7px;
+        background: rgba(18,23,33,.74);
+        border-color: rgba(148,163,184,.14);
+        border-radius: 20px;
+        box-shadow:
+            0 18px 52px rgba(0,0,0,.30),
+            inset 0 1px 0 rgba(255,255,255,.035);
+        backdrop-filter: blur(16px);
+    }
+    [data-bs-theme="dark"] .contact-row-wrap { margin: 2px 0; }
+    [data-bs-theme="dark"] .contact-row {
+        border-bottom: 0;
+        border-radius: 15px;
+        padding: 12px 44px 12px 13px;
+        background: transparent;
+        transition: background .16s ease, box-shadow .16s ease,
+                    transform .16s ease, border-color .16s ease;
+    }
+    [data-bs-theme="dark"] .contact-row:hover {
+        background: rgba(255,255,255,.055);
+        transform: translateX(2px);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.04);
+    }
+    [data-bs-theme="dark"] .contact-row.active {
+        background:
+            linear-gradient(135deg, rgba(59,130,246,.20), rgba(34,197,94,.055));
+        box-shadow:
+            inset 0 0 0 1px rgba(96,165,250,.30),
+            0 10px 30px rgba(37,99,235,.14);
+    }
+    [data-bs-theme="dark"] .contact-row-wrap.pinned .contact-row {
+        background:
+            linear-gradient(90deg, rgba(250,204,21,.16) 0, rgba(250,204,21,0) 28px),
+            transparent;
+    }
+    [data-bs-theme="dark"] .contact-row-wrap.pinned .contact-row.active {
+        background:
+            linear-gradient(90deg, rgba(250,204,21,.16) 0, rgba(250,204,21,0) 28px),
+            linear-gradient(135deg, rgba(59,130,246,.20), rgba(34,197,94,.055));
+    }
+    [data-bs-theme="dark"] .contact-row .avatar {
+        border-color: rgba(255,255,255,.16);
+        box-shadow: 0 8px 22px rgba(0,0,0,.30);
+    }
+    [data-bs-theme="dark"] .contact-row:hover .avatar {
+        box-shadow: 0 10px 26px rgba(0,0,0,.34);
+    }
+    [data-bs-theme="dark"] .contact-row .name { color: #edf2f7; }
+    [data-bs-theme="dark"] .contact-row.active .name { color: #dbeafe; }
+    [data-bs-theme="dark"] .contact-row .preview { color: #9aa7ba; }
+    [data-bs-theme="dark"] .contact-row .time { color: #748196; }
+    [data-bs-theme="dark"] .contact-row .badge-unread {
+        background: #f05266;
+        box-shadow: 0 8px 20px rgba(240,82,102,.28);
+    }
+    [data-bs-theme="dark"] .contact-kebab {
+        right: 9px;
+        color: #7c8798;
+        border-radius: 11px;
+    }
+    [data-bs-theme="dark"] .contact-kebab:hover {
+        background: rgba(255,255,255,.075);
+        color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .feed {
+        background:
+            radial-gradient(920px 380px at 50% -14%, rgba(59,130,246,.16) 0%, rgba(59,130,246,0) 68%),
+            linear-gradient(180deg, rgba(19,25,36,.94) 0%, rgba(14,18,26,.98) 100%);
+        border-color: rgba(148,163,184,.14);
+        border-radius: 20px;
+        box-shadow:
+            0 18px 54px rgba(0,0,0,.32),
+            inset 0 1px 0 rgba(255,255,255,.035);
+    }
+    [data-bs-theme="dark"] .feed-header {
+        background: rgba(20,26,37,.78);
+        border-bottom-color: rgba(148,163,184,.13);
+        border-radius: 20px 20px 0 0;
+        backdrop-filter: blur(18px);
+    }
+    [data-bs-theme="dark"] .feed-header .feed-header-top:hover {
+        background: rgba(255,255,255,.045);
+    }
+    [data-bs-theme="dark"] .feed-header .avatar {
+        border-color: rgba(255,255,255,.18);
+        box-shadow: 0 9px 24px rgba(0,0,0,.34);
+    }
+    [data-bs-theme="dark"] .feed-header .fw-semibold { color: #f8fafc; }
+    [data-bs-theme="dark"] .handles-panel {
+        background: rgba(17,23,34,.76);
+        backdrop-filter: blur(18px);
+    }
+    [data-bs-theme="dark"] #messages-container {
+        scrollbar-width: thin;
+        scrollbar-color: #3d4656 transparent;
+    }
+    [data-bs-theme="dark"] #messages-container::-webkit-scrollbar { width: 8px; }
+    [data-bs-theme="dark"] #messages-container::-webkit-scrollbar-thumb {
+        background: #3d4656;
+        border-radius: 999px;
+        border: 2px solid transparent;
+        background-clip: content-box;
+    }
+    [data-bs-theme="dark"] .bubble-row .source {
+        color: #8793a7;
+        letter-spacing: 0;
+    }
+    [data-bs-theme="dark"] .bubble {
+        background: rgba(34,42,56,.92);
+        border: 1px solid rgba(255,255,255,.045);
+        box-shadow:
+            0 10px 28px rgba(0,0,0,.20),
+            inset 0 1px 0 rgba(255,255,255,.035);
+    }
+    [data-bs-theme="dark"] .bubble:hover {
+        box-shadow:
+            0 14px 34px rgba(0,0,0,.26),
+            inset 0 1px 0 rgba(255,255,255,.04);
+    }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble {
+        background: linear-gradient(135deg, rgba(48,111,184,.96), rgba(37,86,147,.96));
+        border-color: rgba(147,197,253,.16);
+    }
+    [data-bs-theme="dark"] .bubble .text { color: #eef2f7; }
+    [data-bs-theme="dark"] .bubble.media-caption .text {
+        background: rgba(34,42,56,.92);
+        border: 1px solid rgba(255,255,255,.045);
+        box-shadow:
+            0 10px 28px rgba(0,0,0,.20),
+            inset 0 1px 0 rgba(255,255,255,.035);
+    }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble.media-caption .text {
+        background: linear-gradient(135deg, rgba(48,111,184,.96), rgba(37,86,147,.96));
+        border-color: rgba(147,197,253,.16);
+    }
+    [data-bs-theme="dark"] .bubble .time,
+    [data-bs-theme="dark"] .bubble .time-row { color: #7c8798; }
+    [data-bs-theme="dark"] .composer,
+    [data-bs-theme="dark"] .channel-notice {
+        bottom: -10px;
+        margin: 12px -10px -10px;
+        padding: 10px 12px;
+        background: rgba(20,26,37,.86);
+        border: 1px solid rgba(148,163,184,.14);
+        border-radius: 18px;
+        box-shadow:
+            0 -12px 34px rgba(0,0,0,.20),
+            inset 0 1px 0 rgba(255,255,255,.04);
+        backdrop-filter: blur(18px);
+    }
+    [data-bs-theme="dark"] .composer textarea {
+        background: rgba(15,20,30,.94);
+        border-color: rgba(148,163,184,.16);
+        color: #f1f5f9;
+        border-radius: 14px;
+    }
+    [data-bs-theme="dark"] .composer textarea:focus {
+        border-color: rgba(96,165,250,.58);
+        box-shadow: 0 0 0 3px rgba(59,130,246,.18);
+    }
+    [data-bs-theme="dark"] .composer .attach-btn,
+    [data-bs-theme="dark"] .composer .emoji-btn,
+    [data-bs-theme="dark"] .composer .voice-btn {
+        background: rgba(15,20,30,.82);
+        border-color: rgba(148,163,184,.15);
+        color: #cbd5e1;
+        border-radius: 14px;
+    }
+    [data-bs-theme="dark"] .composer .attach-btn:hover,
+    [data-bs-theme="dark"] .composer .emoji-btn:hover,
+    [data-bs-theme="dark"] .composer .voice-btn:hover {
+        background: rgba(42,51,67,.92);
+        color: #f8fafc;
+    }
+    [data-bs-theme="dark"] .composer .send-btn,
+    [data-bs-theme="dark"] .channel-notice .cn-toggle {
+        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+        border-radius: 14px;
+        box-shadow: 0 10px 24px rgba(37,99,235,.28);
+    }
+    [data-bs-theme="dark"] .composer-preview,
+    [data-bs-theme="dark"] .composer-reply,
+    [data-bs-theme="dark"] .composer-forward {
+        background: rgba(15,20,30,.76);
+        border-color: rgba(148,163,184,.15);
+        border-radius: 13px;
+    }
+    [data-bs-theme="dark"] .channel-notice .cn-title { color: #f1f5f9; }
 
     @media (prefers-reduced-motion: reduce) {
         .feed, .feed-header, .bubble, .bubble .media-img,
@@ -2138,12 +2525,13 @@
                         {% if messages %}
                             {% for m in messages %}
                             {% set media_only = m.media and not m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
+                            {% set media_caption = m.media and m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
                             <div class="bubble-row{% if m.outgoing %} outgoing{% endif %}{% if m.pinned_at %} pinned{% endif %}"
                                  data-message-id="{{ m.id }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
                                  {% if m.edit_history %}data-edits-json='{{ m.edit_history|tojson|forceescape }}'{% endif %}>
                                 <span class="source">{% if m.outgoing %}Вы{% else %}{{ m.messenger_name }} · {{ m.display_author or m.sender }}{% endif %}</span>
-                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}">
+                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}{% if media_caption %} media-caption{% endif %}">
                                     {% if m.deleted_at %}
                                     <div class="deleted-banner"
                                          title="Сообщение удалили в мессенджере, но мы успели сохранить">
@@ -2173,8 +2561,15 @@
                                                    loop playsinline preload="metadata"></video>
                                         </span>
                                         {% elif a.kind == 'video' %}
-                                        <video class="media-video" src="/attachments/{{ a.id }}"
-                                               controls preload="none"></video>
+                                        <span class="media-video-wrap">
+                                            <video class="media-video" src="/attachments/{{ a.id }}"
+                                                   playsinline preload="metadata"></video>
+                                            <span class="media-video-ui" aria-hidden="true">
+                                                <span class="video-mini-btn"></span>
+                                                <span class="video-progress"><span class="video-progress-fill"></span></span>
+                                                <span class="video-duration">0:00</span>
+                                            </span>
+                                        </span>
                                         {% elif a.kind == 'voice' or a.kind == 'audio' %}
                                         <audio class="media-audio" src="/attachments/{{ a.id }}"
                                                controls preload="none"></audio>
@@ -2290,6 +2685,20 @@
 <div class="lightbox" id="lightbox">
     <span class="lb-close" id="lb-close">&times;</span>
     <img id="lb-img" src="" alt="фото">
+</div>
+
+<div class="video-lightbox" id="video-lightbox" aria-hidden="true">
+    <div class="vl-topbar">
+        <button type="button" class="vl-rate" data-rate="0.5">0.5x</button>
+        <button type="button" class="vl-rate active" data-rate="1">1x</button>
+        <button type="button" class="vl-rate" data-rate="1.5">1.5x</button>
+        <button type="button" class="vl-rate" data-rate="2">2x</button>
+        <button type="button" class="vl-btn" id="vl-fullscreen">На весь экран</button>
+        <button type="button" class="vl-close" id="vl-close" aria-label="Закрыть">&times;</button>
+    </div>
+    <div class="vl-shell">
+        <video id="vl-video" controls playsinline preload="metadata"></video>
+    </div>
 </div>
 
 <div class="msgr-picker" id="forward-modal">
@@ -2934,6 +3343,134 @@
         if (!v) return;
         e.preventDefault();
         if (v.paused) { v.play(); } else { v.pause(); }
+    });
+})();
+
+// Обычные видео показываем как аккуратную карточку: клик по превью играет/пауза.
+(function() {
+    const modal = document.getElementById('video-lightbox');
+    const modalVideo = document.getElementById('vl-video');
+    const closeBtn = document.getElementById('vl-close');
+    const fullscreenBtn = document.getElementById('vl-fullscreen');
+    const rateBtns = modal ? modal.querySelectorAll('.vl-rate') : [];
+
+    function fmtTime(value) {
+        if (!Number.isFinite(value) || value <= 0) return '0:00';
+        const total = Math.floor(value);
+        const m = Math.floor(total / 60);
+        const s = String(total % 60).padStart(2, '0');
+        return m + ':' + s;
+    }
+
+    function updateVideoUi(v) {
+        const wrap = v.closest('.media-video-wrap');
+        if (!wrap) return;
+        if (v.videoWidth && v.videoHeight) {
+            wrap.style.aspectRatio = v.videoWidth + ' / ' + v.videoHeight;
+            wrap.classList.toggle('vertical', v.videoHeight > v.videoWidth);
+        }
+        const duration = wrap.querySelector('.video-duration');
+        if (duration) {
+            duration.textContent = fmtTime(
+                v.duration ? Math.max(v.duration - v.currentTime, 0) : 0);
+        }
+        const fill = wrap.querySelector('.video-progress-fill');
+        if (fill) {
+            const pct = v.duration ? (v.currentTime / v.duration) * 100 : 0;
+            fill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+        }
+    }
+
+    function setRate(rate) {
+        if (!modalVideo) return;
+        modalVideo.playbackRate = rate;
+        rateBtns.forEach(btn => {
+            btn.classList.toggle('active',
+                Number(btn.dataset.rate) === Number(rate));
+        });
+    }
+
+    function openVideoModal(src, currentTime) {
+        if (!modal || !modalVideo || !src) return;
+        modalVideo.src = src;
+        const startAt = currentTime || 0;
+        const seek = () => {
+            if (startAt > 0) {
+                try { modalVideo.currentTime = startAt; } catch (e) {}
+            }
+        };
+        if (modalVideo.readyState >= 1) seek();
+        else modalVideo.addEventListener('loadedmetadata', seek, {once: true});
+        setRate(1);
+        modal.classList.add('open');
+        modal.setAttribute('aria-hidden', 'false');
+        const p = modalVideo.play();
+        if (p && p.catch) p.catch(() => {});
+    }
+
+    function closeVideoModal() {
+        if (!modal || !modalVideo) return;
+        modal.classList.remove('open');
+        modal.setAttribute('aria-hidden', 'true');
+        modalVideo.pause();
+        modalVideo.removeAttribute('src');
+        modalVideo.load();
+    }
+
+    document.addEventListener('click', function(e) {
+        const wrap = e.target.closest && e.target.closest('.media-video-wrap');
+        if (!wrap) return;
+        const v = wrap.querySelector('video.media-video');
+        if (!v) return;
+        e.preventDefault();
+        v.pause();
+        wrap.classList.remove('playing');
+        openVideoModal(v.currentSrc || v.src, v.currentTime || 0);
+    });
+    document.addEventListener('play', function(e) {
+        if (!e.target.matches || !e.target.matches('video.media-video')) return;
+        const wrap = e.target.closest('.media-video-wrap');
+        if (wrap) wrap.classList.add('playing');
+    }, true);
+    document.addEventListener('loadedmetadata', function(e) {
+        if (!e.target.matches || !e.target.matches('video.media-video')) return;
+        updateVideoUi(e.target);
+    }, true);
+    document.addEventListener('timeupdate', function(e) {
+        if (!e.target.matches || !e.target.matches('video.media-video')) return;
+        updateVideoUi(e.target);
+    }, true);
+    document.addEventListener('pause', function(e) {
+        if (!e.target.matches || !e.target.matches('video.media-video')) return;
+        const wrap = e.target.closest('.media-video-wrap');
+        if (wrap) wrap.classList.remove('playing');
+        updateVideoUi(e.target);
+    }, true);
+    document.addEventListener('ended', function(e) {
+        if (!e.target.matches || !e.target.matches('video.media-video')) return;
+        const wrap = e.target.closest('.media-video-wrap');
+        if (wrap) wrap.classList.remove('playing');
+        updateVideoUi(e.target);
+    }, true);
+
+    rateBtns.forEach(btn => {
+        btn.addEventListener('click', () => setRate(Number(btn.dataset.rate)));
+    });
+    if (closeBtn) closeBtn.addEventListener('click', closeVideoModal);
+    if (modal) {
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal) closeVideoModal();
+        });
+    }
+    if (fullscreenBtn && modalVideo) {
+        fullscreenBtn.addEventListener('click', function() {
+            if (modalVideo.requestFullscreen) modalVideo.requestFullscreen();
+        });
+    }
+    document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && modal && modal.classList.contains('open')) {
+            closeVideoModal();
+        }
     });
 })();
 </script>
@@ -4417,7 +4954,12 @@
                         return `<span class="media-vnote-wrap">`
                             + `<video class="media-video-note" src="/attachments/${a.id}" loop playsinline preload="metadata"></video></span>`;
                     if (a.kind === 'video')
-                        return `<video class="media-video" src="/attachments/${a.id}" controls preload="none"></video>`;
+                        return `<span class="media-video-wrap">`
+                            + `<video class="media-video" src="/attachments/${a.id}" playsinline preload="metadata"></video>`
+                            + `<span class="media-video-ui" aria-hidden="true">`
+                            + `<span class="video-mini-btn"></span>`
+                            + `<span class="video-progress"><span class="video-progress-fill"></span></span>`
+                            + `<span class="video-duration">0:00</span></span></span>`;
                     if (a.kind === 'voice' || a.kind === 'audio')
                         return `<audio class="media-audio" src="/attachments/${a.id}" controls preload="none"></audio>`;
                     if (a.kind === 'file')
@@ -4512,11 +5054,16 @@
                 && !m.fwd_from
                 && !m.text
                 && !m.text_html;
+            const mediaCaption = (m.attachments || []).length
+                && !m.deleted
+                && !m.reply_to
+                && !m.fwd_from
+                && (!!m.text || !!m.text_html);
             return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}${m.pinned ? ' pinned' : ''}"
                 data-message-id="${m.id}"
                 data-messenger="${escapeHtml(m.messenger_name || '')}"${editsJson}>
                 <span class="source">${source}</span>
-                <div class="bubble${m.deleted ? ' deleted' : ''}${mediaOnly ? ' media-only' : ''}">
+                <div class="bubble${m.deleted ? ' deleted' : ''}${mediaOnly ? ' media-only' : ''}${mediaCaption ? ' media-caption' : ''}">
                     ${delBanner}
                     ${fwdHtml}
                     ${reply}
