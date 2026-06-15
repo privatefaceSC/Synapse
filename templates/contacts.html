@@ -146,6 +146,20 @@
         padding: 10px 44px 10px 38px; font-size: 14px; background: #fff;
         outline: none; transition: border-color .15s ease, box-shadow .15s ease;
     }
+    .contact-search.has-new-chat input { padding-right: 84px; }
+    .contact-search .new-synapse-chat {
+        position: absolute; right: 44px; top: 50%; transform: translateY(-50%);
+        border: 1px solid #bfdbfe; background: #eef2ff; color: #1d4ed8;
+        width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
+        font-size: 22px; line-height: 1; padding: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: background .15s ease, border-color .15s ease, color .15s ease;
+        z-index: 2;
+    }
+    .contact-search .new-synapse-chat:hover { background: #dbeafe; }
+    .contact-search .new-synapse-chat.active {
+        background: #2563eb; border-color: #2563eb; color: #fff;
+    }
     .contact-search .enable-notif {
         position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
         border: 1px solid #bfdbfe; background: #e0edff; color: #1d4ed8;
@@ -160,6 +174,15 @@
     }
     [data-bs-theme="dark"] .contact-search .enable-notif:hover {
         background: #233d5e;
+    }
+    [data-bs-theme="dark"] .contact-search .new-synapse-chat {
+        background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
+    }
+    [data-bs-theme="dark"] .contact-search .new-synapse-chat:hover {
+        background: #233d5e;
+    }
+    [data-bs-theme="dark"] .contact-search .new-synapse-chat.active {
+        background: #2563eb; border-color: #2563eb; color: #fff;
     }
     .contact-search input:focus {
         border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
@@ -2837,7 +2860,6 @@
 <div class="contacts-app-menu-panel" data-contacts-menu-panel role="menu">
     <a href="/"><span class="menu-ico">⌂</span>Главная</a>
     <a href="/contacts"><span class="menu-ico">◉</span>Контакты</a>
-    <a href="/messenger"><span class="menu-ico">✉</span>Сообщения</a>
     <hr>
     <a href="/profile"><span class="menu-ico">●</span>Профиль</a>
     <a href="/contacts/manage"><span class="menu-ico">↔</span>Связи</a>
@@ -2905,9 +2927,11 @@
 <div class="container-fluid contacts-shell">
     <div class="row g-3 h-100">
         <div class="col-md-4 h-100 {% if selected %}d-none d-md-flex{% endif %}" id="col-list">
-            <div class="contact-search">
+            <div class="contact-search has-new-chat">
                 <input type="search" id="contact-search-input" autocomplete="off"
                        placeholder="Поиск по контактам и сообщениям…">
+                <button type="button" id="new-synapse-chat" class="new-synapse-chat"
+                        title="Новый чат Synapse" aria-label="Новый чат Synapse">+</button>
                 <button type="button" id="enable-notif-btn" class="enable-notif"
                         hidden title="Включить уведомления о новых сообщениях">🔔</button>
                 <div class="search-results" id="search-results" role="listbox"></div>
@@ -7237,12 +7261,14 @@
 (function() {
     const input = document.getElementById('contact-search-input');
     const list = document.getElementById('contact-list');
+    const newChatBtn = document.getElementById('new-synapse-chat');
     if (!input || !list) return;
 
     let query = '';
     let serverIds = null;
     let token = 0;
     let debounce = null;
+    let synapseMode = false;
 
     function applyFilter() {
         const q = query;
@@ -7314,7 +7340,54 @@
         resultsBox.classList.add('open');
     }
 
+    function renderSynapseUsers(users) {
+        if (!resultsBox) return;
+        if (!users.length) {
+            resultsBox.innerHTML =
+                '<div class="sr-empty">Пользователь не найден</div>';
+            resultsBox.classList.add('open');
+            return;
+        }
+        resultsBox.innerHTML = users.map(u => {
+            const username = u.username ? '@' + u.username : 'Synapse';
+            return '<div class="search-result synapse-user-result"'
+                 + ' data-user-id="' + u.id + '">'
+                 + '<div class="sr-head">'
+                 + '<span class="sr-name">' + escHtml(u.display_name) + '</span>'
+                 + '<span class="sr-meta">' + escHtml(username) + '</span>'
+                 + '</div>'
+                 + '<div class="sr-snippet">Новый чат Synapse</div>'
+                 + '</div>';
+        }).join('');
+        resultsBox.classList.add('open');
+    }
+
+    async function runSynapseSearch() {
+        const q = input.value.trim().toLowerCase();
+        query = q;
+        serverIds = null;
+        applyFilter();
+        if (!q) {
+            resultsBox.innerHTML =
+                '<div class="sr-empty">Введите имя или User ID</div>';
+            resultsBox.classList.add('open');
+            return;
+        }
+        const my = ++token;
+        try {
+            const r = await fetch(
+                '/contacts/synapse/users/search.json?q=' + encodeURIComponent(q),
+                {credentials: 'same-origin'});
+            if (my !== token) return;
+            const data = await r.json().catch(() => ({}));
+            renderSynapseUsers(r.ok ? (data.users || []) : []);
+        } catch (e) {
+            if (my === token) renderSynapseUsers([]);
+        }
+    }
+
     async function runSearch() {
+        if (synapseMode) { await runSynapseSearch(); return; }
         const q = input.value.trim().toLowerCase();
         query = q;
         if (!q) { serverIds = null; closeResults(); applyFilter(); return; }
@@ -7336,16 +7409,73 @@
     input.addEventListener('input', function() {
         query = input.value.trim().toLowerCase();
         applyFilter();
-        if (!query) closeResults();
+        if (!query && !synapseMode) closeResults();
         clearTimeout(debounce);
         debounce = setTimeout(runSearch, 250);
     });
+
+    if (newChatBtn) {
+        newChatBtn.addEventListener('click', function(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            synapseMode = !synapseMode;
+            newChatBtn.classList.toggle('active', synapseMode);
+            input.value = '';
+            query = '';
+            serverIds = null;
+            applyFilter();
+            if (synapseMode) {
+                input.placeholder = 'Найти пользователя Synapse…';
+                input.focus();
+                resultsBox.innerHTML =
+                    '<div class="sr-empty">Введите имя или User ID</div>';
+                resultsBox.classList.add('open');
+            } else {
+                input.placeholder = 'Поиск по контактам и сообщениям…';
+                closeResults();
+            }
+        });
+    }
 
     // Клик по результату — открыть нужный чат и проскроллить к сообщению.
     if (resultsBox) {
         resultsBox.addEventListener('click', (e) => {
             const row = e.target.closest('.search-result');
             if (!row) return;
+            if (row.classList.contains('synapse-user-result')) {
+                const uid = row.dataset.userId;
+                if (!uid) return;
+                fetch('/contacts/synapse/start/' + uid, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'X-Requested-With': 'XMLHttpRequest'},
+                })
+                    .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+                    .then(async res => {
+                        if (!res.ok || !res.data.ok) return;
+                        synapseMode = false;
+                        if (newChatBtn) newChatBtn.classList.remove('active');
+                        input.placeholder = 'Поиск по контактам и сообщениям…';
+                        input.value = '';
+                        query = '';
+                        serverIds = null;
+                        closeResults();
+                        applyFilter();
+                        if (window.refreshContactsNow) {
+                            await window.refreshContactsNow();
+                        }
+                        if (window.openContactSPA) {
+                            window.openContactSPA(
+                                res.data.contact_id,
+                                res.data.messenger || 'Synapse');
+                        } else {
+                            window.location = '/contacts/' + res.data.contact_id
+                                + '?m=Synapse';
+                        }
+                    })
+                    .catch(() => {});
+                return;
+            }
             const cid = row.dataset.contactId;
             const mid = row.dataset.messageId;
             const messenger = row.dataset.messenger || null;
@@ -7366,7 +7496,8 @@
     // Закрытие при клике вне.
     document.addEventListener('click', (e) => {
         if (!resultsBox) return;
-        if (resultsBox.contains(e.target) || e.target === input) return;
+        if (resultsBox.contains(e.target) || e.target === input
+                || e.target === newChatBtn) return;
         closeResults();
     });
     document.addEventListener('keydown', (e) => {

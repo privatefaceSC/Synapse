@@ -1042,6 +1042,12 @@ def register_routes(app: Flask) -> None:
     def messenger_index():
         if not session.get('user_id'):
             return redirect('/login')
+        return contacts_index()
+
+    @app.route('/messenger/legacy')
+    def messenger_legacy_index():
+        if not session.get('user_id'):
+            return redirect('/login')
         db = get_db()
         return render_template('messenger.html',
                                conversations=_dm_conversations(db, session['user_id']),
@@ -1054,7 +1060,22 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         me_id = session['user_id']
         if user_id == me_id:
-            return redirect('/messenger')
+            return redirect('/contacts')
+        partner = db.query(User).filter(User.id == user_id).first()
+        if partner is None:
+            return 'Not Found', 404
+        handle = _ensure_synapse_handle(db, me_id, partner)
+        db.commit()
+        return contact_detail(handle.contact_id)
+
+    @app.route('/messenger/legacy/<int:user_id>')
+    def messenger_legacy_conversation(user_id):
+        if not session.get('user_id'):
+            return redirect('/login')
+        db = get_db()
+        me_id = session['user_id']
+        if user_id == me_id:
+            return redirect('/messenger/legacy')
         partner = db.query(User).filter(User.id == user_id).first()
         if partner is None:
             return 'Not Found', 404
@@ -1576,6 +1597,42 @@ def register_routes(app: Flask) -> None:
             'contact_ids': sorted(matched_by_name | matched_in_msg),
             'matches': matches,
         })
+
+    @app.route('/contacts/synapse/users/search.json')
+    def contacts_synapse_users_search():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        q = (request.args.get('q') or '').strip().lower()
+        if not q:
+            return jsonify({'users': []})
+        db = get_db()
+        me_id = session['user_id']
+        users = db.query(User).filter(User.id != me_id).order_by(User.id.asc()).all()
+        matched = []
+        for user in users:
+            uname = (user.username or '').lower()
+            full = ((user.name or '') + ' ' + (user.surname or '')).strip().lower()
+            if q in uname or (full and q in full):
+                matched.append(_dm_user_card(user))
+            if len(matched) >= 20:
+                break
+        return jsonify({'users': matched})
+
+    @app.route('/contacts/synapse/start/<int:user_id>', methods=['POST'])
+    def contacts_synapse_start(user_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        db = get_db()
+        me_id = session['user_id']
+        if user_id == me_id:
+            return jsonify({'error': 'self'}), 400
+        partner = db.query(User).filter(User.id == user_id).first()
+        if partner is None:
+            return jsonify({'error': 'not_found'}), 404
+        handle = _ensure_synapse_handle(db, me_id, partner)
+        db.commit()
+        return jsonify({'ok': True, 'contact_id': handle.contact_id,
+                        'messenger': SYNAPSE_MESSENGER})
 
     @app.route('/contacts/<int:contact_id>')
     def contact_detail(contact_id):
