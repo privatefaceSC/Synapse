@@ -1570,6 +1570,27 @@ def download_profile_photo_by_id(chat_id, photo_id, user_id=None):
                                                user_id=user_id), timeout=120)
 
 
+async def _download_profile_photo(chat_id, user_id=None):
+    """Скачивает текущую аватарку Telegram-сущности по id или username."""
+    client = await _get_client(user_id)
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    try:
+        entity = await client.get_entity(
+            chat_id if isinstance(chat_id, str) else int(chat_id))
+        return await client.download_profile_photo(entity, file=bytes)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def download_profile_photo(chat_id, user_id=None):
+    """Sync-обёртка для текущей аватарки профиля."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_download_profile_photo(chat_id, user_id=user_id),
+                 timeout=60)
+
+
 async def _resolve_entity_info(chat_id, user_id=None):
     """Получает имя/тип Telegram-сущности (пользователь / группа / канал)
     по её peer-id. Нужно, чтобы создавать локальный Contact для

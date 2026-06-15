@@ -4,6 +4,7 @@ import re
 import string
 import time
 import uuid
+import base64
 from datetime import datetime
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
@@ -1650,11 +1651,23 @@ def register_routes(app: Flask) -> None:
                 username, user_id=session['user_id'])
         except Exception as exc:  # noqa: BLE001
             return jsonify({'users': [], 'detail': str(exc)})
+        avatar_url = None
+        try:
+            raw_avatar = telegram_bridge.download_profile_photo(
+                username, user_id=session['user_id'])
+            if raw_avatar:
+                avatar_url = (
+                    "data:image/jpeg;base64,"
+                    + base64.b64encode(raw_avatar).decode("ascii")
+                )
+        except Exception:  # noqa: BLE001
+            avatar_url = None
         return jsonify({'users': [{
             'chat_id': int(info.get('chat_id') or 0),
             'title': info.get('title') or username,
             'username': info.get('username') or username,
             'kind': info.get('kind') or 'private',
+            'avatar_url': avatar_url,
         }]})
 
     @app.route('/contacts/<int:contact_id>')

@@ -125,6 +125,25 @@
     .search-result .sr-snippet mark {
         background: #fef08a; padding: 0 2px; border-radius: 3px; color: inherit;
     }
+    .search-result.with-avatar {
+        display: flex; align-items: center; gap: 12px;
+        padding: 10px 12px;
+    }
+    .search-result .sr-avatar {
+        width: 42px; height: 42px; border-radius: 50%;
+        flex: 0 0 auto; overflow: hidden;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: #dbeafe; color: #1d4ed8;
+        font-weight: 700; font-size: 15px;
+    }
+    .search-result .sr-avatar img {
+        width: 100%; height: 100%; object-fit: cover; display: block;
+    }
+    .search-result .sr-body { min-width: 0; flex: 1 1 auto; }
+    .search-result .sr-username {
+        color: #2563eb; font-size: 13px; line-height: 1.25;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     .search-results .sr-empty {
         padding: 14px; color: #9ca3af; font-size: 13px;
         text-align: center; font-style: italic;
@@ -137,6 +156,10 @@
     [data-bs-theme="dark"] .search-result:hover { background: #232831; }
     [data-bs-theme="dark"] .search-result .sr-name { color: #e5e7eb; }
     [data-bs-theme="dark"] .search-result .sr-snippet { color: #cbd5e1; }
+    [data-bs-theme="dark"] .search-result .sr-avatar {
+        background: #1c2c44; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .search-result .sr-username { color: #93c5fd; }
     [data-bs-theme="dark"] .search-result .sr-snippet mark {
         background: #92400e; color: #fde68a;
     }
@@ -7415,15 +7438,18 @@
         }
         resultsBox.innerHTML = users.map(u => {
             const username = u.username ? '@' + u.username : 'Telegram';
-            const kind = u.kind === 'private' ? 'Пользователь Telegram' : 'Чат Telegram';
-            return '<div class="search-result telegram-user-result"'
+            const initial = (u.title || username || 'T').trim().slice(0, 1).toUpperCase();
+            const avatar = u.avatar_url
+                ? '<span class="sr-avatar"><img src="' + escHtml(u.avatar_url) + '" alt=""></span>'
+                : '<span class="sr-avatar">' + escHtml(initial) + '</span>';
+            return '<div class="search-result telegram-user-result with-avatar"'
                  + ' data-chat-id="' + u.chat_id + '"'
                  + ' data-username="' + escHtml(u.username || '') + '">'
-                 + '<div class="sr-head">'
-                 + '<span class="sr-name">' + escHtml(u.title) + '</span>'
-                 + '<span class="sr-meta">' + escHtml(username) + '</span>'
+                 + avatar
+                 + '<div class="sr-body">'
+                 + '<div class="sr-name">' + escHtml(u.title) + '</div>'
+                 + '<div class="sr-username">' + escHtml(username) + '</div>'
                  + '</div>'
-                 + '<div class="sr-snippet">' + kind + '</div>'
                  + '</div>';
         }).join('');
         resultsBox.classList.add('open');
