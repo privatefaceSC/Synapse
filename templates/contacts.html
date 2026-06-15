@@ -1162,8 +1162,8 @@
     .sticker-pack-modal.open { opacity: 1; pointer-events: auto; }
     .sticker-pack-modal[hidden] { display: none; }
     .spm-shell {
-        width: min(440px, calc(100vw - 24px));
-        max-height: min(680px, calc(100vh - 24px));
+        width: min(620px, calc(100vw - 24px));
+        max-height: min(720px, calc(100vh - 24px));
         display: flex; flex-direction: column; overflow: hidden;
         border-radius: 14px; background: #152232; color: #e5efff;
         box-shadow: 0 24px 70px rgba(0,0,0,.36);
@@ -1178,13 +1178,15 @@
         font-size: 25px; line-height: 1; cursor: pointer;
     }
     .spm-grid {
-        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
-        gap: 8px; padding: 10px 18px; overflow: auto;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+        gap: 12px; padding: 12px 18px; overflow: auto;
+        overscroll-behavior: contain;
     }
     .spm-item {
         aspect-ratio: 1 / 1; display: flex; align-items: center;
-        justify-content: center; overflow: hidden; background: rgba(255,255,255,.04);
-        border-radius: 8px;
+        justify-content: center; overflow: hidden; background: rgba(255,255,255,.03);
+        border-radius: 10px; padding: 4px;
     }
     .spm-item img, .spm-item video {
         width: 100%; height: 100%; object-fit: contain;
@@ -1206,7 +1208,10 @@
         .bubble .sticker-img, .bubble .sticker-video {
             width: 160px; height: 160px;
         }
-        .spm-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+        .spm-grid {
+            grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+            gap: 9px; padding: 10px 14px;
+        }
     }
     .bubble .media-video {
         display: block; width: 100%; height: 100%;
@@ -6774,13 +6779,34 @@
         const alt = escapeHtml(item.alt || 'стикер');
         if (mime.indexOf('video/') === 0) {
             return '<div class="spm-item"><video src="' + src
-                + '" autoplay loop muted playsinline preload="metadata"></video></div>';
+                + '" class="spm-video" loop muted playsinline preload="metadata"></video></div>';
         }
         if (mime === 'application/x-tgsticker') {
             return '<div class="spm-item"><span>✦</span></div>';
         }
         return '<div class="spm-item"><img src="' + src + '" alt="' + alt
             + '" loading="lazy"></div>';
+    }
+
+    function wireStickerPackVideos() {
+        if (!stickerPackGrid) return;
+        stickerPackGrid.querySelectorAll('video.spm-video').forEach(v => {
+            const play = () => {
+                const p = v.play();
+                if (p && p.catch) p.catch(() => {});
+            };
+            const stop = () => {
+                v.pause();
+                try { v.currentTime = 0; } catch (e) {}
+            };
+            v.addEventListener('mouseenter', play);
+            v.addEventListener('mouseleave', stop);
+            v.addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (v.paused) play();
+                else stop();
+            });
+        });
     }
 
     function closeStickerPackModal() {
@@ -6813,11 +6839,13 @@
                     + '</div>';
                 return;
             }
-            stickerPackTitle.textContent = data.title || 'Стикерпак';
+            stickerPackTitle.textContent = (data.title || 'Стикерпак')
+                + (data.count ? ' · ' + data.count : '');
             const items = data.stickers || [];
             stickerPackGrid.innerHTML = items.length
                 ? items.map(renderStickerPackItem).join('')
                 : '<div class="spm-note">В этом паке нет доступных превью.</div>';
+            wireStickerPackVideos();
         } catch (err) {
             stickerPackGrid.innerHTML =
                 '<div class="spm-note">Сеть недоступна.</div>';
