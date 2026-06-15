@@ -44,18 +44,24 @@
         display: grid;
         grid-template-columns:
             minmax(260px, var(--contacts-list-width))
-            10px
             minmax(0, 1fr);
-        column-gap: 10px;
+        column-gap: 0;
         align-items: stretch;
     }
     #col-list, #col-feed { display: flex; flex-direction: column; min-height: 0; }
     #col-list, #col-feed {
         width: auto; max-width: none; flex: none; padding-left: 0; padding-right: 0;
+        grid-row: 1;
     }
+    #col-list { grid-column: 1; }
+    #col-feed { grid-column: 2; }
     .contacts-resizer {
-        position: relative; width: 10px; min-width: 10px;
-        cursor: col-resize; align-self: stretch; z-index: 15;
+        grid-column: 1; grid-row: 1;
+        justify-self: end; align-self: stretch;
+        width: 14px; min-width: 14px;
+        margin-right: -7px;
+        position: relative;
+        cursor: col-resize; z-index: 15;
     }
     .contacts-resizer::before {
         content: ""; position: absolute; top: 10px; bottom: 10px;
