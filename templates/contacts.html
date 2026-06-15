@@ -62,6 +62,13 @@
     [data-bs-theme="dark"] .messenger-folders::-webkit-scrollbar-thumb:hover {
         background: #64748b;
     }
+    .messenger-folders {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+    }
+    .messenger-folders::-webkit-scrollbar {
+        display: none;
+    }
     .mf-btn {
         flex: 0 0 auto; padding: 6px 12px; border-radius: 999px;
         border: 1px solid #e2e8f0; background: #fff; cursor: pointer;
@@ -69,6 +76,11 @@
         transition: background .15s ease, color .15s ease, border-color .15s ease;
     }
     .mf-btn:hover { background: #f1f5f9; }
+    .mf-btn[draggable="true"] { cursor: grab; }
+    .mf-btn.dragging { opacity: .5; cursor: grabbing; }
+    .mf-btn.drag-over {
+        box-shadow: 0 0 0 2px rgba(59,130,246,.35);
+    }
     .mf-btn.active {
         background: #2563eb; color: #fff; border-color: #2563eb;
     }
@@ -1836,6 +1848,60 @@
         border-radius: 13px;
     }
     [data-bs-theme="dark"] .channel-notice .cn-title { color: #f1f5f9; }
+
+    /* Ползунки не шумят визуально: показываем их только при наведении на прокручиваемую область. */
+    .contact-list,
+    .feed,
+    #messages-container,
+    .search-results,
+    .forum-picker {
+        scrollbar-color: transparent transparent;
+    }
+    .contact-list:hover,
+    .feed:hover,
+    #messages-container:hover,
+    .search-results:hover,
+    .forum-picker:hover {
+        scrollbar-color: #cdd2db transparent;
+    }
+    .contact-list::-webkit-scrollbar-thumb,
+    .feed::-webkit-scrollbar-thumb,
+    #messages-container::-webkit-scrollbar-thumb,
+    .search-results::-webkit-scrollbar-thumb,
+    .forum-picker::-webkit-scrollbar-thumb {
+        background: transparent;
+        background-clip: content-box;
+    }
+    .contact-list:hover::-webkit-scrollbar-thumb,
+    .feed:hover::-webkit-scrollbar-thumb,
+    #messages-container:hover::-webkit-scrollbar-thumb,
+    .search-results:hover::-webkit-scrollbar-thumb,
+    .forum-picker:hover::-webkit-scrollbar-thumb {
+        background: #cdd2db;
+        background-clip: content-box;
+    }
+    [data-bs-theme="dark"] .contact-list,
+    [data-bs-theme="dark"] .feed,
+    [data-bs-theme="dark"] #messages-container,
+    [data-bs-theme="dark"] .search-results,
+    [data-bs-theme="dark"] .forum-picker {
+        scrollbar-color: transparent transparent;
+    }
+    [data-bs-theme="dark"] .contact-list:hover,
+    [data-bs-theme="dark"] .feed:hover,
+    [data-bs-theme="dark"] #messages-container:hover,
+    [data-bs-theme="dark"] .search-results:hover,
+    [data-bs-theme="dark"] .forum-picker:hover {
+        scrollbar-color: #3a4150 transparent;
+    }
+    [data-bs-theme="dark"] .contact-list:hover::-webkit-scrollbar-thumb,
+    [data-bs-theme="dark"] .feed:hover::-webkit-scrollbar-thumb,
+    [data-bs-theme="dark"] #messages-container:hover::-webkit-scrollbar-thumb,
+    [data-bs-theme="dark"] .search-results:hover::-webkit-scrollbar-thumb,
+    [data-bs-theme="dark"] .forum-picker:hover::-webkit-scrollbar-thumb {
+        background: #3a4150;
+        background-clip: content-box;
+    }
 
     @media (prefers-reduced-motion: reduce) {
         .feed, .feed-header, .bubble, .bubble .media-img,
@@ -5515,7 +5581,10 @@
     // мессенджер открывать при клике на контакт с несколькими источниками
     // (раньше тут был picker — он удалён, см. ниже).
     const MF_KEY = 'skillwood:active-folder';
+    const MF_ORDER_KEY = 'skillwood:folder-order';
     let activeFolder = localStorage.getItem(MF_KEY) || '';  // '' = «Все»
+    let draggedFolder = null;
+    let suppressFolderClick = false;
 
     function collectMessengers() {
         const set = new Set();
@@ -5527,6 +5596,37 @@
         });
         return Array.from(set).sort();
     }
+    function savedFolderOrder() {
+        try {
+            const data = JSON.parse(localStorage.getItem(MF_ORDER_KEY) || '[]');
+            return Array.isArray(data) ? data.filter(Boolean) : [];
+        } catch (e) {
+            return [];
+        }
+    }
+    function saveFolderOrder(order) {
+        localStorage.setItem(MF_ORDER_KEY, JSON.stringify(order.filter(Boolean)));
+    }
+    function orderMessengers(msgrs) {
+        const known = new Set(msgrs);
+        const saved = savedFolderOrder().filter(m => known.has(m));
+        const rest = msgrs.filter(m => !saved.includes(m));
+        const order = saved.concat(rest);
+        saveFolderOrder(order);
+        return order;
+    }
+    function moveFolderBefore(from, to) {
+        if (!from || !to || from === to) return;
+        const order = orderMessengers(collectMessengers())
+            .filter(m => m !== from);
+        const idx = order.indexOf(to);
+        if (idx === -1) order.push(from);
+        else order.splice(idx, 0, from);
+        saveFolderOrder(order);
+        renderFolders();
+        applyFolderFilter();
+        requestAnimationFrame(() => centerActiveFolder('smooth'));
+    }
     function countByMessenger(m) {
         return list.querySelectorAll(
             '.contact-row-wrap[data-messengers*="' + m + '"]').length;
@@ -5534,7 +5634,7 @@
     function renderFolders() {
         const box = document.getElementById('messenger-folders');
         if (!box) return;
-        const msgrs = collectMessengers();
+        const msgrs = orderMessengers(collectMessengers());
         if (msgrs.length <= 1) {
             box.innerHTML = '';   // если один мессенджер — фильтр бессмыслен
             return;
@@ -5546,12 +5646,24 @@
         msgrs.forEach(function(m) {
             html += '<button type="button" class="mf-btn'
                 + (activeFolder === m ? ' active' : '')
-                + '" data-folder="' + escapeHtml(m) + '">'
+                + '" data-folder="' + escapeHtml(m) + '" draggable="true">'
                 + escapeHtml(m)
                 + '<span class="mf-count">' + countByMessenger(m) + '</span>'
                 + '</button>';
         });
         box.innerHTML = html;
+    }
+    function centerActiveFolder(behavior) {
+        const box = document.getElementById('messenger-folders');
+        if (!box) return;
+        const btn = box.querySelector('.mf-btn.active');
+        if (!btn) return;
+        const target = btn.offsetLeft - (box.clientWidth - btn.offsetWidth) / 2;
+        const maxLeft = Math.max(0, box.scrollWidth - box.clientWidth);
+        box.scrollTo({
+            left: Math.max(0, Math.min(maxLeft, target)),
+            behavior: behavior || 'smooth'
+        });
     }
     function applyFolderFilter() {
         list.querySelectorAll('.contact-row-wrap').forEach(function(w) {
@@ -5567,6 +5679,7 @@
         else localStorage.removeItem(MF_KEY);
         renderFolders();
         applyFolderFilter();
+        requestAnimationFrame(() => centerActiveFolder('smooth'));
     }
     // Какой мессенджер открыть для данного контакта: если активная папка
     // совпадает с одним из его мессенджеров — открываем именно её, иначе
@@ -5580,6 +5693,7 @@
     document.addEventListener('DOMContentLoaded', function() {
         renderFolders();
         applyFolderFilter();
+        requestAnimationFrame(() => centerActiveFolder('auto'));
     });
     // Выставляем во внешний IIFE — список контактов перерисовывается
     // поллингом каждые 5с, после каждого render надо пересчитать счётчики
@@ -5587,7 +5701,47 @@
     window._refreshFolders = function() {
         renderFolders();
         applyFolderFilter();
+        requestAnimationFrame(() => centerActiveFolder('auto'));
     };
+
+    document.addEventListener('dragstart', function(e) {
+        const btn = e.target.closest && e.target.closest('.mf-btn[draggable="true"]');
+        if (!btn) return;
+        draggedFolder = btn.dataset.folder || null;
+        btn.classList.add('dragging');
+        if (e.dataTransfer) {
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', draggedFolder || '');
+        }
+    });
+    document.addEventListener('dragover', function(e) {
+        const btn = e.target.closest && e.target.closest('.mf-btn[draggable="true"]');
+        if (!btn || !draggedFolder || btn.dataset.folder === draggedFolder) return;
+        e.preventDefault();
+        btn.classList.add('drag-over');
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+    });
+    document.addEventListener('dragleave', function(e) {
+        const btn = e.target.closest && e.target.closest('.mf-btn.drag-over');
+        if (btn) btn.classList.remove('drag-over');
+    });
+    document.addEventListener('drop', function(e) {
+        const btn = e.target.closest && e.target.closest('.mf-btn[draggable="true"]');
+        if (!btn || !draggedFolder) return;
+        e.preventDefault();
+        const targetFolder = btn.dataset.folder || '';
+        document.querySelectorAll('.mf-btn.drag-over')
+            .forEach(el => el.classList.remove('drag-over'));
+        moveFolderBefore(draggedFolder, targetFolder);
+        draggedFolder = null;
+        suppressFolderClick = true;
+        setTimeout(() => { suppressFolderClick = false; }, 0);
+    });
+    document.addEventListener('dragend', function() {
+        document.querySelectorAll('.mf-btn.dragging, .mf-btn.drag-over')
+            .forEach(el => el.classList.remove('dragging', 'drag-over'));
+        draggedFolder = null;
+    });
 
     document.addEventListener('click', function(e) {
         if (!e.target.closest) return;
@@ -5603,6 +5757,7 @@
         const fbtn = e.target.closest('.mf-btn');
         if (fbtn) {
             e.preventDefault();
+            if (suppressFolderClick) return;
             setActiveFolder(fbtn.dataset.folder || '');
             return;
         }

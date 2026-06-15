@@ -128,6 +128,11 @@
                 Входящие сообщения Telegram теперь попадают в ленту контактов
                 автоматически — Android-клиент для Telegram не нужен.
             </div>
+            {% if tg.last_media_skip %}
+            <div class="tg-warn">
+                Последнее медиа не скачалось: {{ tg.last_media_skip }}
+            </div>
+            {% endif %}
 
             <div class="tg-filters">
                 <div class="tg-filters-title">Фильтрация входящих</div>

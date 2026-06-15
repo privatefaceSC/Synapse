@@ -32,12 +32,14 @@ _skip_chat_ids = set()
 _recent_self_sent = []
 # chat_id -> monotonic-время, до которого считаем, что собеседник печатает.
 _typing = {}
+_DEFAULT_MEDIA_MAX_MB = 20
 _state = {
     "phone": None,
     "phone_code_hash": None,
     "authorized": False,
     "needs_password": False,
     "error": None,
+    "last_media_skip": None,
 }
 
 
@@ -152,10 +154,11 @@ def _media_max_bytes():
     """Лимит на размер скачиваемого медиа. Крупнее — не качаем, оставляем
     в ленте текстовый плейсхолдер. Настраивается TELEGRAM_MEDIA_MAX_MB."""
     try:
-        mb = int(os.environ.get("TELEGRAM_MEDIA_MAX_MB", "20"))
+        mb = int(os.environ.get("TELEGRAM_MEDIA_MAX_MB",
+                                str(_DEFAULT_MEDIA_MAX_MB)))
     except ValueError:
-        mb = 20
-    return mb * 1024 * 1024
+        mb = _DEFAULT_MEDIA_MAX_MB
+    return max(1, mb) * 1024 * 1024
 
 
 def is_configured() -> bool:
@@ -319,6 +322,28 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
     db.commit()
 
 
+async def _download_media_payload(msg, kind):
+    if kind is None:
+        return None, None
+    size = getattr(getattr(msg, "file", None), "size", None) or 0
+    if size and size > _media_max_bytes():
+        size_mb = round(size / 1024 / 1024, 1)
+        limit_mb = round(_media_max_bytes() / 1024 / 1024, 1)
+        _state["last_media_skip"] = (
+            f"{kind}: {size_mb} МБ больше лимита {limit_mb} МБ")
+        return None, None
+    try:
+        data = await msg.download_media(file=bytes)
+    except Exception as exc:  # noqa: BLE001
+        _state["error"] = f"download: {exc}"
+        return None, None
+    if data is None:
+        _state["last_media_skip"] = f"{kind}: Telethon не вернул данные"
+        return None, None
+    _state["last_media_skip"] = None
+    return kind, data
+
+
 async def _maybe_fetch_avatar(chat, chat_id):
     """Лениво скачивает фото профиля чата и сохраняет его контакту.
     Качает только если у контакта аватара ещё нет."""
@@ -435,18 +460,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     созданные синхронно прямо из веб-панели (forward / send) — иначе UI ждёт
     NewMessage-эха из Telethon, которое может задержаться или потеряться."""
     # Скачиваем медиа, если оно есть и не слишком большое.
-    data = None
-    if kind is not None:
-        size = getattr(getattr(msg, "file", None), "size", None) or 0
-        if size and size > _media_max_bytes():
-            kind = None  # слишком крупное — оставим текстовый плейсхолдер
-        else:
-            try:
-                data = await msg.download_media(file=bytes)
-            except Exception as exc:  # noqa: BLE001
-                _state["error"] = f"download: {exc}"
-                data = None
-                kind = None
+    kind, data = await _download_media_payload(msg, kind)
 
     if not text:
         text = _media_placeholder(_media_kind(msg), msg)
@@ -755,8 +769,10 @@ async def _handle_edited(event):
     Поэтому сравниваем старый и новый текст; если совпадают — выходим."""
     import datetime as _dt
     from data import db_sessions
+    from data.attachments import Attachment
     from data.contacts import MessengerHandle
     from data.edits import push_old_version
+    from data.matching import is_media_placeholder
     from data.users import Messages
 
     msg = event.message
@@ -785,6 +801,24 @@ async def _handle_edited(event):
         if target is None:
             return
         old_text = target.text or ""
+        target_has_media = (db.query(Attachment.id)
+                            .filter(Attachment.message_id == target.id)
+                            .first() is not None)
+        new_kind = _media_kind(msg)
+        if not target_has_media and new_kind is not None:
+            saved_kind, data = await _download_media_payload(msg, new_kind)
+            if saved_kind is not None and data is not None:
+                _save_attachment(db, owner, target.id, saved_kind, data, msg)
+                target_has_media = True
+        if is_media_placeholder(old_text) and target_has_media:
+            target.text = new_text
+            db.commit()
+            return
+        if is_media_placeholder(old_text) and new_kind is not None:
+            if new_text:
+                target.text = new_text
+                db.commit()
+            return
         if old_text == new_text:
             return
         push_old_version(db, target.id, old_text, edit_dt)
@@ -1823,6 +1857,7 @@ def status() -> dict:
         "needs_password": _state["needs_password"],
         "phone": _state["phone"],
         "error": _state["error"],
+        "last_media_skip": _state["last_media_skip"],
         "skip_muted": _skip_muted(),
         "skip_archived": _skip_archived(),
         "ghost_mode": ghost_mode_enabled(),
