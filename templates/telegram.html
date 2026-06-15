@@ -118,8 +118,7 @@
                 <a href="https://my.telegram.org" target="_blank"
                    rel="noopener">my.telegram.org</a> и задайте переменные
                 окружения перед запуском:<br>
-                <code>TELEGRAM_API_ID</code>, <code>TELEGRAM_API_HASH</code>,
-                <code>TELEGRAM_OWNER_USER_ID</code> (id вашего аккаунта на сайте).
+                <code>TELEGRAM_API_ID</code>, <code>TELEGRAM_API_HASH</code>.
             </div>
         {% elif tg.authorized %}
             <div class="tg-status"><span class="tg-dot on"></span>
@@ -202,8 +201,25 @@
                 </div>
             </form>
             <div class="tg-note">
-                Код отправлен в приложение Telegram на номер {{ tg.phone }}.
+                {% if tg.code_hint %}
+                    {{ tg.code_hint }}
+                {% else %}
+                    Код отправлен в приложение Telegram на номер {{ tg.phone }}.
+                {% endif %}
             </div>
+            <form method="post" action="/telegram/connect" class="mt-2">
+                <input type="hidden" name="phone" value="{{ tg.phone }}">
+                <button class="btn btn-outline-secondary tg-btn w-100">
+                    Отправить код ещё раз
+                </button>
+            </form>
+            <form method="post" action="/telegram/connect" class="mt-2">
+                <input type="hidden" name="phone" value="{{ tg.phone }}">
+                <input type="hidden" name="force_sms" value="1">
+                <button class="btn btn-outline-secondary tg-btn w-100">
+                    Попробовать SMS или звонок
+                </button>
+            </form>
         {% else %}
             <form method="post" action="/telegram/connect">
                 <div class="mb-3">

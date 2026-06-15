@@ -1147,20 +1147,25 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         from data import telegram_bridge
-        return render_template('telegram.html', tg=telegram_bridge.status())
+        user_id = session['user_id']
+        return render_template('telegram.html',
+                               tg=telegram_bridge.status(user_id))
 
     @app.route('/telegram/connect', methods=['POST'])
     def telegram_connect():
         if not session.get('user_id'):
             return redirect('/login')
         from data import telegram_bridge
+        user_id = session['user_id']
         phone = (request.form.get('phone') or '').strip()
+        force_sms = request.form.get('force_sms') == '1'
         if phone:
             try:
-                telegram_bridge.request_code(phone)
+                telegram_bridge.request_code(phone, user_id=user_id,
+                                             force_sms=force_sms)
             except Exception as exc:  # noqa: BLE001
                 return render_template('telegram.html',
-                                       tg=telegram_bridge.status(),
+                                       tg=telegram_bridge.status(user_id),
                                        error=str(exc))
         return redirect('/telegram')
 
@@ -1169,13 +1174,14 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         from data import telegram_bridge
+        user_id = session['user_id']
         code = (request.form.get('code') or '').strip()
         if code:
             try:
-                telegram_bridge.submit_code(code)
+                telegram_bridge.submit_code(code, user_id=user_id)
             except Exception as exc:  # noqa: BLE001
                 return render_template('telegram.html',
-                                       tg=telegram_bridge.status(),
+                                       tg=telegram_bridge.status(user_id),
                                        error=str(exc))
         return redirect('/telegram')
 
@@ -1184,13 +1190,14 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         from data import telegram_bridge
+        user_id = session['user_id']
         password = request.form.get('password') or ''
         if password:
             try:
-                telegram_bridge.submit_password(password)
+                telegram_bridge.submit_password(password, user_id=user_id)
             except Exception as exc:  # noqa: BLE001
                 return render_template('telegram.html',
-                                       tg=telegram_bridge.status(),
+                                       tg=telegram_bridge.status(user_id),
                                        error=str(exc))
         return redirect('/telegram')
 
@@ -1199,7 +1206,7 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         from data import telegram_bridge
-        telegram_bridge.logout()
+        telegram_bridge.logout(user_id=session['user_id'])
         return redirect('/telegram')
 
     @app.route('/telegram/settings', methods=['POST'])
@@ -1207,25 +1214,30 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         from data import telegram_bridge
+        user_id = session['user_id']
         # У нас 3 отдельные мини-формы (по одной на чекбокс). `field`
         # говорит, какое поле меняется — иначе HTML «отсутствующий»
         # чекбокс затёр бы значения других тоглов в False.
         field = request.form.get('field')
         if field == 'skip_muted':
             telegram_bridge.update_filters(
-                skip_muted=request.form.get('skip_muted') == 'on')
+                skip_muted=request.form.get('skip_muted') == 'on',
+                user_id=user_id)
         elif field == 'skip_archived':
             telegram_bridge.update_filters(
-                skip_archived=request.form.get('skip_archived') == 'on')
+                skip_archived=request.form.get('skip_archived') == 'on',
+                user_id=user_id)
         elif field == 'ghost_mode':
             telegram_bridge.set_ghost_mode(
-                request.form.get('ghost_mode') == 'on')
+                request.form.get('ghost_mode') == 'on',
+                user_id=user_id)
         else:
             # Старый формат (одна форма со всеми чекбоксами) — для
             # обратной совместимости со внешними скриптами/тестами.
             telegram_bridge.update_filters(
                 skip_muted=request.form.get('skip_muted') == 'on',
                 skip_archived=request.form.get('skip_archived') == 'on',
+                user_id=user_id,
             )
         return redirect('/telegram')
 
@@ -1779,7 +1791,7 @@ def register_routes(app: Flask) -> None:
                 try:
                     forwarded_tg_id = telegram_bridge.forward_message(
                         source_chat_id, forward_source.tg_message_id,
-                        tg_handle.tg_chat_id)
+                        tg_handle.tg_chat_id, user_id=user_id)
                 except Exception as exc:  # noqa: BLE001
                     return jsonify({'error': 'send_failed',
                                     'detail': str(exc)}), 502
@@ -1813,7 +1825,8 @@ def register_routes(app: Flask) -> None:
                     sent_id = telegram_bridge.send_file(
                         tg_handle.tg_chat_id, data,
                         upload.filename or 'file', text,
-                        **_md_kw_f, **reply_kw_tg, **_opts_f)
+                        **_md_kw_f, **reply_kw_tg, **_opts_f,
+                        user_id=user_id)
                 except Exception as exc:  # noqa: BLE001
                     return jsonify({'error': 'send_failed',
                                     'detail': str(exc)}), 502
@@ -1896,7 +1909,8 @@ def register_routes(app: Flask) -> None:
             try:
                 sent_id = telegram_bridge.send_message(
                     tg_handle.tg_chat_id, text,
-                    **_md_kw, **reply_kw_tg, **_opts)
+                    **_md_kw, **reply_kw_tg, **_opts,
+                    user_id=user_id)
             except Exception as exc:  # noqa: BLE001
                 return jsonify({'error': 'send_failed', 'detail': str(exc)}), 502
             # Scheduled — echo придёт только в момент реальной отправки.
@@ -1985,7 +1999,8 @@ def register_routes(app: Flask) -> None:
                      if contact.avatar_path else [])
             return jsonify({'ok': True, 'items': items})
         try:
-            photos = telegram_bridge.fetch_profile_photos(handle.tg_chat_id)
+            photos = telegram_bridge.fetch_profile_photos(handle.tg_chat_id,
+                                                          user_id=user_id)
         except Exception:  # noqa: BLE001
             items = ([{'photo_id': 'local',
                        'url': f'/contacts/{contact.id}/photo'}]
@@ -2027,7 +2042,7 @@ def register_routes(app: Flask) -> None:
                 return 'Not Found', 404
             try:
                 data = telegram_bridge.download_profile_photo_by_id(
-                    handle.tg_chat_id, photo_id)
+                    handle.tg_chat_id, photo_id, user_id=user_id)
             except Exception:  # noqa: BLE001
                 return 'Not Found', 404
             if not data:
@@ -2197,7 +2212,8 @@ def register_routes(app: Flask) -> None:
         # Live-список с сервера (через кэш в bridge на 60 сек) — даёт
         # точные названия и порядок. Параллельно мы всё равно дочитываем
         # из БД unread/preview.
-        live = telegram_bridge.fetch_forum_topics(tg_handle.tg_chat_id)
+        live = telegram_bridge.fetch_forum_topics(tg_handle.tg_chat_id,
+                                                  user_id=user_id)
         if live and not tg_handle.tg_is_forum:
             tg_handle.tg_is_forum = True
             db.commit()
@@ -2321,7 +2337,8 @@ def register_routes(app: Flask) -> None:
         if tg_handle is None or tg_handle.tg_chat_type != 'group':
             return jsonify({'is_group': False, 'members': []})
         try:
-            members = telegram_bridge.get_participants(tg_handle.tg_chat_id)
+            members = telegram_bridge.get_participants(tg_handle.tg_chat_id,
+                                                       user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'unavailable', 'detail': str(exc)}), 502
         return jsonify({'is_group': True, 'members': members})
@@ -2421,7 +2438,8 @@ def register_routes(app: Flask) -> None:
         tg_synced = None
         if tg_handle is not None and telegram_bridge.is_configured():
             try:
-                telegram_bridge.set_block(tg_handle.tg_chat_id, new_block)
+                telegram_bridge.set_block(tg_handle.tg_chat_id, new_block,
+                                          user_id=user_id)
                 tg_synced = True
             except Exception:  # noqa: BLE001
                 tg_synced = False
@@ -2747,7 +2765,8 @@ def register_routes(app: Flask) -> None:
         if not telegram_bridge.is_configured():
             return jsonify({'error': 'telegram_not_configured'}), 502
         try:
-            info = telegram_bridge.resolve_entity_info(tg_chat_id)
+            info = telegram_bridge.resolve_entity_info(tg_chat_id,
+                                                       user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'resolve_failed',
                             'detail': str(exc)}), 502
@@ -2812,12 +2831,14 @@ def register_routes(app: Flask) -> None:
             'user_info': None, 'common_chats': [], 'errors': [],
         }
         try:
-            result['user_info'] = telegram_bridge.get_user_info(chat_id)
+            result['user_info'] = telegram_bridge.get_user_info(
+                chat_id, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             result['errors'].append({'where': 'user_info',
                                      'detail': str(exc)})
         try:
-            result['common_chats'] = telegram_bridge.get_common_chats(chat_id)
+            result['common_chats'] = telegram_bridge.get_common_chats(
+                chat_id, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             result['errors'].append({'where': 'common_chats',
                                      'detail': str(exc)})
@@ -2871,7 +2892,8 @@ def register_routes(app: Flask) -> None:
 
         try:
             telegram_bridge.forward_message(
-                source_chat_id, msg.tg_message_id, tg_target.tg_chat_id)
+                source_chat_id, msg.tg_message_id, tg_target.tg_chat_id,
+                user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'send_failed',
                             'detail': str(exc)}), 502
@@ -2941,7 +2963,8 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'target_not_telegram'}), 400
         try:
             sent_ids = telegram_bridge.forward_messages_bulk(
-                source_chat_id, tg_ids, tg_target.tg_chat_id)
+                source_chat_id, tg_ids, tg_target.tg_chat_id,
+                user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'send_failed',
                             'detail': str(exc)}), 502
@@ -3013,7 +3036,7 @@ def register_routes(app: Flask) -> None:
 
         try:
             telegram_bridge.send_reaction(chat_id, msg.tg_message_id,
-                                          target_emoji)
+                                          target_emoji, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'send_failed', 'detail': str(exc)}), 502
 
@@ -3072,10 +3095,12 @@ def register_routes(app: Flask) -> None:
         if msg.tg_message_id is not None and chat_id is not None:
             try:
                 if for_all:
-                    telegram_bridge.delete_message(chat_id, msg.tg_message_id)
+                    telegram_bridge.delete_message(chat_id, msg.tg_message_id,
+                                                   user_id=user_id)
                 else:
                     telegram_bridge.delete_message(chat_id, msg.tg_message_id,
-                                                   revoke=False)
+                                                   revoke=False,
+                                                   user_id=user_id)
                 tg_deleted = True
             except Exception:  # noqa: BLE001
                 tg_deleted = False
@@ -3108,7 +3133,8 @@ def register_routes(app: Flask) -> None:
                             'reason': 'telegram_not_configured',
                             'items': []})
         try:
-            data = telegram_bridge.get_comments(chat_id, msg.tg_message_id)
+            data = telegram_bridge.get_comments(chat_id, msg.tg_message_id,
+                                                user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'available': False, 'reason': 'error',
                             'detail': str(exc), 'items': []})
@@ -3128,7 +3154,7 @@ def register_routes(app: Flask) -> None:
             return 'Not Found', 404
         try:
             data, mime = telegram_bridge.download_comment_media(
-                disc_chat_id, msg_id)
+                disc_chat_id, msg_id, user_id=session['user_id'])
         except Exception:  # noqa: BLE001
             return 'Not Found', 404
         if not data:
@@ -3155,12 +3181,12 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'empty'}), 400
         try:
             info = telegram_bridge.get_comments(
-                chat_id, msg.tg_message_id, 1)
+                chat_id, msg.tg_message_id, 1, user_id=user_id)
             if not info.get('available'):
                 return jsonify({'error': 'no_discussion'}), 400
             result = telegram_bridge.send_comment(
                 info['discussion_chat_id'],
-                info['top_msg_id'], text)
+                info['top_msg_id'], text, user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'send_failed',
                             'detail': str(exc)}), 502
@@ -3185,7 +3211,7 @@ def register_routes(app: Flask) -> None:
         if msg.tg_message_id is not None and chat_id is not None:
             try:
                 telegram_bridge.pin_message(chat_id, msg.tg_message_id,
-                                             notify=False)
+                                             notify=False, user_id=user_id)
             except Exception as exc:  # noqa: BLE001
                 return jsonify({'error': 'pin_failed',
                                 'detail': str(exc)}), 502
@@ -3207,7 +3233,8 @@ def register_routes(app: Flask) -> None:
         chat_id = _msg_tg_chat_id(db, msg)
         if msg.tg_message_id is not None and chat_id is not None:
             try:
-                telegram_bridge.unpin_message(chat_id, msg.tg_message_id)
+                telegram_bridge.unpin_message(chat_id, msg.tg_message_id,
+                                              user_id=user_id)
             except Exception as exc:  # noqa: BLE001
                 return jsonify({'error': 'unpin_failed',
                                 'detail': str(exc)}), 502
@@ -3271,7 +3298,8 @@ def register_routes(app: Flask) -> None:
         if msg.tg_message_id is None or chat_id is None:
             return jsonify({'error': 'no_telegram'}), 400
         try:
-            telegram_bridge.edit_message(chat_id, msg.tg_message_id, new_text)
+            telegram_bridge.edit_message(chat_id, msg.tg_message_id, new_text,
+                                         user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'edit_failed', 'detail': str(exc)}), 502
         # Сохраняем прошлую версию в историю до подмены — иначе она

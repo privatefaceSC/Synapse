@@ -21,7 +21,9 @@ import time
 _loop = None
 _thread = None
 _client = None
+_clients = {}
 _handler_registered = False
+_handler_registered_users = set()
 _refresh_task = None
 # chat_id диалогов, сообщения из которых мост игнорирует
 # (архив + выключенные уведомления). Обновляется периодически.
@@ -33,14 +35,17 @@ _recent_self_sent = []
 # chat_id -> monotonic-время, до которого считаем, что собеседник печатает.
 _typing = {}
 _DEFAULT_MEDIA_MAX_MB = 20
-_state = {
+_STATE_TEMPLATE = {
     "phone": None,
     "phone_code_hash": None,
+    "code_hint": None,
     "authorized": False,
     "needs_password": False,
     "error": None,
     "last_media_skip": None,
 }
+_state = dict(_STATE_TEMPLATE)
+_states = {}
 
 
 def _env_api():
@@ -105,7 +110,7 @@ def _skip_archived():
     return _env_flag("TELEGRAM_SKIP_ARCHIVED", True)
 
 
-def update_filters(skip_muted=None, skip_archived=None):
+def update_filters(skip_muted=None, skip_archived=None, user_id=None):
     """Меняет настройки фильтрации (из веб-панели) и сразу пересобирает
     кэш, чтобы изменение применилось без перезапуска сервера."""
     s = _load_settings()
@@ -114,11 +119,11 @@ def update_filters(skip_muted=None, skip_archived=None):
     if skip_archived is not None:
         s["skip_archived"] = bool(skip_archived)
     _save_settings(s)
-    if _state["authorized"]:
+    if _state_for(user_id)["authorized"]:
         try:
-            _call(_refresh_filter_cache(), timeout=30)
+            _call(_refresh_filter_cache(user_id), timeout=30)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"filter: {exc}"
+            _state_for(user_id)["error"] = f"filter: {exc}"
 
 
 def ghost_mode_enabled() -> bool:
@@ -133,15 +138,57 @@ def ghost_mode_enabled() -> bool:
     return _env_flag("TELEGRAM_GHOST_MODE", True)
 
 
-def set_ghost_mode(enabled: bool):
+def set_ghost_mode(enabled: bool, user_id=None):
     s = _load_settings()
     s["ghost_mode"] = bool(enabled)
     _save_settings(s)
 
 
-def _session_path():
-    return os.environ.get("TELEGRAM_SESSION") or os.path.join(
-        os.getcwd(), "db", "tg")
+def _state_for(user_id=None):
+    user_id = _normalize_user_id(user_id)
+    if user_id not in _states:
+        _states[user_id] = dict(_STATE_TEMPLATE)
+    return _states[user_id]
+
+
+def _normalize_user_id(user_id=None):
+    try:
+        return int(user_id if user_id is not None else _owner_user_id())
+    except (TypeError, ValueError):
+        return _owner_user_id()
+
+
+def _session_path(user_id=None):
+    legacy = os.environ.get("TELEGRAM_SESSION")
+    if legacy and user_id is None:
+        return legacy
+    user_id = _normalize_user_id(user_id)
+    session_dir = os.path.join(os.getcwd(), "db", "tg_sessions")
+    os.makedirs(session_dir, exist_ok=True)
+    return os.path.join(session_dir, f"user_{user_id}")
+
+
+def _sent_code_hint(sent) -> str:
+    code_type = getattr(getattr(sent, "type", None), "__class__", type(None)).__name__
+    next_type = getattr(getattr(sent, "next_type", None), "__class__", type(None)).__name__
+    length = getattr(getattr(sent, "type", None), "length", None)
+    length_text = f", {length} цифр" if length else ""
+    if "App" in code_type:
+        place = "приложение Telegram на одном из ваших устройств"
+    elif "Sms" in code_type:
+        place = "SMS"
+    elif "Call" in code_type:
+        place = "телефонный звонок"
+    elif "FlashCall" in code_type:
+        place = "flash-call"
+    else:
+        place = "Telegram"
+    hint = f"Код отправлен: {place}{length_text}."
+    if "Sms" in next_type:
+        hint += " Если код не пришёл, Telegram позже разрешит запросить SMS."
+    elif "Call" in next_type:
+        hint += " Если код не пришёл, Telegram позже разрешит звонок."
+    return hint
 
 
 def _media_root():
@@ -194,17 +241,22 @@ def _call(coro, timeout=60):
     return fut.result(timeout=timeout)
 
 
-async def _get_client():
+async def _get_client(user_id=None):
     global _client
-    if _client is not None:
-        return _client
+    user_id = _normalize_user_id(user_id)
+    if user_id in _clients:
+        return _clients[user_id]
     from telethon import TelegramClient
     aid, ah = _env_api()
     # connection_retries поменьше — без VPN серверы Telegram недоступны,
     # нет смысла долго долбиться (по умолчанию 5 попыток).
-    _client = TelegramClient(_session_path(), aid, ah, connection_retries=3)
-    await _client.connect()
-    return _client
+    client = TelegramClient(_session_path(user_id), aid, ah,
+                            connection_retries=3)
+    await client.connect()
+    _clients[user_id] = client
+    if user_id == _owner_user_id():
+        _client = client
+    return client
 
 
 def _sender_name(sender) -> str:
@@ -226,7 +278,7 @@ def _chat_title(chat) -> str:
     return getattr(chat, "title", None) or _sender_name(chat)
 
 
-async def _resolve_fwd_from(fwd):
+async def _resolve_fwd_from(fwd, client=None):
     """Из `MessageFwdHeader` достаёт (имя_автора, его_telegram_chat_id).
     Если автор «спрятал» себя в форвардах (private settings), telethon
     отдаёт только `from_name` без `from_id` — chat_id будет None,
@@ -243,7 +295,9 @@ async def _resolve_fwd_from(fwd):
             chat_id = None
         if chat_id is not None:
             try:
-                entity = await _client.get_entity(from_id)
+                if client is None:
+                    client = await _get_client()
+                entity = await client.get_entity(from_id)
                 name = _sender_name(entity)
             except Exception:  # noqa: BLE001
                 name = None
@@ -322,36 +376,37 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
     db.commit()
 
 
-async def _download_media_payload(msg, kind):
+async def _download_media_payload(msg, kind, user_id=None):
+    state = _state_for(user_id)
     if kind is None:
         return None, None
     size = getattr(getattr(msg, "file", None), "size", None) or 0
     if size and size > _media_max_bytes():
         size_mb = round(size / 1024 / 1024, 1)
         limit_mb = round(_media_max_bytes() / 1024 / 1024, 1)
-        _state["last_media_skip"] = (
+        state["last_media_skip"] = (
             f"{kind}: {size_mb} МБ больше лимита {limit_mb} МБ")
         return None, None
     try:
         data = await msg.download_media(file=bytes)
     except Exception as exc:  # noqa: BLE001
-        _state["error"] = f"download: {exc}"
+        state["error"] = f"download: {exc}"
         return None, None
     if data is None:
-        _state["last_media_skip"] = f"{kind}: Telethon не вернул данные"
+        state["last_media_skip"] = f"{kind}: Telethon не вернул данные"
         return None, None
-    _state["last_media_skip"] = None
+    state["last_media_skip"] = None
     return kind, data
 
 
-async def _maybe_fetch_avatar(chat, chat_id):
+async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
     """Лениво скачивает фото профиля чата и сохраняет его контакту.
     Качает только если у контакта аватара ещё нет."""
     from data import db_sessions
     from data.contacts import Contact, MessengerHandle
     from data.crypto import encrypt_bytes
 
-    owner = _owner_user_id()
+    owner = _normalize_user_id(user_id)
     db = db_sessions.create_session()
     try:
         handle = (db.query(MessengerHandle)
@@ -366,7 +421,9 @@ async def _maybe_fetch_avatar(chat, chat_id):
             return
         contact_id = contact.id
 
-        photo = await _client.download_profile_photo(chat, file=bytes)
+        if client is None:
+            client = await _get_client(owner)
+        photo = await client.download_profile_photo(chat, file=bytes)
         if not photo:
             return  # у чата нет фото профиля
 
@@ -381,7 +438,7 @@ async def _maybe_fetch_avatar(chat, chat_id):
         db.close()
 
 
-async def _handle_message(event):
+async def _handle_message(event, user_id=None, client=None):
     # Пропускаем чаты из архива и с выключенными уведомлениями.
     if event.chat_id in _skip_chat_ids:
         return
@@ -404,12 +461,12 @@ async def _handle_message(event):
         db = db_sessions.create_session()
         try:
             handle_ids = [hid for (hid,) in db.query(MessengerHandle.id).filter(
-                MessengerHandle.user_id == _owner_user_id(),
+                MessengerHandle.user_id == _normalize_user_id(user_id),
                 MessengerHandle.messenger_name == "Telegram",
                 MessengerHandle.tg_chat_id == event.chat_id).all()]
             if handle_ids:
                 exists = db.query(_Messages.id).filter(
-                    _Messages.user_id == _owner_user_id(),
+                    _Messages.user_id == _normalize_user_id(user_id),
                     _Messages.tg_message_id == int(tg_message_id_for_dupe),
                     _Messages.handle_id.in_(handle_ids)).first()
                 if exists is not None:
@@ -450,17 +507,19 @@ async def _handle_message(event):
         return
 
     await _persist_telegram_message(msg, event.chat_id, chat, chat_key,
-                                    chat_type, is_out, author, kind, text)
+                                    chat_type, is_out, author, kind, text,
+                                    user_id=user_id, client=client)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
-                                    is_out, author, kind, text):
+                                    is_out, author, kind, text, user_id=None,
+                                    client=None):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
     созданные синхронно прямо из веб-панели (forward / send) — иначе UI ждёт
     NewMessage-эха из Telethon, которое может задержаться или потеряться."""
     # Скачиваем медиа, если оно есть и не слишком большое.
-    kind, data = await _download_media_payload(msg, kind)
+    kind, data = await _download_media_payload(msg, kind, user_id=user_id)
 
     if not text:
         text = _media_placeholder(_media_kind(msg), msg)
@@ -483,7 +542,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     fwd_chat_id = None
     fwd = getattr(msg, "fwd_from", None)
     if fwd is not None:
-        fwd_name, fwd_chat_id = await _resolve_fwd_from(fwd)
+        fwd_name, fwd_chat_id = await _resolve_fwd_from(fwd, client=client)
 
     # Forum-чат: Telegram кладёт top-id темы в reply_to. Сам head-message
     # темы имеет `action = MessageActionTopicCreate(title=...)` — оттуда
@@ -531,7 +590,8 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     from data.contacts import record_message
     db = db_sessions.create_session()
     try:
-        message = record_message(db, _owner_user_id(), "Telegram", chat_key, text,
+        owner = _normalize_user_id(user_id)
+        message = record_message(db, owner, "Telegram", chat_key, text,
                                  tg_chat_id=chat_id, author=author,
                                  outgoing=is_out, tg_chat_type=chat_type,
                                  tg_message_id=getattr(msg, "id", None),
@@ -545,15 +605,16 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  text_html=text_html)
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
         if message is not None and data is not None and kind is not None:
-            _save_attachment(db, _owner_user_id(), message.id, kind, data, msg)
+            _save_attachment(db, owner, message.id, kind, data, msg)
     finally:
         db.close()
 
     # Фото профиля собеседника/группы — лениво, один раз.
     try:
-        await _maybe_fetch_avatar(chat, chat_id)
+        await _maybe_fetch_avatar(chat, chat_id, user_id=user_id,
+                                  client=client)
     except Exception as exc:  # noqa: BLE001
-        _state["error"] = f"avatar: {exc}"
+        _state_for(user_id)["error"] = f"avatar: {exc}"
 
 
 def _pop_self_sent(chat_id, text) -> bool:
@@ -577,21 +638,24 @@ def _pop_self_sent(chat_id, text) -> bool:
     return found
 
 
-async def _register_handler():
+async def _register_handler(user_id=None, client=None):
     global _handler_registered
-    if _handler_registered:
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    if owner in _handler_registered_users:
         return
     from telethon import events
-    client = _client
+    if client is None:
+        client = await _get_client(owner)
 
     # Без incoming=True — ловим и входящие, и исходящие (мои ответы
     # с любого устройства Telegram тоже попадают в ленту).
     @client.on(events.NewMessage())
     async def _on_new(event):
         try:
-            await _handle_message(event)
+            await _handle_message(event, user_id=owner, client=client)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"incoming: {exc}"
+            state["error"] = f"incoming: {exc}"
 
     # Событие «печатает…» + смена онлайн-статуса. UserUpdate приходит и на
     # то, и на другое — какие именно поля выставлены, зависит от Telegram.
@@ -613,9 +677,9 @@ async def _register_handler():
     @client.on(events.Raw([UpdateReadHistoryOutbox, UpdateReadChannelOutbox]))
     async def _on_read_outbox(update):
         try:
-            await _handle_read_outbox(update)
+            await _handle_read_outbox(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"read_outbox: {exc}"
+            state["error"] = f"read_outbox: {exc}"
 
     # Удаление сообщений собеседником или мной с другого устройства.
     # У нас в БД сообщение не сносится, а помечается deleted_at — в ленте
@@ -623,9 +687,9 @@ async def _register_handler():
     @client.on(events.MessageDeleted())
     async def _on_deleted(event):
         try:
-            await _handle_deleted(event)
+            await _handle_deleted(event, user_id=owner)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"deleted: {exc}"
+            state["error"] = f"deleted: {exc}"
 
     # Реакции на сообщения (мои и собеседника). У user-API Telegram это один
     # тип апдейта — UpdateMessageReactions — который покрывает и личку, и
@@ -635,9 +699,9 @@ async def _register_handler():
     @client.on(events.Raw([UpdateMessageReactions]))
     async def _on_reactions(update):
         try:
-            await _handle_reactions(update)
+            await _handle_reactions(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"reactions: {exc}"
+            state["error"] = f"reactions: {exc}"
 
     # Редактирование сообщений (мои с другого устройства и собеседника).
     # Telegram в UI показывает только финальный текст с пометкой «ред.»;
@@ -646,14 +710,15 @@ async def _register_handler():
     @client.on(events.MessageEdited())
     async def _on_edited(event):
         try:
-            await _handle_edited(event)
+            await _handle_edited(event, user_id=owner)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"edited: {exc}"
+            state["error"] = f"edited: {exc}"
 
+    _handler_registered_users.add(owner)
     _handler_registered = True
 
 
-async def _handle_reactions(update):
+async def _handle_reactions(update, user_id=None):
     """Принять UpdateMessageReactions/UpdateChannelMessageReactions и записать
     набор реакций в БД. Telegram присылает агрегат — мы храним снимок."""
     from data import db_sessions
@@ -678,7 +743,7 @@ async def _handle_reactions(update):
             chat_id = -1000000000000 - int(ch)
 
     items = _parse_reactions(getattr(update, "reactions", None))
-    owner = _owner_user_id()
+    owner = _normalize_user_id(user_id)
     db = db_sessions.create_session()
     try:
         q = db.query(Messages).filter(
@@ -722,7 +787,7 @@ def _parse_reactions(reactions_obj):
     return items
 
 
-async def _handle_deleted(event):
+async def _handle_deleted(event, user_id=None):
     """Пометить наши Messages с указанными tg_message_id как удалённые.
 
     Для каналов/супергрупп `event.chat_id` есть → фильтр по чату.
@@ -736,7 +801,7 @@ async def _handle_deleted(event):
     ids = list(getattr(event, "deleted_ids", None) or [])
     if not ids:
         return
-    owner = _owner_user_id()
+    owner = _normalize_user_id(user_id)
     chat_id = getattr(event, "chat_id", None)
     db = db_sessions.create_session()
     try:
@@ -761,7 +826,7 @@ async def _handle_deleted(event):
         db.close()
 
 
-async def _handle_edited(event):
+async def _handle_edited(event, user_id=None):
     """Зафиксировать прошлую версию текста сообщения в `message_edits`.
 
     Telethon шлёт MessageEdited не только на изменение текста: иногда
@@ -785,7 +850,7 @@ async def _handle_edited(event):
     # Если его нет — fallback на «сейчас».
     edit_dt = getattr(msg, "edit_date", None) or _dt.datetime.now()
 
-    owner = _owner_user_id()
+    owner = _normalize_user_id(user_id)
     db = db_sessions.create_session()
     try:
         handle_ids = [hid for (hid,) in db.query(MessengerHandle.id).filter(
@@ -806,7 +871,8 @@ async def _handle_edited(event):
                             .first() is not None)
         new_kind = _media_kind(msg)
         if not target_has_media and new_kind is not None:
-            saved_kind, data = await _download_media_payload(msg, new_kind)
+            saved_kind, data = await _download_media_payload(
+                msg, new_kind, user_id=user_id)
             if saved_kind is not None and data is not None:
                 _save_attachment(db, owner, target.id, saved_kind, data, msg)
                 target_has_media = True
@@ -828,7 +894,7 @@ async def _handle_edited(event):
         db.close()
 
 
-async def _handle_read_outbox(update):
+async def _handle_read_outbox(update, user_id=None):
     """Отметить как прочитанные все исходящие в чате с tg_message_id <= max_id."""
     import datetime as _dt
     from data import db_sessions
@@ -852,7 +918,7 @@ async def _handle_read_outbox(update):
     if chat_id is None or max_id is None:
         return
 
-    owner = _owner_user_id()
+    owner = _normalize_user_id(user_id)
     db = db_sessions.create_session()
     try:
         handle_ids = [hid for (hid,) in db.query(MessengerHandle.id).filter(
@@ -896,56 +962,66 @@ def _is_muted(dialog) -> bool:
     return mute_until > now
 
 
-async def _refresh_filter_cache():
+async def _refresh_filter_cache(user_id=None, client=None):
     """Пересобирает множество chat_id, которые мост игнорирует."""
     global _skip_chat_ids
-    if _client is None:
+    owner = _normalize_user_id(user_id)
+    if client is None:
+        client = _clients.get(owner)
+    if client is None:
         return
     skip_muted, skip_archived = _skip_muted(), _skip_archived()
     if not skip_muted and not skip_archived:
         _skip_chat_ids = set()
         return
     skip = set()
-    async for d in _client.iter_dialogs():
+    async for d in client.iter_dialogs():
         if (skip_archived and getattr(d, "archived", False)) or \
                 (skip_muted and _is_muted(d)):
             skip.add(d.id)
     _skip_chat_ids = skip
 
 
-async def _periodic_refresh():
+async def _periodic_refresh(user_id=None):
     """Раз в 5 минут обновляет кэш фильтрации (чаты мьютят/архивируют
     уже после старта моста)."""
     while True:
         await asyncio.sleep(300)
         try:
-            await _refresh_filter_cache()
+            await _refresh_filter_cache(user_id)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"filter: {exc}"
+            _state_for(user_id)["error"] = f"filter: {exc}"
 
 
-async def _activate():
+async def _activate(user_id=None, client=None):
     """Общий «после авторизации»: вешает обработчик входящих, строит
     кэш фильтрации и запускает периодическое обновление."""
     global _refresh_task
-    await _register_handler()
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    if client is None:
+        client = await _get_client(owner)
+    await _register_handler(owner, client=client)
     try:
-        await _refresh_filter_cache()
+        await _refresh_filter_cache(owner, client=client)
     except Exception as exc:  # noqa: BLE001
-        _state["error"] = f"filter: {exc}"
+        state["error"] = f"filter: {exc}"
     if _refresh_task is None:
-        _refresh_task = asyncio.ensure_future(_periodic_refresh())
+        _refresh_task = asyncio.ensure_future(_periodic_refresh(owner))
 
 
-async def _startup():
+async def _startup(user_id=None):
     # Подгружаем известные discussion-группы каналов из БД, чтобы
     # события о новых комментариях (приходящие сразу после старта моста)
     # не успели породить «призрачный» Contact.
     _ensure_discussion_groups_loaded()
-    client = await _get_client()
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
     if await client.is_user_authorized():
-        _state["authorized"] = True
-        await _activate()
+        state["authorized"] = True
+        if owner not in _handler_registered_users:
+            await _activate(owner, client=client)
 
 
 def _quiet_telethon_logging():
@@ -956,14 +1032,26 @@ def _quiet_telethon_logging():
     logging.getLogger("telethon").setLevel(logging.CRITICAL)
 
 
-async def _safe_startup():
+async def _safe_startup(user_id=None):
     try:
-        await _startup()
+        await _startup(user_id)
     except Exception as exc:  # noqa: BLE001
-        _state["error"] = str(exc)
+        _state_for(user_id)["error"] = str(exc)
 
 
-def start():
+async def _refresh_status(user_id=None):
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
+    if await client.is_user_authorized():
+        state["authorized"] = True
+        await _activate(owner, client=client)
+    else:
+        state["authorized"] = False
+    return state
+
+
+def start(user_id=None):
     """Вызывается при старте приложения. Тихо выходит, если мост
     не настроен или telethon недоступен (тесты/обычный режим).
 
@@ -974,85 +1062,100 @@ def start():
         return
     _quiet_telethon_logging()
     _ensure_loop()
-    asyncio.run_coroutine_threadsafe(_safe_startup(), _loop)
+    asyncio.run_coroutine_threadsafe(_safe_startup(user_id), _loop)
 
 
-async def _request_code(phone):
-    client = await _get_client()
+async def _request_code(phone, user_id=None, force_sms=False):
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
     if await client.is_user_authorized():
-        _state["authorized"] = True
+        state["authorized"] = True
         return
-    sent = await client.send_code_request(phone)
-    _state["phone"] = phone
-    _state["phone_code_hash"] = sent.phone_code_hash
-    _state["needs_password"] = False
-    _state["error"] = None
+    sent = await client.send_code_request(phone, force_sms=bool(force_sms))
+    state["phone"] = phone
+    state["phone_code_hash"] = sent.phone_code_hash
+    state["code_hint"] = _sent_code_hint(sent)
+    state["needs_password"] = False
+    state["error"] = None
 
 
-def request_code(phone):
-    _call(_request_code(phone.strip()))
+def request_code(phone, user_id=None, force_sms=False):
+    _call(_request_code(phone.strip(), user_id=user_id,
+                        force_sms=force_sms))
 
 
-async def _submit_code(code):
+async def _submit_code(code, user_id=None):
     from telethon.errors import SessionPasswordNeededError
-    client = await _get_client()
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
     try:
         await client.sign_in(
-            _state["phone"], code,
-            phone_code_hash=_state["phone_code_hash"])
+            state["phone"], code,
+            phone_code_hash=state["phone_code_hash"])
     except SessionPasswordNeededError:
-        _state["needs_password"] = True
+        state["needs_password"] = True
         return
-    _state["authorized"] = True
-    _state["needs_password"] = False
-    await _activate()
+    state["authorized"] = True
+    state["needs_password"] = False
+    await _activate(owner, client=client)
 
 
-def submit_code(code):
-    _call(_submit_code(code.strip()))
+def submit_code(code, user_id=None):
+    _call(_submit_code(code.strip(), user_id=user_id))
 
 
-async def _submit_password(password):
-    client = await _get_client()
+async def _submit_password(password, user_id=None):
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
     await client.sign_in(password=password)
-    _state["authorized"] = True
-    _state["needs_password"] = False
-    await _activate()
+    state["authorized"] = True
+    state["needs_password"] = False
+    await _activate(owner, client=client)
 
 
-def submit_password(password):
-    _call(_submit_password(password))
+def submit_password(password, user_id=None):
+    _call(_submit_password(password, user_id=user_id))
 
 
-async def _logout():
+async def _logout(user_id=None):
     global _client, _handler_registered, _refresh_task, _skip_chat_ids
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
     if _refresh_task is not None:
         _refresh_task.cancel()
         _refresh_task = None
-    if _client is not None:
+    client = _clients.pop(owner, None)
+    if client is not None:
         try:
-            await _client.log_out()
+            await client.log_out()
         except Exception:  # noqa: BLE001
             pass
+    if owner == _owner_user_id():
         _client = None
+        _state.update({"authorized": False, "needs_password": False,
+                       "phone": None, "phone_code_hash": None, "error": None,
+                       "last_media_skip": None})
     _handler_registered = False
+    _handler_registered_users.discard(owner)
     _skip_chat_ids = set()
-    _state.update({"authorized": False, "needs_password": False,
-                   "phone": None, "phone_code_hash": None, "error": None})
+    state.update(dict(_STATE_TEMPLATE))
 
 
-def logout():
+def logout(user_id=None):
     try:
-        _call(_logout())
+        _call(_logout(user_id=user_id))
     except Exception as exc:  # noqa: BLE001
-        _state["error"] = str(exc)
+        _state_for(user_id)["error"] = str(exc)
 
 
 _participants_cache = {}
 
 
-async def _fetch_participants(chat_id):
-    client = await _get_client()
+async def _fetch_participants(chat_id, user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     result = []
@@ -1068,17 +1171,18 @@ async def _fetch_participants(chat_id):
     return result
 
 
-def get_participants(chat_id):
+def get_participants(chat_id, user_id=None):
     """Список участников группы (имя + username). Кэш на 10 минут,
     чтобы повторные открытия чата не били Telegram запросами."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    key = int(chat_id)
+    owner = _normalize_user_id(user_id)
+    key = (owner, int(chat_id))
     now = time.monotonic()
     cached = _participants_cache.get(key)
     if cached and now - cached[1] < 600:
         return cached[0]
-    data = _call(_fetch_participants(key), timeout=60)
+    data = _call(_fetch_participants(key[1], user_id=owner), timeout=60)
     _participants_cache[key] = (data, now)
     return data
 
@@ -1089,10 +1193,10 @@ _user_info_cache = {}
 _common_chats_cache = {}
 
 
-async def _fetch_user_info(chat_id):
+async def _fetch_user_info(chat_id, user_id=None):
     """Через GetFullUserRequest достаём bio (about), phone и username."""
     from telethon.tl.functions.users import GetFullUserRequest
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     input_user = await client.get_input_entity(int(chat_id))
@@ -1110,24 +1214,25 @@ async def _fetch_user_info(chat_id):
     }
 
 
-def get_user_info(chat_id):
+def get_user_info(chat_id, user_id=None):
     """Bio / телефон / @username Telegram-контакта. Кэш 5 минут."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    key = int(chat_id)
+    owner = _normalize_user_id(user_id)
+    key = (owner, int(chat_id))
     now = time.monotonic()
     cached = _user_info_cache.get(key)
     if cached and now - cached[1] < 300:
         return cached[0]
-    data = _call(_fetch_user_info(key), timeout=30)
+    data = _call(_fetch_user_info(key[1], user_id=owner), timeout=30)
     _user_info_cache[key] = (data, now)
     return data
 
 
-async def _fetch_common_chats(chat_id, limit):
+async def _fetch_common_chats(chat_id, limit, user_id=None):
     """Общие группы с пользователем через GetCommonChatsRequest."""
     from telethon.tl.functions.messages import GetCommonChatsRequest
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     input_user = await client.get_input_entity(int(chat_id))
@@ -1144,16 +1249,18 @@ async def _fetch_common_chats(chat_id, limit):
     return out
 
 
-def get_common_chats(chat_id, limit=20):
+def get_common_chats(chat_id, limit=20, user_id=None):
     """Общие группы/каналы с пользователем. Кэш 5 минут."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    key = (int(chat_id), int(limit))
+    owner = _normalize_user_id(user_id)
+    key = (owner, int(chat_id), int(limit))
     now = time.monotonic()
     cached = _common_chats_cache.get(key)
     if cached and now - cached[1] < 300:
         return cached[0]
-    data = _call(_fetch_common_chats(key[0], key[1]), timeout=30)
+    data = _call(_fetch_common_chats(key[1], key[2], user_id=owner),
+                 timeout=30)
     _common_chats_cache[key] = (data, now)
     return data
 
@@ -1275,13 +1382,13 @@ def _comment_media_kind(m):
     return None
 
 
-async def _get_comments(chat_id, msg_id, limit):
+async def _get_comments(chat_id, msg_id, limit, user_id=None):
     """Получает комментарии к посту канала через linked discussion group.
     Возвращает dict: {available, items, discussion_chat_id, top_msg_id}.
     Если у канала нет discussion group — available=False."""
     from telethon.tl.functions.messages import GetDiscussionMessageRequest
     from telethon.tl.types import PeerChannel
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     peer = await client.get_input_entity(int(chat_id))
@@ -1343,11 +1450,12 @@ async def _get_comments(chat_id, msg_id, limit):
             "discussion_chat_id": disc_id, "top_msg_id": int(top.id)}
 
 
-def get_comments(chat_id, msg_id, limit=50):
+def get_comments(chat_id, msg_id, limit=50, user_id=None):
     """Sync-обёртка для _get_comments."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    data = _call(_get_comments(chat_id, msg_id, limit), timeout=60)
+    data = _call(_get_comments(chat_id, msg_id, limit, user_id=user_id),
+                 timeout=60)
     # Если discussion-группа известна, заодно подчистим «фейковый»
     # Contact (если он уже успел создаться до того, как мы её узнали).
     disc_id = data.get("discussion_chat_id") if isinstance(data, dict) else None
@@ -1359,10 +1467,10 @@ def get_comments(chat_id, msg_id, limit=50):
     return data
 
 
-async def _download_comment_media(disc_chat_id, msg_id):
+async def _download_comment_media(disc_chat_id, msg_id, user_id=None):
     """Скачивает медиа конкретного комментария по (disc_chat_id, msg_id).
     Возвращает (bytes, mime) или (None, None)."""
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     msg = await client.get_messages(int(disc_chat_id), ids=int(msg_id))
@@ -1376,16 +1484,17 @@ async def _download_comment_media(disc_chat_id, msg_id):
     return data, mime
 
 
-def download_comment_media(disc_chat_id, msg_id):
+def download_comment_media(disc_chat_id, msg_id, user_id=None):
     """Sync-обёртка."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_download_comment_media(disc_chat_id, msg_id), timeout=60)
+    return _call(_download_comment_media(disc_chat_id, msg_id,
+                                         user_id=user_id), timeout=60)
 
 
-async def _send_comment(discussion_chat_id, top_msg_id, text):
+async def _send_comment(discussion_chat_id, top_msg_id, text, user_id=None):
     """Отправляет комментарий в linked discussion group канала."""
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     sent = await client.send_message(int(discussion_chat_id), text,
@@ -1393,7 +1502,7 @@ async def _send_comment(discussion_chat_id, top_msg_id, text):
     return {"id": int(sent.id) if sent else None}
 
 
-def send_comment(discussion_chat_id, top_msg_id, text):
+def send_comment(discussion_chat_id, top_msg_id, text, user_id=None):
     """Sync-обёртка для _send_comment."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
@@ -1403,8 +1512,8 @@ def send_comment(discussion_chat_id, top_msg_id, text):
     from data.telegram_ids import chat_id_variants
     _known_discussion_groups.update(chat_id_variants(discussion_chat_id))
     _persist_discussion_group(int(discussion_chat_id))
-    result = _call(_send_comment(discussion_chat_id, top_msg_id, text),
-                   timeout=30)
+    result = _call(_send_comment(discussion_chat_id, top_msg_id, text,
+                                 user_id=user_id), timeout=30)
     # И на всякий случай чистим, если он всё-таки успел создаться.
     try:
         _cleanup_discussion_contact(int(discussion_chat_id))
@@ -1413,10 +1522,10 @@ def send_comment(discussion_chat_id, top_msg_id, text):
     return result
 
 
-async def _fetch_profile_photos(chat_id, limit):
+async def _fetch_profile_photos(chat_id, limit, user_id=None):
     """Возвращает список id всех фотографий профиля пользователя/чата.
     Бинарник каждого скачивается лениво по запросу — здесь только id."""
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     try:
@@ -1429,17 +1538,18 @@ async def _fetch_profile_photos(chat_id, limit):
     return photos
 
 
-def fetch_profile_photos(chat_id, limit=20):
+def fetch_profile_photos(chat_id, limit=20, user_id=None):
     """Sync-обёртка."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_fetch_profile_photos(chat_id, limit), timeout=60)
+    return _call(_fetch_profile_photos(chat_id, limit, user_id=user_id),
+                 timeout=60)
 
 
-async def _download_profile_photo_by_id(chat_id, photo_id):
+async def _download_profile_photo_by_id(chat_id, photo_id, user_id=None):
     """Скачивает конкретное фото профиля по id (через iter_profile_photos
     с лимитом 50 — обычно у людей сильно меньше)."""
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     try:
@@ -1452,21 +1562,21 @@ async def _download_profile_photo_by_id(chat_id, photo_id):
     return None
 
 
-def download_profile_photo_by_id(chat_id, photo_id):
+def download_profile_photo_by_id(chat_id, photo_id, user_id=None):
     """Sync-обёртка."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_download_profile_photo_by_id(chat_id, photo_id),
-                 timeout=120)
+    return _call(_download_profile_photo_by_id(chat_id, photo_id,
+                                               user_id=user_id), timeout=120)
 
 
-async def _resolve_entity_info(chat_id):
+async def _resolve_entity_info(chat_id, user_id=None):
     """Получает имя/тип Telegram-сущности (пользователь / группа / канал)
     по её peer-id. Нужно, чтобы создавать локальный Contact для
     пользователей, с которыми мы ещё не переписывались (клик по
     участнику группы или по общему чату в профиле)."""
     from telethon.tl.types import User as _User, Chat as _Chat, Channel as _Channel
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     e = await client.get_entity(int(chat_id))
@@ -1498,19 +1608,19 @@ async def _resolve_entity_info(chat_id):
     raise RuntimeError("Неизвестный тип Telegram-сущности")
 
 
-def resolve_entity_info(chat_id):
+def resolve_entity_info(chat_id, user_id=None):
     """Sync-обёртка для _resolve_entity_info."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_resolve_entity_info(chat_id), timeout=30)
+    return _call(_resolve_entity_info(chat_id, user_id=user_id), timeout=30)
 
 
-async def _set_block(chat_id, block):
+async def _set_block(chat_id, block, user_id=None):
     """Block/Unblock пользователя в Telegram. block=True — заблокировать,
     block=False — снять блокировку."""
     from telethon.tl.functions.contacts import (BlockRequest,
                                                  UnblockRequest)
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     input_user = await client.get_input_entity(int(chat_id))
@@ -1520,16 +1630,16 @@ async def _set_block(chat_id, block):
         await client(UnblockRequest(id=input_user))
 
 
-def set_block(chat_id, block=True):
+def set_block(chat_id, block=True, user_id=None):
     """Заблокировать (или разблокировать) пользователя в самом Telegram."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_set_block(chat_id, bool(block)), timeout=30)
+    _call(_set_block(chat_id, bool(block), user_id=user_id), timeout=30)
 
 
 async def _send_message(chat_id, text, reply_to=None, parse_mode=None,
-                         silent=False, schedule=None):
-    client = await _get_client()
+                         silent=False, schedule=None, user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     # Регистрируем ДО отправки: Telegram пришлёт это сообщение обратно
@@ -1559,7 +1669,7 @@ async def _send_message(chat_id, text, reply_to=None, parse_mode=None,
 
 
 def send_message(chat_id, text, reply_to=None, parse_mode=None,
-                  silent=False, schedule=None):
+                  silent=False, schedule=None, user_id=None):
     """Отправляет текст в Telegram-чат от имени владельца аккаунта.
     `reply_to` — id telegram-сообщения, на которое отвечаем (или None).
     `parse_mode='md'` — Telethon разберёт markdown.
@@ -1569,12 +1679,13 @@ def send_message(chat_id, text, reply_to=None, parse_mode=None,
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_send_message(chat_id, text, reply_to, parse_mode,
-                                silent, schedule))
+                               silent, schedule, user_id=user_id))
 
 
 async def _send_file(chat_id, data, filename, caption, reply_to=None,
-                     parse_mode=None, silent=False, schedule=None):
-    client = await _get_client()
+                     parse_mode=None, silent=False, schedule=None,
+                     user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     import io
@@ -1591,84 +1702,84 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None,
 
 
 def send_file(chat_id, data, filename, caption="", reply_to=None,
-              parse_mode=None, silent=False, schedule=None):
+              parse_mode=None, silent=False, schedule=None, user_id=None):
     """Отправляет файл в Telegram-чат. Поддерживает `silent` (без звука)
     и `schedule` (отложенная отправка — datetime). Возвращает id
     отправленного Telegram-сообщения."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_send_file(chat_id, data, filename, caption, reply_to,
-                             parse_mode, silent, schedule),
+                            parse_mode, silent, schedule, user_id=user_id),
                  timeout=120)
 
 
-async def _delete_message(chat_id, message_id, revoke):
-    client = await _get_client()
+async def _delete_message(chat_id, message_id, revoke, user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     await client.delete_messages(int(chat_id), [int(message_id)],
                                  revoke=bool(revoke))
 
 
-def delete_message(chat_id, message_id, revoke=True):
+def delete_message(chat_id, message_id, revoke=True, user_id=None):
     """Удаляет сообщение в самом Telegram. revoke=True — у всех (где это
     разрешено правилами TG: своё личное/групповое сообщение, либо если ты
     админ группы). revoke=False — удалить только из своего клиента."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_delete_message(chat_id, message_id, revoke))
+    _call(_delete_message(chat_id, message_id, revoke, user_id=user_id))
 
 
-async def _edit_message(chat_id, message_id, text):
-    client = await _get_client()
+async def _edit_message(chat_id, message_id, text, user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     await client.edit_message(int(chat_id), int(message_id), text)
 
 
-def edit_message(chat_id, message_id, text):
+def edit_message(chat_id, message_id, text, user_id=None):
     """Редактирует своё сообщение в Telegram."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_edit_message(chat_id, message_id, text))
+    _call(_edit_message(chat_id, message_id, text, user_id=user_id))
 
 
-async def _pin_message(chat_id, message_id, notify):
-    client = await _get_client()
+async def _pin_message(chat_id, message_id, notify, user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     await client.pin_message(int(chat_id), int(message_id),
                              notify=notify)
 
 
-def pin_message(chat_id, message_id, notify=False):
+def pin_message(chat_id, message_id, notify=False, user_id=None):
     """Закрепляет сообщение в Telegram-чате. `notify=False` — закрепляем
     «тихо» (без шумного «вы закрепили это сообщение» всем участникам).
     Это симметрично UI-сценарию «📌 в контекстном меню»."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_pin_message(chat_id, message_id, notify))
+    _call(_pin_message(chat_id, message_id, notify, user_id=user_id))
 
 
-async def _unpin_message(chat_id, message_id):
-    client = await _get_client()
+async def _unpin_message(chat_id, message_id, user_id=None):
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     await client.unpin_message(int(chat_id), int(message_id))
 
 
-def unpin_message(chat_id, message_id):
+def unpin_message(chat_id, message_id, user_id=None):
     """Снимает закреп с сообщения в Telegram-чате."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_unpin_message(chat_id, message_id))
+    _call(_unpin_message(chat_id, message_id, user_id=user_id))
 
 
-async def _fetch_forum_topics(chat_id: int) -> list:
+async def _fetch_forum_topics(chat_id: int, user_id=None) -> list:
     """Тянет список тем у Telegram-форума через MTProto.
     Возвращает [{id, title, top_message_id}] или [] если чат не форум /
     Telethon не настроен."""
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         return []
     try:
@@ -1702,22 +1813,25 @@ _forum_topics_cache = {}  # chat_id -> (topics, monotonic_ts)
 _FORUM_TOPICS_TTL = 60  # секунд
 
 
-def fetch_forum_topics(chat_id: int) -> list:
+def fetch_forum_topics(chat_id: int, user_id=None) -> list:
     """Sync-обёртка с кэшем на 60 сек. Тянет темы форума с сервера
     Telegram через MTProto. Возвращает пустой список при любой ошибке."""
     if not is_configured() or not telethon_available():
         return []
+    owner = _normalize_user_id(user_id)
     now = time.monotonic()
-    cached = _forum_topics_cache.get(int(chat_id))
+    cache_key = (owner, int(chat_id))
+    cached = _forum_topics_cache.get(cache_key)
     if cached and now - cached[1] < _FORUM_TOPICS_TTL:
         return cached[0]
     try:
-        topics = _call(_fetch_forum_topics(chat_id), timeout=20)
+        topics = _call(_fetch_forum_topics(chat_id, user_id=owner),
+                       timeout=20)
     except Exception:  # noqa: BLE001
         topics = []
     # Кэшируем даже пустой ответ — иначе при «not a forum» мы будем
     # лупиться по MTProto на каждом открытии. Пустота протухнет за 60 с.
-    _forum_topics_cache[int(chat_id)] = (topics, now)
+    _forum_topics_cache[cache_key] = (topics, now)
     return topics
 
 
@@ -1731,8 +1845,11 @@ def invalidate_forum_topics_cache(chat_id: int = None):
         _forum_topics_cache.pop(int(chat_id), None)
 
 
-async def _forward_message(source_chat_id, message_id, target_chat_id):
-    client = await _get_client()
+async def _forward_message(source_chat_id, message_id, target_chat_id,
+                           user_id=None):
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     # forward_messages принимает list — берём первый из результата.
@@ -1762,26 +1879,30 @@ async def _forward_message(source_chat_id, message_id, target_chat_id):
             if text or kind is not None:
                 await _persist_telegram_message(
                     msg, int(target_chat_id), chat, chat_key, chat_type,
-                    True, "Вы", kind, text)
+                    True, "Вы", kind, text, user_id=owner, client=client)
         except Exception as exc:  # noqa: BLE001
-            _state["error"] = f"forward_persist: {exc}"
+            state["error"] = f"forward_persist: {exc}"
 
     return getattr(msg, "id", None)
 
 
-def forward_message(source_chat_id, message_id, target_chat_id):
+def forward_message(source_chat_id, message_id, target_chat_id, user_id=None):
     """Пересылает сообщение из source-чата в target-чат через Telethon.
     Возвращает id нового сообщения в target."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    return _call(_forward_message(source_chat_id, message_id, target_chat_id))
+    return _call(_forward_message(source_chat_id, message_id, target_chat_id,
+                                  user_id=user_id))
 
 
-async def _forward_messages_bulk(source_chat_id, message_ids, target_chat_id):
+async def _forward_messages_bulk(source_chat_id, message_ids, target_chat_id,
+                                 user_id=None):
     """Массовый forward — одним запросом гонит несколько сообщений.
     Telegram сохраняет порядок и группирует медиа-альбомы. Локально для
     каждого результата пишем Messages+Attachment, чтобы UI не ждал echo."""
-    client = await _get_client()
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    client = await _get_client(owner)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     ids = [int(x) for x in message_ids]
@@ -1811,27 +1932,30 @@ async def _forward_messages_bulk(source_chat_id, message_ids, target_chat_id):
                 if text or kind is not None:
                     await _persist_telegram_message(
                         msg, int(target_chat_id), chat, chat_key,
-                        chat_type, True, "Вы", kind, text)
+                        chat_type, True, "Вы", kind, text,
+                        user_id=owner, client=client)
             except Exception as exc:  # noqa: BLE001
-                _state["error"] = f"forward_bulk_persist: {exc}"
+                state["error"] = f"forward_bulk_persist: {exc}"
     except Exception as exc:  # noqa: BLE001
-        _state["error"] = f"forward_bulk_entity: {exc}"
+        state["error"] = f"forward_bulk_entity: {exc}"
     return sent_ids
 
 
-def forward_messages_bulk(source_chat_id, message_ids, target_chat_id):
+def forward_messages_bulk(source_chat_id, message_ids, target_chat_id,
+                          user_id=None):
     """Sync-обёртка: пересылает список сообщений одним вызовом."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_forward_messages_bulk(
-        source_chat_id, message_ids, target_chat_id), timeout=120)
+        source_chat_id, message_ids, target_chat_id, user_id=user_id),
+        timeout=120)
 
 
-async def _send_reaction(chat_id, message_id, emoji):
+async def _send_reaction(chat_id, message_id, emoji, user_id=None):
     """Toggle: emoji=None или '' снимает мою реакцию."""
     from telethon.tl.functions.messages import SendReactionRequest
     from telethon.tl.types import ReactionEmoji
-    client = await _get_client()
+    client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
     entity = await client.get_input_entity(int(chat_id))
@@ -1842,22 +1966,29 @@ async def _send_reaction(chat_id, message_id, emoji):
                                      reaction=reactions))
 
 
-def send_reaction(chat_id, message_id, emoji):
+def send_reaction(chat_id, message_id, emoji, user_id=None):
     """Поставить (или снять, если emoji пуст) реакцию на сообщение."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
-    _call(_send_reaction(chat_id, message_id, emoji))
+    _call(_send_reaction(chat_id, message_id, emoji, user_id=user_id))
 
 
-def status() -> dict:
+def status(user_id=None) -> dict:
+    if is_configured() and telethon_available():
+        try:
+            _call(_refresh_status(user_id), timeout=10)
+        except Exception as exc:  # noqa: BLE001
+            _state_for(user_id)["error"] = str(exc)
+    state = _state_for(user_id)
     return {
         "available": telethon_available(),
         "configured": is_configured(),
-        "authorized": _state["authorized"],
-        "needs_password": _state["needs_password"],
-        "phone": _state["phone"],
-        "error": _state["error"],
-        "last_media_skip": _state["last_media_skip"],
+        "authorized": state["authorized"],
+        "needs_password": state["needs_password"],
+        "phone": state["phone"],
+        "code_hint": state["code_hint"],
+        "error": state["error"],
+        "last_media_skip": state["last_media_skip"],
         "skip_muted": _skip_muted(),
         "skip_archived": _skip_archived(),
         "ghost_mode": ghost_mode_enabled(),
