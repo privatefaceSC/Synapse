@@ -317,14 +317,14 @@ def _media_kind(msg):
     # поэтому отличаем его от обычного видео ещё на приёме.
     if getattr(msg, "video_note", None):
         return "video_note"
-    if getattr(msg, "video", None) or getattr(msg, "gif", None):
-        return "video"
     if getattr(msg, "voice", None):
         return "voice"
     if getattr(msg, "audio", None):
         return "audio"
     if getattr(msg, "sticker", None):
         return "sticker"
+    if getattr(msg, "video", None) or getattr(msg, "gif", None):
+        return "video"
     if getattr(msg, "document", None):
         return "file"
     return None
@@ -1980,6 +1980,57 @@ def forward_messages_bulk(source_chat_id, message_ids, target_chat_id,
     return _call(_forward_messages_bulk(
         source_chat_id, message_ids, target_chat_id, user_id=user_id),
         timeout=120)
+
+
+def _sticker_set_from_message(msg):
+    """Возвращает stickerset из Telegram-стикера или None для одиночного файла."""
+    document = getattr(msg, "document", None)
+    for attr in getattr(document, "attributes", []) or []:
+        if getattr(attr, "stickerset", None) is not None:
+            stickerset = attr.stickerset
+            try:
+                from telethon.tl.types import InputStickerSetEmpty
+                if isinstance(stickerset, InputStickerSetEmpty):
+                    return None
+            except Exception:  # noqa: BLE001
+                pass
+            return stickerset
+    return None
+
+
+async def _save_sticker_from_message(chat_id, message_id, mode,
+                                     user_id=None):
+    owner = _normalize_user_id(user_id)
+    client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    msg = await client.get_messages(int(chat_id), ids=int(message_id))
+    if msg is None or not getattr(msg, "sticker", None):
+        raise RuntimeError("Это сообщение не является стикером")
+    document = getattr(msg, "document", None)
+    if document is None:
+        raise RuntimeError("Telegram не отдал файл стикера")
+    if mode == "single":
+        from telethon.tl.functions.messages import FaveStickerRequest
+        await client(FaveStickerRequest(id=document, unfave=False))
+        return {"ok": True, "mode": "single"}
+    if mode == "pack":
+        stickerset = _sticker_set_from_message(msg)
+        if stickerset is None:
+            raise RuntimeError("У этого стикера нет доступного стикерпака")
+        from telethon.tl.functions.messages import InstallStickerSetRequest
+        await client(InstallStickerSetRequest(stickerset=stickerset,
+                                              archived=False))
+        return {"ok": True, "mode": "pack"}
+    raise RuntimeError("Неизвестный режим сохранения")
+
+
+def save_sticker_from_message(chat_id, message_id, mode, user_id=None):
+    """Сохраняет Telegram-стикер: mode=single в избранное, mode=pack ставит пак."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_save_sticker_from_message(
+        chat_id, message_id, mode, user_id=user_id), timeout=30)
 
 
 async def _send_reaction(chat_id, message_id, emoji, user_id=None):

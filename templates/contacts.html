@@ -1138,6 +1138,23 @@
         display: block; margin-top: 6px; width: 132px; height: 132px;
         object-fit: contain; background: transparent;
     }
+    .bubble .sticker-actions {
+        display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;
+    }
+    .bubble .sticker-save-btn {
+        border: 1px solid rgba(99,102,241,.28);
+        background: rgba(99,102,241,.10);
+        color: #334155; border-radius: 999px;
+        font-size: 12px; line-height: 1; padding: 7px 10px;
+        cursor: pointer;
+    }
+    .bubble .sticker-save-btn:hover {
+        background: rgba(99,102,241,.18);
+    }
+    [data-bs-theme="dark"] .bubble .sticker-save-btn {
+        color: #dbeafe; border-color: rgba(147,197,253,.28);
+        background: rgba(147,197,253,.10);
+    }
     .bubble .media-video {
         display: block; width: 100%; height: 100%;
         border-radius: 18px; background: #05070b; object-fit: cover;
@@ -3205,6 +3222,16 @@
                                         {% if a.kind == 'sticker' %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
                                              loading="lazy" alt="стикер">
+                                        {% if m.messenger_name == 'Telegram' %}
+                                        <div class="sticker-actions" data-sticker-id="{{ a.id }}">
+                                            <button class="sticker-save-btn" type="button"
+                                                    data-sticker-save="single"
+                                                    data-attachment-id="{{ a.id }}">Сохранить</button>
+                                            <button class="sticker-save-btn" type="button"
+                                                    data-sticker-save="pack"
+                                                    data-attachment-id="{{ a.id }}">Стикерпак</button>
+                                        </div>
+                                        {% endif %}
                                         {% elif a.kind == 'video_note' %}
                                         <span class="media-vnote-wrap">
                                             <video class="media-video-note" src="/attachments/{{ a.id }}"
@@ -5598,8 +5625,16 @@
                 : '';
             const media = (m.attachments || [])
                 .map(a => {
-                    if (a.kind === 'sticker')
-                        return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`;
+                    if (a.kind === 'sticker') {
+                        const actions = m.messenger_name === 'Telegram'
+                            ? `<div class="sticker-actions" data-sticker-id="${a.id}">`
+                              + `<button class="sticker-save-btn" type="button" data-sticker-save="single" data-attachment-id="${a.id}">Сохранить</button>`
+                              + `<button class="sticker-save-btn" type="button" data-sticker-save="pack" data-attachment-id="${a.id}">Стикерпак</button>`
+                              + `</div>`
+                            : '';
+                        return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`
+                            + actions;
+                    }
                     if (a.kind === 'video_note')
                         return `<span class="media-vnote-wrap">`
                             + `<video class="media-video-note" src="/attachments/${a.id}" loop playsinline preload="metadata"></video></span>`;
@@ -6651,6 +6686,36 @@
     feed.addEventListener('submit', function(e) {
         const form = e.target.closest('#composer');
         if (form) { e.preventDefault(); sendMessage(form); }
+    });
+    document.addEventListener('click', async function(e) {
+        const btn = e.target.closest && e.target.closest('[data-sticker-save]');
+        if (!btn) return;
+        const attachmentId = btn.dataset.attachmentId;
+        const mode = btn.dataset.stickerSave || 'single';
+        if (!attachmentId) return;
+        btn.disabled = true;
+        const oldText = btn.textContent;
+        btn.textContent = '...';
+        try {
+            const fd = new FormData();
+            fd.append('mode', mode);
+            const r = await fetch('/attachments/' + attachmentId
+                + '/telegram-sticker', {method: 'POST', body: fd});
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || !data.ok) {
+                alert('Не удалось сохранить стикер: '
+                      + (data.detail || data.error || ('HTTP ' + r.status)));
+                btn.textContent = oldText;
+                return;
+            }
+            btn.textContent = mode === 'pack' ? 'Пак сохранён' : 'Сохранён';
+            setTimeout(() => { btn.textContent = oldText; }, 1400);
+        } catch (err) {
+            alert('Сеть недоступна — стикер не сохранён.');
+            btn.textContent = oldText;
+        } finally {
+            btn.disabled = false;
+        }
     });
     function showPreview(file) {
         const box = feed.querySelector('#composer-preview');
