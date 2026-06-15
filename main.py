@@ -1889,6 +1889,7 @@ def register_routes(app: Flask) -> None:
                  'edits': getattr(m, 'edit_history', []),
                  'reactions': getattr(m, 'reactions', []),
                  'attachments': [{'id': a.id, 'kind': a.kind,
+                                  'mime': a.mime,
                                   'name': a.original_name} for a in m.media]}
                 for m in msgs
             ],

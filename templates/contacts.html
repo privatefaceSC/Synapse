@@ -1138,6 +1138,19 @@
         display: block; margin-top: 6px; width: 132px; height: 132px;
         object-fit: contain; background: transparent;
     }
+    .bubble .sticker-video {
+        display: block; margin-top: 6px; width: 132px; height: 132px;
+        object-fit: contain; background: transparent; border-radius: 12px;
+    }
+    .bubble .sticker-tgs {
+        display: inline-flex; align-items: center; gap: 8px;
+        margin-top: 6px; padding: 12px 14px; min-height: 54px;
+        border-radius: 14px; background: rgba(15,23,42,.06);
+        color: #334155; text-decoration: none; font-size: 13px;
+    }
+    [data-bs-theme="dark"] .bubble .sticker-tgs {
+        background: rgba(148,163,184,.12); color: #e5e7eb;
+    }
     .bubble .sticker-actions {
         display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;
     }
@@ -3220,8 +3233,17 @@
                                     {% endif %}
                                     {% for a in m.media %}
                                         {% if a.kind == 'sticker' %}
+                                        {% if a.mime and a.mime.startswith('video/') %}
+                                        <video class="sticker-video" src="/attachments/{{ a.id }}"
+                                               autoplay loop muted playsinline preload="metadata"></video>
+                                        {% elif a.mime == 'application/x-tgsticker' %}
+                                        <a class="sticker-tgs" href="/attachments/{{ a.id }}" download>
+                                            <span>✦</span><span>Анимированный стикер</span>
+                                        </a>
+                                        {% else %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
                                              loading="lazy" alt="стикер">
+                                        {% endif %}
                                         {% if m.messenger_name == 'Telegram' %}
                                         <div class="sticker-actions" data-sticker-id="{{ a.id }}">
                                             <button class="sticker-save-btn" type="button"
@@ -5616,6 +5638,26 @@
 
     function renderMessages(messages) {
         if (!messages.length) return '<div class="empty-state">Нет сообщений.</div>';
+        function renderSticker(a, m) {
+            const mime = (a.mime || '').toLowerCase();
+            const actions = m.messenger_name === 'Telegram'
+                ? `<div class="sticker-actions" data-sticker-id="${a.id}">`
+                  + `<button class="sticker-save-btn" type="button" data-sticker-save="single" data-attachment-id="${a.id}">Сохранить</button>`
+                  + `<button class="sticker-save-btn" type="button" data-sticker-save="pack" data-attachment-id="${a.id}">Стикерпак</button>`
+                  + `</div>`
+                : '';
+            if (mime.indexOf('video/') === 0) {
+                return `<video class="sticker-video" src="/attachments/${a.id}" autoplay loop muted playsinline preload="metadata"></video>`
+                    + actions;
+            }
+            if (mime === 'application/x-tgsticker') {
+                return `<a class="sticker-tgs" href="/attachments/${a.id}" download>`
+                    + `<span>✦</span><span>Анимированный стикер</span></a>`
+                    + actions;
+            }
+            return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`
+                + actions;
+        }
         return messages.map(m => {
             const truncated = (m.text || '').length === 1024
                 ? `<div class="truncated-note">
@@ -5625,16 +5667,7 @@
                 : '';
             const media = (m.attachments || [])
                 .map(a => {
-                    if (a.kind === 'sticker') {
-                        const actions = m.messenger_name === 'Telegram'
-                            ? `<div class="sticker-actions" data-sticker-id="${a.id}">`
-                              + `<button class="sticker-save-btn" type="button" data-sticker-save="single" data-attachment-id="${a.id}">Сохранить</button>`
-                              + `<button class="sticker-save-btn" type="button" data-sticker-save="pack" data-attachment-id="${a.id}">Стикерпак</button>`
-                              + `</div>`
-                            : '';
-                        return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`
-                            + actions;
-                    }
+                    if (a.kind === 'sticker') return renderSticker(a, m);
                     if (a.kind === 'video_note')
                         return `<span class="media-vnote-wrap">`
                             + `<video class="media-video-note" src="/attachments/${a.id}" loop playsinline preload="metadata"></video></span>`;
