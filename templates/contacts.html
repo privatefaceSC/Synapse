@@ -36,8 +36,47 @@
     /* Запасной фолбэк для случая, когда .contacts-locked по какой-то
        причине не повесился (например, скрипт упал): даём контейнеру
        детерминированную высоту, как было раньше. */
-    .contacts-shell { height: 100dvh; position: relative; }
+    .contacts-shell {
+        height: 100dvh; position: relative;
+        --contacts-list-width: 34%;
+    }
+    .contacts-shell > .contacts-layout {
+        display: grid;
+        grid-template-columns:
+            minmax(260px, var(--contacts-list-width))
+            10px
+            minmax(0, 1fr);
+        column-gap: 10px;
+        align-items: stretch;
+    }
     #col-list, #col-feed { display: flex; flex-direction: column; min-height: 0; }
+    #col-list, #col-feed {
+        width: auto; max-width: none; flex: none; padding-left: 0; padding-right: 0;
+    }
+    .contacts-resizer {
+        position: relative; width: 10px; min-width: 10px;
+        cursor: col-resize; align-self: stretch; z-index: 15;
+    }
+    .contacts-resizer::before {
+        content: ""; position: absolute; top: 10px; bottom: 10px;
+        left: 50%; width: 3px; transform: translateX(-50%);
+        border-radius: 999px; background: transparent;
+        transition: background .15s ease, box-shadow .15s ease;
+    }
+    .contacts-resizer:hover::before,
+    .contacts-resizer.dragging::before {
+        background: #93c5fd;
+        box-shadow: 0 0 0 3px rgba(59,130,246,.13);
+    }
+    body.contacts-resizing {
+        cursor: col-resize;
+        user-select: none;
+    }
+    [data-bs-theme="dark"] .contacts-resizer:hover::before,
+    [data-bs-theme="dark"] .contacts-resizer.dragging::before {
+        background: #60a5fa;
+        box-shadow: 0 0 0 3px rgba(96,165,250,.16);
+    }
     .contact-search { flex: 0 0 auto; margin-bottom: 8px; position: relative; }
     /* «Папки» — горизонтальная панель кнопок-фильтров по мессенджерам.
      * Активная подсвечена синим. «Все» — спецзначение, показывает всех. */
@@ -2663,7 +2702,9 @@
             margin: 0;
             --bs-gutter-x: 0;
             --bs-gutter-y: 0;
+            display: flex;
         }
+        .contacts-resizer { display: none !important; }
         #col-list,
         #col-feed {
             width: 100%;
@@ -2947,8 +2988,66 @@
     })();
 </script>
 
-<div class="container-fluid contacts-shell">
-    <div class="row g-3 h-100">
+<script>
+(function() {
+    const key = 'skillwood:contacts-list-width';
+    const minPx = 260;
+    const maxRatio = 0.58;
+
+    function initContactsResizer() {
+        const shell = document.getElementById('contacts-shell');
+        const resizer = document.getElementById('contacts-resizer');
+        if (!shell || !resizer) return;
+
+        function applySavedWidth() {
+            const saved = localStorage.getItem(key);
+            if (saved) shell.style.setProperty('--contacts-list-width', saved);
+        }
+
+        function setWidth(px) {
+            const rect = shell.getBoundingClientRect();
+            const maxPx = Math.max(minPx, rect.width * maxRatio);
+            const width = Math.max(minPx, Math.min(maxPx, px));
+            const value = Math.round(width) + 'px';
+            shell.style.setProperty('--contacts-list-width', value);
+            localStorage.setItem(key, value);
+        }
+
+        applySavedWidth();
+
+        resizer.addEventListener('pointerdown', function(e) {
+            if (window.matchMedia('(max-width: 767.98px)').matches) return;
+            e.preventDefault();
+            resizer.setPointerCapture(e.pointerId);
+            resizer.classList.add('dragging');
+            document.body.classList.add('contacts-resizing');
+        });
+        resizer.addEventListener('pointermove', function(e) {
+            if (!resizer.classList.contains('dragging')) return;
+            const left = shell.getBoundingClientRect().left;
+            setWidth(e.clientX - left);
+        });
+        function stopDrag(e) {
+            if (!resizer.classList.contains('dragging')) return;
+            resizer.classList.remove('dragging');
+            document.body.classList.remove('contacts-resizing');
+            try { resizer.releasePointerCapture(e.pointerId); } catch (err) {}
+        }
+        resizer.addEventListener('pointerup', stopDrag);
+        resizer.addEventListener('pointercancel', stopDrag);
+        window.addEventListener('resize', applySavedWidth);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initContactsResizer);
+    } else {
+        initContactsResizer();
+    }
+})();
+</script>
+
+<div class="container-fluid contacts-shell" id="contacts-shell">
+    <div class="row g-3 h-100 contacts-layout">
         <div class="col-md-4 h-100 {% if selected %}d-none d-md-flex{% endif %}" id="col-list">
             <div class="contact-search has-new-chat">
                 <input type="search" id="contact-search-input" autocomplete="off"
@@ -3004,6 +3103,10 @@
                 {% endif %}
             </div>
         </div>
+
+        <div class="contacts-resizer d-none d-md-block" id="contacts-resizer"
+             role="separator" aria-orientation="vertical"
+             aria-label="Изменить ширину списка контактов"></div>
 
         <div class="col-md-8 h-100 {% if not selected %}d-none d-md-flex{% endif %}" id="col-feed">
             <button type="button" id="scroll-fab" class="scroll-fab"
