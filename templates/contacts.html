@@ -2472,6 +2472,234 @@
     .confirm-btn.ok:hover { background: #1d4ed8; }
     .confirm-btn.ok.danger { background: #b91c1c; }
     .confirm-btn.ok.danger:hover { background: #991b1b; }
+
+    /* Mobile contacts layout */
+    @media (max-width: 767.98px) {
+        body.contacts-locked > nav {
+            margin-bottom: 0 !important;
+        }
+        .contacts-shell {
+            height: calc(100dvh - 55px);
+            padding-left: 0;
+            padding-right: 0;
+        }
+        .contacts-shell > .row {
+            height: 100%;
+            margin: 0;
+            --bs-gutter-x: 0;
+            --bs-gutter-y: 0;
+        }
+        #col-list,
+        #col-feed {
+            width: 100%;
+            max-width: 100%;
+            flex: 0 0 100%;
+            padding: 0;
+        }
+        .contact-search {
+            margin: 0;
+            padding: 10px 12px 8px;
+            background: #f5f6f8;
+            z-index: 3;
+        }
+        .messenger-folders {
+            margin: 0;
+            padding: 0 12px 10px;
+            background: #f5f6f8;
+        }
+        .mf-btn {
+            min-height: 34px;
+            padding: 7px 12px;
+        }
+        .contact-list {
+            border-left: 0;
+            border-right: 0;
+            border-bottom: 0;
+            border-radius: 0;
+            box-shadow: none;
+        }
+        .contact-row-wrap .contact-row {
+            min-height: 72px;
+            padding: 11px 48px 11px 14px;
+        }
+        .contact-row:hover {
+            transform: none;
+        }
+        .contact-row .avatar {
+            width: 44px;
+            height: 44px;
+            font-size: 16px;
+        }
+        .contact-row .name {
+            font-size: 15px;
+        }
+        .contact-row .preview {
+            max-width: 100%;
+            font-size: 13px;
+        }
+        .contact-kebab {
+            right: 6px;
+            padding: 8px 11px;
+        }
+        .feed {
+            border: 0;
+            border-radius: 0;
+            box-shadow: none;
+            padding: 0;
+        }
+        .feed-header {
+            margin: 0;
+            top: 0;
+            border-radius: 0;
+        }
+        .feed-header-top {
+            min-height: 62px;
+            padding: 9px 12px;
+            gap: 10px;
+        }
+        .feed-header .avatar {
+            width: 42px;
+            height: 42px;
+            font-size: 16px;
+        }
+        .feed-header .fw-semibold {
+            font-size: 15px;
+        }
+        .feed-back-btn {
+            width: 36px;
+            height: 36px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .topics-btn {
+            width: 36px;
+            height: 36px;
+            flex: 0 0 36px;
+        }
+        .handles-panel-inner {
+            padding: 9px 12px 12px;
+        }
+        .feed > #messages-container,
+        .feed > .forum-picker {
+            padding: 12px 10px 8px;
+            overscroll-behavior: contain;
+        }
+        .bubble-row {
+            max-width: 86%;
+            margin-bottom: 10px;
+        }
+        .bubble {
+            border-radius: 16px;
+            padding: 8px 10px;
+        }
+        .bubble .text {
+            font-size: 14.5px;
+        }
+        .bubble-row .source {
+            max-width: 100%;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .bubble .media-img {
+            max-width: min(292px, 78vw);
+            max-height: 360px;
+        }
+        .bubble .media-video-wrap {
+            width: min(300px, 78vw);
+            max-height: 390px;
+        }
+        .bubble .media-video-wrap.vertical {
+            width: min(230px, 66vw);
+        }
+        .bubble .media-vnote-wrap,
+        .bubble .media-video-note {
+            width: 180px;
+            height: 180px;
+        }
+        .bubble.media-only .media-audio,
+        .bubble.media-caption .media-audio,
+        .bubble .media-file {
+            width: min(300px, 78vw);
+            max-width: min(300px, 78vw);
+        }
+        .composer,
+        .channel-notice {
+            bottom: 0;
+            margin: 0;
+            padding: 9px 10px calc(10px + env(safe-area-inset-bottom));
+            border-radius: 0;
+        }
+        .composer {
+            gap: 7px;
+        }
+        .composer textarea {
+            min-width: 0;
+            min-height: 40px;
+            font-size: 16px;
+            padding: 8px 11px;
+        }
+        .composer .attach-btn,
+        .composer .emoji-btn,
+        .composer .voice-btn,
+        .composer .send-btn {
+            width: 40px;
+            height: 40px;
+            min-width: 40px;
+            padding: 0;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 13px;
+        }
+        .composer .send-btn {
+            display: none;
+        }
+        .composer.has-text .send-btn {
+            display: inline-flex;
+        }
+        .composer.has-text .voice-btn {
+            display: none;
+        }
+        .emoji-picker {
+            left: 10px;
+            right: 10px;
+            bottom: 58px;
+            grid-template-columns: repeat(8, 1fr);
+        }
+        .scroll-fab {
+            right: 16px;
+            bottom: 82px;
+            width: 42px;
+            height: 42px;
+        }
+        .msgr-picker-box {
+            min-width: 0 !important;
+            width: min(360px, calc(100vw - 24px)) !important;
+            max-width: calc(100vw - 24px) !important;
+        }
+        .video-lightbox {
+            padding: 56px 8px calc(14px + env(safe-area-inset-bottom));
+        }
+        .video-lightbox .vl-shell {
+            width: 100%;
+            max-height: calc(100dvh - 76px);
+        }
+        .video-lightbox video {
+            max-height: calc(100dvh - 128px);
+            border-radius: 10px;
+        }
+        [data-bs-theme="dark"] .contact-search,
+        [data-bs-theme="dark"] .messenger-folders {
+            background: #0f1115;
+        }
+        [data-bs-theme="dark"] .feed,
+        [data-bs-theme="dark"] .feed-header {
+            border-radius: 0;
+        }
+    }
 </style>
 
 <div class="container-fluid contacts-shell">
@@ -5245,6 +5473,8 @@
 
     function setMobileView(view) {
         if (!colList || !colFeed) return;
+        document.documentElement.dataset.contactsView = view;
+        document.body.dataset.contactsView = view;
         // d-md-flex (а не d-md-block!) — иначе на md+ bootstrap-овский
         // `display: block !important` перебьёт наш `display: flex` на
         // #col-list / #col-feed, и внутренний скролл .contact-list / .feed
