@@ -13,6 +13,7 @@
 """
 
 import asyncio
+import base64
 import json
 import os
 import threading
@@ -2031,6 +2032,48 @@ def save_sticker_from_message(chat_id, message_id, mode, user_id=None):
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_save_sticker_from_message(
         chat_id, message_id, mode, user_id=user_id), timeout=30)
+
+
+async def _sticker_pack_from_message(chat_id, message_id, user_id=None):
+    owner = _normalize_user_id(user_id)
+    client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    msg = await client.get_messages(int(chat_id), ids=int(message_id))
+    if msg is None or not getattr(msg, "sticker", None):
+        raise RuntimeError("Это сообщение не является стикером")
+    stickerset = _sticker_set_from_message(msg)
+    if stickerset is None:
+        raise RuntimeError("У этого стикера нет доступного стикерпака")
+    from telethon.tl.functions.messages import GetStickerSetRequest
+    pack = await client(GetStickerSetRequest(stickerset=stickerset, hash=0))
+    docs = list(getattr(pack, "documents", []) or [])
+    title = getattr(getattr(pack, "set", None), "title", None) or "Стикерпак"
+    items = []
+    for doc in docs:
+        mime = getattr(doc, "mime_type", None) or "application/octet-stream"
+        alt = ""
+        for attr in getattr(doc, "attributes", []) or []:
+            alt = getattr(attr, "alt", None) or alt
+        data = await client.download_media(doc, file=bytes)
+        if not data:
+            continue
+        items.append({
+            "mime": mime,
+            "alt": alt,
+            "data_url": "data:{};base64,{}".format(
+                mime, base64.b64encode(data).decode("ascii")),
+        })
+    return {"ok": True, "title": title, "count": len(items),
+            "stickers": items}
+
+
+def sticker_pack_from_message(chat_id, message_id, user_id=None):
+    """Возвращает название и inline-превью стикеров из пака исходного сообщения."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    return _call(_sticker_pack_from_message(
+        chat_id, message_id, user_id=user_id), timeout=90)
 
 
 async def _send_reaction(chat_id, message_id, emoji, user_id=None):

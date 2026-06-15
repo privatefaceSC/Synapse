@@ -4062,6 +4062,41 @@ def register_routes(app: Flask) -> None:
                             'detail': str(exc)}), 502
         return jsonify(result or {'ok': True, 'mode': mode})
 
+    @app.route('/attachments/<int:attachment_id>/telegram-sticker-pack')
+    def attachment_telegram_sticker_pack(attachment_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.attachments import Attachment
+        from data.contacts import MessengerHandle
+        from data import telegram_bridge
+
+        db = get_db()
+        user_id = session['user_id']
+        att = (db.query(Attachment)
+               .filter(Attachment.id == attachment_id,
+                       Attachment.user_id == user_id).first())
+        if att is None:
+            return jsonify({'error': 'not_found'}), 404
+        if att.kind != 'sticker':
+            return jsonify({'error': 'not_sticker'}), 400
+
+        msg = db.get(Messages, att.message_id)
+        if msg is None or msg.user_id != user_id or not msg.tg_message_id:
+            return jsonify({'error': 'not_telegram_sticker'}), 400
+        handle = db.get(MessengerHandle, msg.handle_id)
+        if (handle is None or handle.user_id != user_id
+                or handle.messenger_name != 'Telegram'
+                or handle.tg_chat_id is None):
+            return jsonify({'error': 'not_telegram_sticker'}), 400
+
+        try:
+            result = telegram_bridge.sticker_pack_from_message(
+                handle.tg_chat_id, msg.tg_message_id, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'error': 'telegram_unavailable',
+                            'detail': str(exc)}), 502
+        return jsonify(result)
+
     @app.route('/api/ping')
     def api_ping():
         return jsonify({'ok': True, 'service': 'skillwood'})

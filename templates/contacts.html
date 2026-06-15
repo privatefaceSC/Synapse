@@ -1135,38 +1135,78 @@
         box-shadow: 0 6px 18px rgba(16,24,40,.18);
     }
     .bubble .sticker-img {
-        display: block; margin-top: 6px; width: 132px; height: 132px;
+        display: block; margin-top: 6px; width: 180px; height: 180px;
         object-fit: contain; background: transparent;
     }
     .bubble .sticker-video {
-        display: block; margin-top: 6px; width: 132px; height: 132px;
+        display: block; margin-top: 6px; width: 180px; height: 180px;
         object-fit: contain; background: transparent; border-radius: 12px;
     }
+    .bubble [data-sticker-pack-id] { cursor: pointer; }
     .bubble .sticker-tgs {
         display: inline-flex; align-items: center; gap: 8px;
         margin-top: 6px; padding: 12px 14px; min-height: 54px;
         border-radius: 14px; background: rgba(15,23,42,.06);
         color: #334155; text-decoration: none; font-size: 13px;
+        border: 0; cursor: pointer;
     }
     [data-bs-theme="dark"] .bubble .sticker-tgs {
         background: rgba(148,163,184,.12); color: #e5e7eb;
     }
-    .bubble .sticker-actions {
-        display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap;
+    .sticker-pack-modal {
+        position: fixed; inset: 0; z-index: 1090;
+        display: flex; align-items: center; justify-content: center;
+        padding: 22px; background: rgba(2,6,23,.62);
+        opacity: 0; pointer-events: none; transition: opacity .16s ease;
     }
-    .bubble .sticker-save-btn {
-        border: 1px solid rgba(99,102,241,.28);
-        background: rgba(99,102,241,.10);
-        color: #334155; border-radius: 999px;
-        font-size: 12px; line-height: 1; padding: 7px 10px;
-        cursor: pointer;
+    .sticker-pack-modal.open { opacity: 1; pointer-events: auto; }
+    .sticker-pack-modal[hidden] { display: none; }
+    .spm-shell {
+        width: min(440px, calc(100vw - 24px));
+        max-height: min(680px, calc(100vh - 24px));
+        display: flex; flex-direction: column; overflow: hidden;
+        border-radius: 14px; background: #152232; color: #e5efff;
+        box-shadow: 0 24px 70px rgba(0,0,0,.36);
     }
-    .bubble .sticker-save-btn:hover {
-        background: rgba(99,102,241,.18);
+    .spm-head {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; padding: 15px 18px 10px;
     }
-    [data-bs-theme="dark"] .bubble .sticker-save-btn {
-        color: #dbeafe; border-color: rgba(147,197,253,.28);
-        background: rgba(147,197,253,.10);
+    .spm-title { font-size: 16px; font-weight: 700; min-width: 0; }
+    .spm-close {
+        border: 0; background: transparent; color: #9fb3c8;
+        font-size: 25px; line-height: 1; cursor: pointer;
+    }
+    .spm-grid {
+        display: grid; grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px; padding: 10px 18px; overflow: auto;
+    }
+    .spm-item {
+        aspect-ratio: 1 / 1; display: flex; align-items: center;
+        justify-content: center; overflow: hidden; background: rgba(255,255,255,.04);
+        border-radius: 8px;
+    }
+    .spm-item img, .spm-item video {
+        width: 100%; height: 100%; object-fit: contain;
+    }
+    .spm-note {
+        grid-column: 1 / -1; padding: 28px 18px;
+        color: #b8c7d9; text-align: center;
+    }
+    .spm-actions {
+        display: flex; justify-content: flex-end; gap: 22px;
+        padding: 12px 18px 17px; border-top: 1px solid rgba(255,255,255,.08);
+    }
+    .spm-btn {
+        border: 0; background: transparent; color: #6bbcff;
+        font-weight: 600; cursor: pointer; padding: 6px 0;
+    }
+    .spm-btn[disabled] { opacity: .55; cursor: default; }
+    @media (max-width: 520px) {
+        .bubble .sticker-img, .bubble .sticker-video {
+            width: 160px; height: 160px;
+        }
+        .spm-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
     }
     .bubble .media-video {
         display: block; width: 100%; height: 100%;
@@ -3235,24 +3275,17 @@
                                         {% if a.kind == 'sticker' %}
                                         {% if a.mime and a.mime.startswith('video/') %}
                                         <video class="sticker-video" src="/attachments/{{ a.id }}"
+                                               {% if m.messenger_name == 'Telegram' %}data-sticker-pack-id="{{ a.id }}"{% endif %}
                                                autoplay loop muted playsinline preload="metadata"></video>
                                         {% elif a.mime == 'application/x-tgsticker' %}
-                                        <a class="sticker-tgs" href="/attachments/{{ a.id }}" download>
+                                        <button class="sticker-tgs" type="button"
+                                                {% if m.messenger_name == 'Telegram' %}data-sticker-pack-id="{{ a.id }}"{% endif %}>
                                             <span>✦</span><span>Анимированный стикер</span>
-                                        </a>
+                                        </button>
                                         {% else %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
+                                             {% if m.messenger_name == 'Telegram' %}data-sticker-pack-id="{{ a.id }}"{% endif %}
                                              loading="lazy" alt="стикер">
-                                        {% endif %}
-                                        {% if m.messenger_name == 'Telegram' %}
-                                        <div class="sticker-actions" data-sticker-id="{{ a.id }}">
-                                            <button class="sticker-save-btn" type="button"
-                                                    data-sticker-save="single"
-                                                    data-attachment-id="{{ a.id }}">Сохранить</button>
-                                            <button class="sticker-save-btn" type="button"
-                                                    data-sticker-save="pack"
-                                                    data-attachment-id="{{ a.id }}">Стикерпак</button>
-                                        </div>
                                         {% endif %}
                                         {% elif a.kind == 'video_note' %}
                                         <span class="media-vnote-wrap">
@@ -3397,6 +3430,22 @@
     </div>
     <div class="vl-shell">
         <video id="vl-video" controls playsinline preload="metadata"></video>
+    </div>
+</div>
+
+<div class="sticker-pack-modal" id="sticker-pack-modal" hidden
+     role="dialog" aria-modal="true" aria-labelledby="spm-title">
+    <div class="spm-shell">
+        <div class="spm-head">
+            <div class="spm-title" id="spm-title">Стикерпак</div>
+            <button type="button" class="spm-close" id="spm-close"
+                    aria-label="Закрыть">&times;</button>
+        </div>
+        <div class="spm-grid" id="spm-grid"></div>
+        <div class="spm-actions">
+            <button type="button" class="spm-btn" id="spm-cancel">Отмена</button>
+            <button type="button" class="spm-btn" id="spm-save">Сохранить</button>
+        </div>
     </div>
 </div>
 
@@ -5640,23 +5689,16 @@
         if (!messages.length) return '<div class="empty-state">Нет сообщений.</div>';
         function renderSticker(a, m) {
             const mime = (a.mime || '').toLowerCase();
-            const actions = m.messenger_name === 'Telegram'
-                ? `<div class="sticker-actions" data-sticker-id="${a.id}">`
-                  + `<button class="sticker-save-btn" type="button" data-sticker-save="single" data-attachment-id="${a.id}">Сохранить</button>`
-                  + `<button class="sticker-save-btn" type="button" data-sticker-save="pack" data-attachment-id="${a.id}">Стикерпак</button>`
-                  + `</div>`
-                : '';
+            const packAttr = m.messenger_name === 'Telegram'
+                ? ` data-sticker-pack-id="${a.id}"` : '';
             if (mime.indexOf('video/') === 0) {
-                return `<video class="sticker-video" src="/attachments/${a.id}" autoplay loop muted playsinline preload="metadata"></video>`
-                    + actions;
+                return `<video class="sticker-video" src="/attachments/${a.id}"${packAttr} autoplay loop muted playsinline preload="metadata"></video>`;
             }
             if (mime === 'application/x-tgsticker') {
-                return `<a class="sticker-tgs" href="/attachments/${a.id}" download>`
-                    + `<span>✦</span><span>Анимированный стикер</span></a>`
-                    + actions;
+                return `<button class="sticker-tgs" type="button"${packAttr}>`
+                    + `<span>✦</span><span>Анимированный стикер</span></button>`;
             }
-            return `<img class="sticker-img" src="/attachments/${a.id}" loading="lazy" alt="стикер">`
-                + actions;
+            return `<img class="sticker-img" src="/attachments/${a.id}"${packAttr} loading="lazy" alt="стикер">`;
         }
         return messages.map(m => {
             const truncated = (m.text || '').length === 1024
@@ -6720,34 +6762,110 @@
         const form = e.target.closest('#composer');
         if (form) { e.preventDefault(); sendMessage(form); }
     });
-    document.addEventListener('click', async function(e) {
-        const btn = e.target.closest && e.target.closest('[data-sticker-save]');
-        if (!btn) return;
-        const attachmentId = btn.dataset.attachmentId;
-        const mode = btn.dataset.stickerSave || 'single';
-        if (!attachmentId) return;
-        btn.disabled = true;
-        const oldText = btn.textContent;
-        btn.textContent = '...';
+    const stickerPackModal = document.getElementById('sticker-pack-modal');
+    const stickerPackTitle = document.getElementById('spm-title');
+    const stickerPackGrid = document.getElementById('spm-grid');
+    const stickerPackSave = document.getElementById('spm-save');
+    let stickerPackAttachmentId = null;
+
+    function renderStickerPackItem(item) {
+        const mime = (item.mime || '').toLowerCase();
+        const src = escapeHtml(item.data_url || '');
+        const alt = escapeHtml(item.alt || 'стикер');
+        if (mime.indexOf('video/') === 0) {
+            return '<div class="spm-item"><video src="' + src
+                + '" autoplay loop muted playsinline preload="metadata"></video></div>';
+        }
+        if (mime === 'application/x-tgsticker') {
+            return '<div class="spm-item"><span>✦</span></div>';
+        }
+        return '<div class="spm-item"><img src="' + src + '" alt="' + alt
+            + '" loading="lazy"></div>';
+    }
+
+    function closeStickerPackModal() {
+        if (!stickerPackModal) return;
+        stickerPackModal.classList.remove('open');
+        stickerPackModal.setAttribute('aria-hidden', 'true');
+        stickerPackAttachmentId = null;
+        setTimeout(() => {
+            if (!stickerPackModal.classList.contains('open')) {
+                stickerPackModal.hidden = true;
+            }
+        }, 150);
+    }
+
+    async function openStickerPackModal(attachmentId) {
+        if (!stickerPackModal || !stickerPackGrid || !stickerPackTitle) return;
+        stickerPackAttachmentId = attachmentId;
+        stickerPackTitle.textContent = 'Стикерпак';
+        stickerPackGrid.innerHTML = '<div class="spm-note">Загружаем стикеры...</div>';
+        stickerPackModal.hidden = false;
+        stickerPackModal.setAttribute('aria-hidden', 'false');
+        requestAnimationFrame(() => stickerPackModal.classList.add('open'));
+        try {
+            const r = await fetch('/attachments/' + attachmentId
+                + '/telegram-sticker-pack');
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || !data.ok) {
+                stickerPackGrid.innerHTML = '<div class="spm-note">'
+                    + escapeHtml(data.detail || data.error || ('HTTP ' + r.status))
+                    + '</div>';
+                return;
+            }
+            stickerPackTitle.textContent = data.title || 'Стикерпак';
+            const items = data.stickers || [];
+            stickerPackGrid.innerHTML = items.length
+                ? items.map(renderStickerPackItem).join('')
+                : '<div class="spm-note">В этом паке нет доступных превью.</div>';
+        } catch (err) {
+            stickerPackGrid.innerHTML =
+                '<div class="spm-note">Сеть недоступна.</div>';
+        }
+    }
+
+    document.addEventListener('click', function(e) {
+        const sticker = e.target.closest && e.target.closest('[data-sticker-pack-id]');
+        if (!sticker) return;
+        e.preventDefault();
+        openStickerPackModal(sticker.dataset.stickerPackId);
+    });
+    const stickerPackClose = document.getElementById('spm-close');
+    const stickerPackCancel = document.getElementById('spm-cancel');
+    if (stickerPackClose) {
+        stickerPackClose.addEventListener('click', closeStickerPackModal);
+    }
+    if (stickerPackCancel) {
+        stickerPackCancel.addEventListener('click', closeStickerPackModal);
+    }
+    if (stickerPackModal) {
+        stickerPackModal.addEventListener('click', function(e) {
+            if (e.target === stickerPackModal) closeStickerPackModal();
+        });
+    }
+    if (stickerPackSave) stickerPackSave.addEventListener('click', async function() {
+        if (!stickerPackAttachmentId) return;
+        stickerPackSave.disabled = true;
+        const oldText = stickerPackSave.textContent;
+        stickerPackSave.textContent = 'Сохраняем...';
         try {
             const fd = new FormData();
-            fd.append('mode', mode);
-            const r = await fetch('/attachments/' + attachmentId
+            fd.append('mode', 'pack');
+            const r = await fetch('/attachments/' + stickerPackAttachmentId
                 + '/telegram-sticker', {method: 'POST', body: fd});
             const data = await r.json().catch(() => ({}));
             if (!r.ok || !data.ok) {
-                alert('Не удалось сохранить стикер: '
-                      + (data.detail || data.error || ('HTTP ' + r.status)));
-                btn.textContent = oldText;
+                alert('Не удалось сохранить стикерпак: '
+                    + (data.detail || data.error || ('HTTP ' + r.status)));
                 return;
             }
-            btn.textContent = mode === 'pack' ? 'Пак сохранён' : 'Сохранён';
-            setTimeout(() => { btn.textContent = oldText; }, 1400);
+            stickerPackSave.textContent = 'Сохранено';
+            setTimeout(closeStickerPackModal, 700);
         } catch (err) {
-            alert('Сеть недоступна — стикер не сохранён.');
-            btn.textContent = oldText;
+            alert('Сеть недоступна — стикерпак не сохранён.');
         } finally {
-            btn.disabled = false;
+            stickerPackSave.disabled = false;
+            setTimeout(() => { stickerPackSave.textContent = oldText; }, 900);
         }
     });
     function showPreview(file) {
