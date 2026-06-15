@@ -29,14 +29,14 @@
     body.contacts-locked {
         display: flex; flex-direction: column; margin: 0;
     }
-    body.contacts-locked > nav { flex: 0 0 auto; }
+    body.contacts-locked > nav { display: none; }
     body.contacts-locked > .contacts-shell {
         flex: 1 1 auto; min-height: 0; height: auto;
     }
     /* Запасной фолбэк для случая, когда .contacts-locked по какой-то
        причине не повесился (например, скрипт упал): даём контейнеру
        детерминированную высоту, как было раньше. */
-    .contacts-shell { height: calc(100vh - 110px); }
+    .contacts-shell { height: 100dvh; position: relative; }
     #col-list, #col-feed { display: flex; flex-direction: column; min-height: 0; }
     .contact-search { flex: 0 0 auto; margin-bottom: 8px; position: relative; }
     /* «Папки» — горизонтальная панель кнопок-фильтров по мессенджерам.
@@ -2473,13 +2473,142 @@
     .confirm-btn.ok.danger { background: #b91c1c; }
     .confirm-btn.ok.danger:hover { background: #991b1b; }
 
+    .contacts-app-menu-btn {
+        position: absolute; top: 10px; left: 12px; z-index: 80;
+        width: 38px; height: 38px; border-radius: 12px;
+        border: 1px solid rgba(15,23,42,.10);
+        background: rgba(255,255,255,.92); color: #1f2937;
+        box-shadow: 0 8px 22px rgba(15,23,42,.12);
+        backdrop-filter: blur(10px);
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 22px; line-height: 1; cursor: pointer;
+        transition: background .15s ease, transform .12s ease;
+    }
+    .contacts-app-menu-btn:hover { background: #fff; }
+    .contacts-app-menu-btn:active { transform: scale(.97); }
+    .contacts-app-menu-panel {
+        position: absolute; top: 56px; left: 12px; z-index: 90;
+        width: 238px; padding: 6px; border-radius: 14px;
+        background: #fff; border: 1px solid #e5e7eb;
+        box-shadow: 0 18px 46px rgba(15,23,42,.20);
+        display: none;
+    }
+    .contacts-app-menu-panel.open { display: block; }
+    .contacts-app-menu-panel a,
+    .contacts-app-menu-panel button {
+        width: 100%; display: flex; align-items: center; gap: 10px;
+        border: 0; background: transparent; text-decoration: none;
+        color: #1f2937; cursor: pointer; text-align: left;
+        border-radius: 9px; padding: 8px 10px; font-size: 14px;
+    }
+    .contacts-app-menu-panel a:hover,
+    .contacts-app-menu-panel button:hover { background: #eef4ff; color: #1d4ed8; }
+    .contacts-app-menu-panel .danger { color: #b91c1c; }
+    .contacts-app-menu-panel .danger:hover { background: #fef2f2; color: #b91c1c; }
+    .contacts-app-menu-panel .menu-ico {
+        width: 20px; text-align: center; flex: 0 0 auto;
+    }
+    .contacts-app-menu-panel hr {
+        border: 0; border-top: 1px solid #edf0f4; margin: 5px 4px;
+    }
+
+    /* Dense message mode */
+    .contact-search { padding-left: 58px; }
+    .feed {
+        padding: 12px 16px;
+    }
+    .feed-header {
+        margin: -12px -16px 10px; top: -12px;
+    }
+    .feed-header-top {
+        min-height: 52px;
+        padding: 8px 16px;
+        gap: 10px;
+    }
+    .feed-header .avatar {
+        width: 40px; height: 40px; font-size: 15px;
+    }
+    .feed-header .fw-semibold { font-size: 15px; }
+    .bubble-row { margin-bottom: 8px; max-width: 76%; }
+    .bubble-row .source {
+        margin: 0 6px 2px 0;
+        font-size: 10.5px;
+        line-height: 1.2;
+    }
+    .bubble { padding: 7px 10px; border-radius: 14px; }
+    .bubble .text {
+        font-size: 14px;
+        line-height: 1.32;
+    }
+    .bubble .time,
+    .bubble .time-row {
+        margin-top: 2px;
+        font-size: 9.5px;
+    }
+    .composer {
+        bottom: -12px;
+        margin: 6px -16px -12px;
+        padding: 8px 16px 9px;
+        gap: 7px;
+    }
+    .composer textarea {
+        min-height: 36px;
+        max-height: 92px;
+        padding: 7px 11px;
+        font-size: 14px;
+        line-height: 1.3;
+    }
+    .composer .attach-btn,
+    .composer .emoji-btn,
+    .composer .voice-btn {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 11px;
+    }
+    .composer .send-btn {
+        min-width: 38px;
+        height: 36px;
+        padding: 0 11px;
+        border-radius: 11px;
+    }
+    .channel-notice {
+        bottom: -12px;
+        margin: 6px -16px -12px;
+        padding: 9px 16px;
+    }
+    [data-bs-theme="dark"] .contacts-app-menu-btn {
+        background: rgba(26,29,36,.92); color: #e5e7eb;
+        border-color: #2a2f3a;
+        box-shadow: 0 8px 22px rgba(0,0,0,.32);
+    }
+    [data-bs-theme="dark"] .contacts-app-menu-btn:hover { background: #232831; }
+    [data-bs-theme="dark"] .contacts-app-menu-panel {
+        background: #1a1d24; border-color: #2a2f3a;
+        box-shadow: 0 18px 46px rgba(0,0,0,.48);
+    }
+    [data-bs-theme="dark"] .contacts-app-menu-panel a,
+    [data-bs-theme="dark"] .contacts-app-menu-panel button { color: #e5e7eb; }
+    [data-bs-theme="dark"] .contacts-app-menu-panel a:hover,
+    [data-bs-theme="dark"] .contacts-app-menu-panel button:hover {
+        background: #1c2c44; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .contacts-app-menu-panel .danger { color: #fca5a5; }
+    [data-bs-theme="dark"] .contacts-app-menu-panel .danger:hover {
+        background: #3b171c; color: #fecaca;
+    }
+    [data-bs-theme="dark"] .contacts-app-menu-panel hr { border-top-color: #2a2f3a; }
+
     /* Mobile contacts layout */
     @media (max-width: 767.98px) {
         body.contacts-locked > nav {
-            margin-bottom: 0 !important;
+            display: none;
         }
         .contacts-shell {
-            height: calc(100dvh - 55px);
+            height: 100dvh;
             padding-left: 0;
             padding-right: 0;
         }
@@ -2498,7 +2627,7 @@
         }
         .contact-search {
             margin: 0;
-            padding: 10px 12px 8px;
+            padding: 8px 10px 7px 58px;
             background: #f5f6f8;
             z-index: 3;
         }
@@ -2701,6 +2830,77 @@
         }
     }
 </style>
+
+<button type="button" class="contacts-app-menu-btn"
+        data-contacts-menu-btn aria-label="Меню"
+        aria-haspopup="true" aria-expanded="false">☰</button>
+<div class="contacts-app-menu-panel" data-contacts-menu-panel role="menu">
+    <a href="/"><span class="menu-ico">⌂</span>Главная</a>
+    <a href="/contacts"><span class="menu-ico">◉</span>Контакты</a>
+    <a href="/messenger"><span class="menu-ico">✉</span>Сообщения</a>
+    <hr>
+    <a href="/profile"><span class="menu-ico">●</span>Профиль</a>
+    <a href="/contacts/manage"><span class="menu-ico">↔</span>Связи</a>
+    <a href="/devices"><span class="menu-ico">▣</span>Устройства</a>
+    <a href="/telegram"><span class="menu-ico">✈</span>Telegram</a>
+    <a href="/download"><span class="menu-ico">⇩</span>Клиент Android</a>
+    {% if session.get('user_id') == 1 %}
+    <a href="/users"><span class="menu-ico">♟</span>Пользователи</a>
+    {% endif %}
+    <hr>
+    <button type="button" data-contacts-theme-toggle>
+        <span class="menu-ico" data-contacts-theme-icon>◐</span>
+        <span data-contacts-theme-label>Тема</span>
+    </button>
+    <a href="/logout" class="danger"><span class="menu-ico">⎋</span>Выход</a>
+</div>
+<script>
+    (function() {
+        const btn = document.querySelector('[data-contacts-menu-btn]');
+        const panel = document.querySelector('[data-contacts-menu-panel]');
+        const themeBtn = document.querySelector('[data-contacts-theme-toggle]');
+        const themeIcon = document.querySelector('[data-contacts-theme-icon]');
+        const themeLabel = document.querySelector('[data-contacts-theme-label]');
+        if (!btn || !panel) return;
+
+        function setOpen(open) {
+            panel.classList.toggle('open', open);
+            btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+        }
+
+        function syncThemeLabel() {
+            const cur = document.documentElement.getAttribute('data-bs-theme');
+            if (themeIcon) themeIcon.textContent = cur === 'dark' ? '☀' : '◐';
+            if (themeLabel) {
+                themeLabel.textContent = cur === 'dark'
+                    ? 'Светлая тема' : 'Тёмная тема';
+            }
+        }
+
+        btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            setOpen(!panel.classList.contains('open'));
+        });
+        document.addEventListener('click', function(e) {
+            if (!panel.classList.contains('open')) return;
+            if (panel.contains(e.target) || e.target === btn) return;
+            setOpen(false);
+        });
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') setOpen(false);
+        });
+        if (themeBtn) {
+            syncThemeLabel();
+            themeBtn.addEventListener('click', function() {
+                const cur = document.documentElement.getAttribute('data-bs-theme');
+                const next = cur === 'dark' ? 'light' : 'dark';
+                document.documentElement.setAttribute('data-bs-theme', next);
+                localStorage.setItem('theme', next);
+                syncThemeLabel();
+            });
+        }
+    })();
+</script>
 
 <div class="container-fluid contacts-shell">
     <div class="row g-3 h-100">
