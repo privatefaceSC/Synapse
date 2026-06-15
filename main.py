@@ -2,6 +2,7 @@ import os
 import random
 import re
 import string
+import time
 import uuid
 from datetime import datetime
 
@@ -17,6 +18,12 @@ _AVATAR_PALETTE = [
     "#ef4444", "#f59e0b", "#10b981", "#3b82f6",
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
 ]
+
+
+def _configure_timezone():
+    os.environ.setdefault("TZ", "Europe/Moscow")
+    if hasattr(time, "tzset"):
+        time.tzset()
 
 
 def _avatar_for(contact):
@@ -533,6 +540,7 @@ def _attach_replies(db, msgs, contact):
 
 
 def create_app(db_path: str = "db/blogs.db") -> Flask:
+    _configure_timezone()
     db_sessions.global_init(db_path)
 
     app = Flask(__name__)
