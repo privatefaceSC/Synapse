@@ -2509,9 +2509,10 @@ def register_routes(app: Flask) -> None:
         from data.topic_reads import get_read_map
         from data import telegram_bridge
         db = get_db()
+        user_id = session['user_id']
         contact = (db.query(Contact)
                    .filter(Contact.id == contact_id,
-                           Contact.user_id == session['user_id']).first())
+                           Contact.user_id == user_id).first())
         if not contact:
             return jsonify({'error': 'not_found'}), 404
         tg_handle = next((h for h in db.query(MessengerHandle)
@@ -2524,8 +2525,11 @@ def register_routes(app: Flask) -> None:
         # Live-список с сервера (через кэш в bridge на 60 сек) — даёт
         # точные названия и порядок. Параллельно мы всё равно дочитываем
         # из БД unread/preview.
-        live = telegram_bridge.fetch_forum_topics(tg_handle.tg_chat_id,
-                                                  user_id=user_id)
+        try:
+            live = telegram_bridge.fetch_forum_topics(tg_handle.tg_chat_id,
+                                                      user_id=user_id)
+        except Exception:  # noqa: BLE001
+            live = []
         if live and not tg_handle.tg_is_forum:
             tg_handle.tg_is_forum = True
             db.commit()
