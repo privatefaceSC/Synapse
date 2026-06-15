@@ -6133,6 +6133,7 @@
         else localStorage.removeItem(MF_KEY);
         renderFolders();
         applyFolderFilter();
+        if (window.syncContactNewChatButton) window.syncContactNewChatButton();
         requestAnimationFrame(() => centerActiveFolder('smooth'));
     }
     // Какой мессенджер открыть для данного контакта: если активная папка
@@ -6155,6 +6156,7 @@
     window._refreshFolders = function() {
         renderFolders();
         applyFolderFilter();
+        if (window.syncContactNewChatButton) window.syncContactNewChatButton();
         requestAnimationFrame(() => centerActiveFolder('auto'));
     };
 
@@ -7268,7 +7270,48 @@
     let serverIds = null;
     let token = 0;
     let debounce = null;
-    let synapseMode = false;
+    let newChatMode = null;
+
+    function activeNewChatSource() {
+        const active = document.querySelector('#messenger-folders .mf-btn.active');
+        const folder = active ? (active.dataset.folder || '') : '';
+        return (folder === 'Synapse' || folder === 'Telegram') ? folder : null;
+    }
+
+    function basePlaceholder() {
+        return 'Поиск по контактам и сообщениям…';
+    }
+
+    function newChatPlaceholder(source) {
+        return source === 'Telegram'
+            ? 'Найти @username в Telegram…'
+            : 'Найти пользователя Synapse…';
+    }
+
+    function emptyNewChatText(source) {
+        return source === 'Telegram'
+            ? 'Введите Telegram username, например @username'
+            : 'Введите имя или User ID';
+    }
+
+    function resetNewChatMode() {
+        newChatMode = null;
+        if (newChatBtn) newChatBtn.classList.remove('active');
+        input.placeholder = basePlaceholder();
+    }
+
+    window.syncContactNewChatButton = function() {
+        if (!newChatBtn) return;
+        const source = activeNewChatSource();
+        newChatBtn.hidden = !source;
+        newChatBtn.title = source === 'Telegram'
+            ? 'Новый чат Telegram' : 'Новый чат Synapse';
+        newChatBtn.setAttribute('aria-label', newChatBtn.title);
+        if (!source || (newChatMode && newChatMode !== source)) {
+            resetNewChatMode();
+            closeResults();
+        }
+    };
 
     function applyFilter() {
         const q = query;
@@ -7362,6 +7405,30 @@
         resultsBox.classList.add('open');
     }
 
+    function renderTelegramUsers(users) {
+        if (!resultsBox) return;
+        if (!users.length) {
+            resultsBox.innerHTML =
+                '<div class="sr-empty">Telegram username не найден</div>';
+            resultsBox.classList.add('open');
+            return;
+        }
+        resultsBox.innerHTML = users.map(u => {
+            const username = u.username ? '@' + u.username : 'Telegram';
+            const kind = u.kind === 'private' ? 'Пользователь Telegram' : 'Чат Telegram';
+            return '<div class="search-result telegram-user-result"'
+                 + ' data-chat-id="' + u.chat_id + '"'
+                 + ' data-username="' + escHtml(u.username || '') + '">'
+                 + '<div class="sr-head">'
+                 + '<span class="sr-name">' + escHtml(u.title) + '</span>'
+                 + '<span class="sr-meta">' + escHtml(username) + '</span>'
+                 + '</div>'
+                 + '<div class="sr-snippet">' + kind + '</div>'
+                 + '</div>';
+        }).join('');
+        resultsBox.classList.add('open');
+    }
+
     async function runSynapseSearch() {
         const q = input.value.trim().toLowerCase();
         query = q;
@@ -7386,8 +7453,33 @@
         }
     }
 
+    async function runTelegramSearch() {
+        const q = input.value.trim();
+        query = q.toLowerCase();
+        serverIds = null;
+        applyFilter();
+        if (!q) {
+            resultsBox.innerHTML =
+                '<div class="sr-empty">' + emptyNewChatText('Telegram') + '</div>';
+            resultsBox.classList.add('open');
+            return;
+        }
+        const my = ++token;
+        try {
+            const r = await fetch(
+                '/contacts/telegram/users/search.json?q=' + encodeURIComponent(q),
+                {credentials: 'same-origin'});
+            if (my !== token) return;
+            const data = await r.json().catch(() => ({}));
+            renderTelegramUsers(r.ok ? (data.users || []) : []);
+        } catch (e) {
+            if (my === token) renderTelegramUsers([]);
+        }
+    }
+
     async function runSearch() {
-        if (synapseMode) { await runSynapseSearch(); return; }
+        if (newChatMode === 'Synapse') { await runSynapseSearch(); return; }
+        if (newChatMode === 'Telegram') { await runTelegramSearch(); return; }
         const q = input.value.trim().toLowerCase();
         query = q;
         if (!q) { serverIds = null; closeResults(); applyFilter(); return; }
@@ -7409,7 +7501,7 @@
     input.addEventListener('input', function() {
         query = input.value.trim().toLowerCase();
         applyFilter();
-        if (!query && !synapseMode) closeResults();
+        if (!query && !newChatMode) closeResults();
         clearTimeout(debounce);
         debounce = setTimeout(runSearch, 250);
     });
@@ -7418,20 +7510,22 @@
         newChatBtn.addEventListener('click', function(e) {
             e.preventDefault();
             e.stopPropagation();
-            synapseMode = !synapseMode;
-            newChatBtn.classList.toggle('active', synapseMode);
+            const source = activeNewChatSource();
+            if (!source) return;
+            newChatMode = newChatMode === source ? null : source;
+            newChatBtn.classList.toggle('active', !!newChatMode);
             input.value = '';
             query = '';
             serverIds = null;
             applyFilter();
-            if (synapseMode) {
-                input.placeholder = 'Найти пользователя Synapse…';
+            if (newChatMode) {
+                input.placeholder = newChatPlaceholder(newChatMode);
                 input.focus();
                 resultsBox.innerHTML =
-                    '<div class="sr-empty">Введите имя или User ID</div>';
+                    '<div class="sr-empty">' + emptyNewChatText(newChatMode) + '</div>';
                 resultsBox.classList.add('open');
             } else {
-                input.placeholder = 'Поиск по контактам и сообщениям…';
+                input.placeholder = basePlaceholder();
                 closeResults();
             }
         });
@@ -7453,9 +7547,7 @@
                     .then(r => r.json().then(d => ({ok: r.ok, data: d})))
                     .then(async res => {
                         if (!res.ok || !res.data.ok) return;
-                        synapseMode = false;
-                        if (newChatBtn) newChatBtn.classList.remove('active');
-                        input.placeholder = 'Поиск по контактам и сообщениям…';
+                        resetNewChatMode();
                         input.value = '';
                         query = '';
                         serverIds = null;
@@ -7471,6 +7563,40 @@
                         } else {
                             window.location = '/contacts/' + res.data.contact_id
                                 + '?m=Synapse';
+                        }
+                    })
+                    .catch(() => {});
+                return;
+            }
+            if (row.classList.contains('telegram-user-result')) {
+                const username = row.dataset.username || '';
+                const chatId = row.dataset.chatId || '';
+                const params = username
+                    ? {tg_username: username}
+                    : {tg_chat_id: chatId};
+                fetch('/contacts/from-tg.json', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'X-Requested-With': 'XMLHttpRequest'},
+                    body: new URLSearchParams(params),
+                })
+                    .then(r => r.json().then(d => ({ok: r.ok, data: d})))
+                    .then(async res => {
+                        if (!res.ok || !res.data.contact_id) return;
+                        resetNewChatMode();
+                        input.value = '';
+                        query = '';
+                        serverIds = null;
+                        closeResults();
+                        applyFilter();
+                        if (window.refreshContactsNow) {
+                            await window.refreshContactsNow();
+                        }
+                        if (window.openContactSPA) {
+                            window.openContactSPA(res.data.contact_id, 'Telegram');
+                        } else {
+                            window.location = '/contacts/' + res.data.contact_id
+                                + '?m=Telegram';
                         }
                     })
                     .catch(() => {});
@@ -7503,6 +7629,7 @@
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') closeResults();
     });
+    window.syncContactNewChatButton();
 
     // Поллинг перерисовывает список (innerHTML) — переналожить фильтр.
     new MutationObserver(() => { if (query) applyFilter(); })

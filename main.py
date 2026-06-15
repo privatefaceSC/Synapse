@@ -1634,6 +1634,29 @@ def register_routes(app: Flask) -> None:
         return jsonify({'ok': True, 'contact_id': handle.contact_id,
                         'messenger': SYNAPSE_MESSENGER})
 
+    @app.route('/contacts/telegram/users/search.json')
+    def contacts_telegram_users_search():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+        q = (request.args.get('q') or '').strip()
+        username = q[1:] if q.startswith('@') else q
+        if not username:
+            return jsonify({'users': []})
+        if not telegram_bridge.is_configured():
+            return jsonify({'error': 'telegram_not_configured'}), 502
+        try:
+            info = telegram_bridge.resolve_username_info(
+                username, user_id=session['user_id'])
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'users': [], 'detail': str(exc)})
+        return jsonify({'users': [{
+            'chat_id': int(info.get('chat_id') or 0),
+            'title': info.get('title') or username,
+            'username': info.get('username') or username,
+            'kind': info.get('kind') or 'private',
+        }]})
+
     @app.route('/contacts/<int:contact_id>')
     def contact_detail(contact_id):
         if not session.get('user_id'):
@@ -3015,17 +3038,20 @@ def register_routes(app: Flask) -> None:
         панели — у нас может ещё не быть с ними переписки, а пользователь
         хочет открыть чат внутри Synapse. Резолвим имя через Telethon
         get_entity, создаём Contact + MessengerHandle.
-        Body: tg_chat_id (int)."""
+        Body: tg_chat_id (int) или tg_username (@username)."""
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
         from data.contacts import (Contact, MessengerHandle,
                                     find_or_create_handle)
         from data import telegram_bridge
+        tg_username = (request.form.get('tg_username') or '').strip()
+        if tg_username.startswith('@'):
+            tg_username = tg_username[1:]
         try:
             tg_chat_id = int(request.form.get('tg_chat_id') or 0)
         except ValueError:
             tg_chat_id = 0
-        if not tg_chat_id:
+        if not tg_chat_id and not tg_username:
             return jsonify({'error': 'bad_request'}), 400
         db = get_db()
         user_id = session['user_id']
@@ -3041,8 +3067,12 @@ def register_routes(app: Flask) -> None:
         if not telegram_bridge.is_configured():
             return jsonify({'error': 'telegram_not_configured'}), 502
         try:
-            info = telegram_bridge.resolve_entity_info(tg_chat_id,
-                                                       user_id=user_id)
+            if tg_username:
+                info = telegram_bridge.resolve_username_info(
+                    tg_username, user_id=user_id)
+            else:
+                info = telegram_bridge.resolve_entity_info(tg_chat_id,
+                                                           user_id=user_id)
         except Exception as exc:  # noqa: BLE001
             return jsonify({'error': 'resolve_failed',
                             'detail': str(exc)}), 502

@@ -1579,7 +1579,7 @@ async def _resolve_entity_info(chat_id, user_id=None):
     client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
-    e = await client.get_entity(int(chat_id))
+    e = await client.get_entity(chat_id if isinstance(chat_id, str) else int(chat_id))
     if isinstance(e, _User):
         name = " ".join(filter(None, [
             getattr(e, "first_name", None),
@@ -1613,6 +1613,16 @@ def resolve_entity_info(chat_id, user_id=None):
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_resolve_entity_info(chat_id, user_id=user_id), timeout=30)
+
+
+def resolve_username_info(username, user_id=None):
+    """Проверяет Telegram @username и возвращает данные найденной сущности."""
+    username = (username or "").strip()
+    if username.startswith("@"):
+        username = username[1:]
+    if not username:
+        raise RuntimeError("Пустой username")
+    return resolve_entity_info(username, user_id=user_id)
 
 
 async def _set_block(chat_id, block, user_id=None):
