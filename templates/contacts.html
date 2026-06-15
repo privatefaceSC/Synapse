@@ -6041,7 +6041,7 @@
     let suppressFolderClick = false;
 
     function collectMessengers() {
-        const set = new Set();
+        const set = new Set(['Synapse']);
         list.querySelectorAll('.contact-row-wrap').forEach(function(w) {
             (w.dataset.messengers || '').split(',').forEach(function(m) {
                 m = m.trim();
@@ -6089,8 +6089,8 @@
         const box = document.getElementById('messenger-folders');
         if (!box) return;
         const msgrs = orderMessengers(collectMessengers());
-        if (msgrs.length <= 1) {
-            box.innerHTML = '';   // если один мессенджер — фильтр бессмыслен
+        if (!msgrs.length) {
+            box.innerHTML = '';
             return;
         }
         const totalCount = list.querySelectorAll('.contact-row-wrap').length;
