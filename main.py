@@ -18,6 +18,7 @@ _AVATAR_PALETTE = [
     "#ef4444", "#f59e0b", "#10b981", "#3b82f6",
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
 ]
+SYNAPSE_MESSENGER = "Synapse"
 
 
 def _configure_timezone():
@@ -683,6 +684,127 @@ def _dm_message_dict(m, me_id, atts) -> dict:
     }
 
 
+def _synapse_sender_raw(user_id: int) -> str:
+    return f"synapse:{user_id}"
+
+
+def _synapse_partner_id(handle) -> int | None:
+    raw = handle.sender_raw or ''
+    if not raw.startswith('synapse:'):
+        return None
+    try:
+        return int(raw.split(':', 1)[1])
+    except (TypeError, ValueError):
+        return None
+
+
+def _ensure_synapse_handle(db, owner_id: int, partner):
+    from data.contacts import Contact, MessengerHandle
+
+    sender_raw = _synapse_sender_raw(partner.id)
+    handle = (db.query(MessengerHandle)
+              .filter(MessengerHandle.user_id == owner_id,
+                      MessengerHandle.messenger_name == SYNAPSE_MESSENGER,
+                      MessengerHandle.sender_raw == sender_raw)
+              .first())
+    if handle is not None:
+        return handle
+
+    contact = Contact(user_id=owner_id,
+                      display_name=_dm_user_card(partner)['display_name'])
+    db.add(contact)
+    db.flush()
+    handle = MessengerHandle(
+        contact_id=contact.id,
+        user_id=owner_id,
+        messenger_name=SYNAPSE_MESSENGER,
+        sender_raw=sender_raw,
+        sender_normalized=sender_raw,
+    )
+    db.add(handle)
+    db.flush()
+    return handle
+
+
+def _mirror_direct_message_for_owner(db, direct_msg, owner_id: int, users_by_id: dict):
+    partner_id = (direct_msg.recipient_id
+                  if direct_msg.sender_id == owner_id else direct_msg.sender_id)
+    partner = users_by_id.get(partner_id)
+    if partner is None:
+        return None
+    handle = _ensure_synapse_handle(db, owner_id, partner)
+    outgoing = direct_msg.sender_id == owner_id
+    created_at = direct_msg.created_at or datetime.now()
+    text = direct_msg.text or 'Вложение'
+    existing = (db.query(Messages)
+                .filter(Messages.user_id == owner_id,
+                        Messages.handle_id == handle.id,
+                        Messages.created_at == created_at,
+                        Messages.outgoing.is_(outgoing))
+                .first())
+    if existing is not None:
+        return existing
+    msg = Messages(
+        sender='Вы' if outgoing else _dm_user_card(partner)['display_name'],
+        text=text,
+        messenger_name=SYNAPSE_MESSENGER,
+        time=created_at.strftime('%H:%M'),
+        user_id=owner_id,
+        handle_id=handle.id,
+        created_at=created_at,
+        outgoing=outgoing,
+    )
+    db.add(msg)
+    db.flush()
+    return msg
+
+
+def _sync_direct_messages_to_contacts(db, owner_id: int):
+    from sqlalchemy import or_
+
+    from data.direct import DirectMessage
+
+    direct_msgs = (db.query(DirectMessage)
+                   .filter(or_(DirectMessage.sender_id == owner_id,
+                               DirectMessage.recipient_id == owner_id))
+                   .order_by(DirectMessage.created_at.asc().nullsfirst(),
+                             DirectMessage.id.asc())
+                   .all())
+    if not direct_msgs:
+        return
+    user_ids = {
+        pid
+        for m in direct_msgs
+        for pid in (m.sender_id, m.recipient_id)
+    }
+    users_by_id = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()}
+    for direct_msg in direct_msgs:
+        _mirror_direct_message_for_owner(db, direct_msg, owner_id, users_by_id)
+    db.commit()
+
+
+def _mark_synapse_contact_read(db, owner_id: int, handles):
+    from data.direct import DirectMessage
+
+    partner_ids = [_synapse_partner_id(h) for h in handles
+                   if h.messenger_name == SYNAPSE_MESSENGER]
+    partner_ids = [pid for pid in partner_ids if pid is not None]
+    if not partner_ids:
+        return
+    now = datetime.now()
+    changed = False
+    incoming = (db.query(DirectMessage)
+                .filter(DirectMessage.recipient_id == owner_id,
+                        DirectMessage.sender_id.in_(partner_ids),
+                        DirectMessage.read_at.is_(None))
+                .all())
+    for msg in incoming:
+        msg.read_at = now
+        changed = True
+    if changed:
+        db.flush()
+
+
 def _dm_conversations(db, me_id) -> list:
     """Список переписок пользователя: по карточке на каждого собеседника,
     отсортирован по времени последнего сообщения (свежие сверху)."""
@@ -1339,6 +1461,7 @@ def register_routes(app: Flask) -> None:
         from data.contacts import Contact
         db = get_db()
         user_id = session['user_id']
+        _sync_direct_messages_to_contacts(db, user_id)
         contacts = (
             db.query(Contact)
             .filter(Contact.user_id == user_id)
@@ -1356,6 +1479,7 @@ def register_routes(app: Flask) -> None:
         from data.contacts import Contact
         db = get_db()
         user_id = session['user_id']
+        _sync_direct_messages_to_contacts(db, user_id)
         contacts = (
             db.query(Contact)
             .filter(Contact.user_id == user_id)
@@ -1399,6 +1523,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({'contact_ids': [], 'matches': []})
         db = get_db()
         user_id = session['user_id']
+        _sync_direct_messages_to_contacts(db, user_id)
 
         contacts = db.query(Contact).filter(Contact.user_id == user_id).all()
         contacts = _filter_discussion_contacts(db, contacts)
@@ -1460,6 +1585,7 @@ def register_routes(app: Flask) -> None:
         from data.matching import display_author
         db = get_db()
         user_id = session['user_id']
+        _sync_direct_messages_to_contacts(db, user_id)
         contact = (
             db.query(Contact)
             .filter(Contact.id == contact_id, Contact.user_id == user_id)
@@ -1481,6 +1607,7 @@ def register_routes(app: Flask) -> None:
         _avatar_for(contact)
 
         handles = db.query(MessengerHandle).filter(MessengerHandle.contact_id == contact.id).all()
+        _mark_synapse_contact_read(db, user_id, handles)
         # Контакт — «папка»: чат на каждый мессенджер. Показываем один.
         available = []
         for h in handles:
@@ -1495,10 +1622,14 @@ def register_routes(app: Flask) -> None:
         tg_chat_handle = next((h for h in m_handles
                                if h.messenger_name == 'Telegram'
                                and h.tg_chat_id is not None), None)
+        synapse_handle = next((h for h in m_handles
+                               if h.messenger_name == SYNAPSE_MESSENGER), None)
         _tg_handle, _notif_handle = _reply_channel(m_handles)
-        can_reply = _tg_handle is not None or _notif_handle is not None
+        can_reply = (synapse_handle is not None or _tg_handle is not None
+                     or _notif_handle is not None)
         reply_via = ('telegram' if _tg_handle is not None
-                     else ('notif' if _notif_handle is not None else None))
+                     else ('synapse' if synapse_handle is not None
+                           else ('notif' if _notif_handle is not None else None)))
         is_group = (tg_chat_handle is not None
                     and tg_chat_handle.tg_chat_type == 'group')
         # Тип чата нужен фронту, чтобы под канальными постами появлялась
@@ -1535,12 +1666,14 @@ def register_routes(app: Flask) -> None:
         from data.matching import display_author
         db = get_db()
         user_id = session['user_id']
+        _sync_direct_messages_to_contacts(db, user_id)
         contact = (db.query(Contact)
                    .filter(Contact.id == contact_id, Contact.user_id == user_id).first())
         if not contact:
             return jsonify({'error': 'not_found'}), 404
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
+        _mark_synapse_contact_read(db, user_id, handles)
         available = []
         for h in handles:
             if h.messenger_name not in available:
@@ -1554,10 +1687,14 @@ def register_routes(app: Flask) -> None:
         tg_chat_handle = next((h for h in m_handles
                                if h.messenger_name == 'Telegram'
                                and h.tg_chat_id is not None), None)
+        synapse_handle = next((h for h in m_handles
+                               if h.messenger_name == SYNAPSE_MESSENGER), None)
         _tg_handle, _notif_handle = _reply_channel(m_handles)
-        can_reply = _tg_handle is not None or _notif_handle is not None
+        can_reply = (synapse_handle is not None or _tg_handle is not None
+                     or _notif_handle is not None)
         reply_via = ('telegram' if _tg_handle is not None
-                     else ('notif' if _notif_handle is not None else None))
+                     else ('synapse' if synapse_handle is not None
+                           else ('notif' if _notif_handle is not None else None)))
         is_group = (tg_chat_handle is not None
                     and tg_chat_handle.tg_chat_type == 'group')
         is_forum = bool(tg_chat_handle is not None and tg_chat_handle.tg_is_forum)
@@ -1758,6 +1895,80 @@ def register_routes(app: Flask) -> None:
         requested_messenger = (request.form.get('messenger') or '').strip() or None
         m_handles = ([h for h in handles if h.messenger_name == requested_messenger]
                      if requested_messenger else handles)
+        synapse_handle = next((h for h in m_handles
+                               if h.messenger_name == SYNAPSE_MESSENGER), None)
+        if synapse_handle is not None and (
+                requested_messenger == SYNAPSE_MESSENGER
+                or not any(h.messenger_name != SYNAPSE_MESSENGER
+                           for h in m_handles)):
+            if upload is not None:
+                return jsonify({'error': 'media_not_supported'}), 400
+            if forward_source is not None:
+                return jsonify({'error': 'target_not_telegram'}), 400
+            if not text:
+                return jsonify({'error': 'empty'}), 400
+            partner_id = _synapse_partner_id(synapse_handle)
+            if partner_id is None or partner_id == user_id:
+                return jsonify({'error': 'not_found'}), 404
+
+            from data.direct import DirectMessage
+            now = datetime.now()
+            direct_msg = DirectMessage(
+                sender_id=user_id,
+                recipient_id=partner_id,
+                text=text,
+                created_at=now,
+            )
+            db.add(direct_msg)
+            db.flush()
+            msg = Messages(
+                sender='Вы',
+                text=text,
+                messenger_name=SYNAPSE_MESSENGER,
+                time=now.strftime('%H:%M'),
+                user_id=user_id,
+                handle_id=synapse_handle.id,
+                created_at=now,
+                outgoing=True,
+            )
+            db.add(msg)
+            db.flush()
+            me = db.query(User).filter(User.id == user_id).first()
+            partner = db.query(User).filter(User.id == partner_id).first()
+            if me is not None and partner is not None:
+                users_by_id = {user_id: me, partner_id: partner}
+                _mirror_direct_message_for_owner(
+                    db, direct_msg, partner_id, users_by_id)
+
+            reply_quote = None
+            reply_raw = request.form.get('reply_to')
+            if reply_raw and msg is not None:
+                try:
+                    reply_id = int(reply_raw)
+                except (TypeError, ValueError):
+                    reply_id = None
+                if reply_id:
+                    target = db.query(Messages).filter(
+                        Messages.id == reply_id,
+                        Messages.user_id == user_id,
+                        Messages.handle_id == synapse_handle.id).first()
+                    if target is not None:
+                        msg.reply_to_message_id = target.id
+                        from data.matching import display_author
+                        rt_text = target.text or ''
+                        reply_quote = {
+                            'id': target.id,
+                            'author': ('Вы' if target.outgoing
+                                       else display_author(target.sender,
+                                                            contact.display_name)),
+                            'text': rt_text[:120] + ('...' if len(rt_text) > 120 else ''),
+                        }
+            db.commit()
+            return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
+                            'text': msg.text, 'text_html': None,
+                            'messenger_name': SYNAPSE_MESSENGER,
+                            'reply_to': reply_quote,
+                            'forwarded': False})
         tg_handle, notif_handle = _reply_channel(m_handles)
         if tg_handle is None and notif_handle is None and requested_messenger:
             # Запрошен мессенджер, в котором ответ невозможен — пробуем глобально.
