@@ -25,6 +25,8 @@ tg.session*
 
 # Локальные секреты Telegram (api_id / api_hash) — НИКОГДА в репо
 tg_credentials.bat
+.env
+*.env
 
 # Локальные настройки Telegram-моста (фильтрация) — у каждого свои
 db/tg_settings.json

@@ -1,0 +1,17 @@
+[Unit]
+Description=Synapse Flask messenger bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/srv/synapse
+EnvironmentFile=/etc/synapse/synapse.env
+ExecStart=/srv/synapse/.venv/bin/gunicorn --workers 1 --threads 4 --timeout 120 --bind 127.0.0.1:5000 wsgi:app
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

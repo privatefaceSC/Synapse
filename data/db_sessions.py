@@ -51,6 +51,7 @@ def _apply_light_migrations(engine):
                      ("tg_ttl_seconds", "INTEGER"),
                      ("fwd_from_name", "VARCHAR"),
                      ("fwd_from_tg_chat_id", "BIGINT"),
+                     ("author_tg_chat_id", "BIGINT"),
                      ("tg_topic_id", "BIGINT"),
                      ("tg_topic_title", "VARCHAR"),
                      ("text_html", "TEXT"),

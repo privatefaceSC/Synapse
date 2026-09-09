@@ -64,6 +64,9 @@ class Messages(SqlAlchemyBase):
     # тогда ник остаётся некликабельным.
     fwd_from_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     fwd_from_tg_chat_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
+    # Telegram-id автора сообщения внутри группы. У handle.tg_chat_id в группе
+    # хранится id самой группы, поэтому для аватарки/перехода нужен отдельный id.
+    author_tg_chat_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
     # Для forum-чатов Telegram (одна группа → много тем): id «головного»
     # сообщения темы. Telegram кладёт его в `Message.reply_to.reply_to_top_id`
     # для всех сообщений темы; само головное сообщение имеет

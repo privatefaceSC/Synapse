@@ -176,7 +176,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     tg_chat_id=None, author=None, outgoing=False, tg_chat_type=None,
                     tg_message_id=None, reply_to_tg_id=None, package_name=None,
                     tg_ttl_seconds=None, fwd_from_name=None,
-                    fwd_from_tg_chat_id=None, tg_topic_id=None,
+                    fwd_from_tg_chat_id=None, author_tg_chat_id=None,
+                    tg_topic_id=None,
                     tg_topic_title=None, tg_is_forum=None,
                     text_html=None):
     """Записывает сообщение.
@@ -232,6 +233,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         tg_ttl_seconds=tg_ttl_seconds,
         fwd_from_name=fwd_from_name,
         fwd_from_tg_chat_id=fwd_from_tg_chat_id,
+        author_tg_chat_id=author_tg_chat_id,
         tg_topic_id=tg_topic_id,
         tg_topic_title=tg_topic_title,
         text_html=text_html,

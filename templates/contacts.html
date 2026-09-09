@@ -562,8 +562,47 @@
     .bubble-row { display: flex; flex-direction: column;
         align-items: flex-start;  /* bubble сжимается под контент, а не до 78% */
         margin-bottom: 14px; max-width: 78%; }
-    /* bubble тоже не тянется шире своей строки */
+    .bubble-row.incoming { flex-direction: row; align-items: flex-end; gap: 7px; }
+    .bubble-row.grouped { margin-top: -6px; }
+    .bubble-row.incoming.grouped { margin-top: -7px; }
+    .message-stack { display: flex; flex-direction: column; align-items: flex-start; max-width: 100%; }
+    .message-avatar {
+        flex: 0 0 30px; width: 30px; height: 30px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        margin-bottom: 1px; overflow: hidden;
+        background: #64748b; color: #fff; font-size: 11px; font-weight: 700;
+        line-height: 1; border: 2px solid rgba(255,255,255,.75);
+        box-shadow: 0 1px 3px rgba(15,23,42,.18);
+        text-decoration: none;
+    }
+    a.message-avatar { cursor: pointer; }
+    a.message-avatar:hover { transform: translateY(-1px); }
+    .message-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+    .message-avatar.placeholder { visibility: hidden; }
     .bubble { max-width: 100%; }
+    .scroll-date-pill {
+        position: sticky;
+        top: 8px;
+        z-index: 8;
+        width: max-content;
+        max-width: calc(100% - 32px);
+        margin: 0 auto 2px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(100, 116, 139, .82);
+        color: #fff;
+        font-size: 12px;
+        line-height: 1.25;
+        pointer-events: none;
+        opacity: 0;
+        transform: translateY(-4px);
+        transition: opacity .16s ease, transform .16s ease;
+        backdrop-filter: blur(8px);
+    }
+    .scroll-date-pill.show {
+        opacity: 1;
+        transform: translateY(0);
+    }
     /* Плавное появление новых сообщений (входящих и исходящих) */
     @keyframes bubbleSlideIn {
         from { opacity: 0; transform: translateY(8px); }
@@ -576,6 +615,10 @@
     .bubble-row .source {
         font-size: 11px; color: #5b6472; margin: 0 0 4px 7px;
         font-weight: 600; letter-spacing: .02em;
+    }
+    .bubble .bubble-author {
+        font-size: 12px; line-height: 1.2; margin-bottom: 3px;
+        font-weight: 700; color: #2563eb;
     }
     /* Исходящие (отправленные из веб-панели) — справа, другой цвет. */
     .bubble-row.outgoing { margin-left: auto; align-items: flex-end; }
@@ -1771,6 +1814,11 @@
     [data-bs-theme="dark"] .bubble .text { color: #e8eaed; }
     [data-bs-theme="dark"] .bubble .time { color: #6b7280; }
     [data-bs-theme="dark"] .bubble-row .source { color: #9aa3b2; }
+    [data-bs-theme="dark"] .bubble .bubble-author { color: #60a5fa; }
+    [data-bs-theme="dark"] .message-avatar {
+        border-color: rgba(15,23,42,.9);
+        box-shadow: 0 1px 4px rgba(0,0,0,.42);
+    }
     [data-bs-theme="dark"] .bubble .truncated-note {
         color: #fcd34d; background: rgba(245, 158, 11, 0.12);
         border-color: rgba(245,158,11,.22);
@@ -2696,10 +2744,19 @@
     }
     .feed-header .fw-semibold { font-size: 15px; }
     .bubble-row { margin-bottom: 8px; max-width: 76%; }
+    .bubble-row.incoming { gap: 6px; }
+    .message-avatar {
+        flex-basis: 28px; width: 28px; height: 28px;
+        font-size: 10.5px;
+    }
     .bubble-row .source {
         margin: 0 6px 2px 0;
         font-size: 10.5px;
         line-height: 1.2;
+    }
+    .bubble .bubble-author {
+        font-size: 11.5px;
+        margin-bottom: 2px;
     }
     .bubble { padding: 7px 10px; border-radius: 14px; }
     .bubble .text {
@@ -3203,9 +3260,11 @@
                 {% if selected %}
                     {% set _multi = (messengers or [])|length > 1 %}
                     {% set _expandable = is_group or _multi %}
+                    {% set _show_authors = is_group or (selected_handles or [])|length > 1 %}
                     <div class="feed-header{% if _expandable %} expandable{% endif %}"
                          id="feed-header" data-contact-id="{{ selected.id }}"
                          data-is-group="{{ '1' if is_group else '' }}"
+                         data-show-authors="{{ '1' if _show_authors else '' }}"
                          data-chat-type="{{ chat_type or '' }}"
                          data-messengers="{{ (messengers or [])|join(',') }}">
                         <div class="feed-header-top">
@@ -3248,15 +3307,37 @@
                     </div>
                     <div id="messages-container">
                         {% if messages %}
+                            {% set msg_ns = namespace(prev_key='') %}
                             {% for m in messages %}
                             {% set media_only = m.media and not m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
                             {% set media_caption = m.media and m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
-                            <div class="bubble-row{% if m.outgoing %} outgoing{% endif %}{% if m.pinned_at %} pinned{% endif %}"
+                            {% set msg_author = 'Вы' if m.outgoing else (m.display_author or m.sender) %}
+                            {% set msg_key = ('out:' if m.outgoing else 'in:') ~ msg_author %}
+                            {% set msg_grouped = msg_ns.prev_key == msg_key %}
+                            {% set msg_show_source = _show_authors and not m.outgoing and not msg_grouped %}
+                            <div class="bubble-row{% if m.outgoing %} outgoing{% else %} incoming{% endif %}{% if m.pinned_at %} pinned{% endif %}{% if msg_grouped %} grouped{% endif %}"
                                  data-message-id="{{ m.id }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
+                                 data-author="{{ msg_author }}"
+                                data-date-label="{{ m.date_label or '' }}"
                                  {% if m.edit_history %}data-edits-json='{{ m.edit_history|tojson|forceescape }}'{% endif %}>
-                                <span class="source">{% if m.outgoing %}Вы{% else %}{{ m.messenger_name }} · {{ m.display_author or m.sender }}{% endif %}</span>
+                                {% if not m.outgoing %}
+                                {% if m.author_profile_url %}<a href="{{ m.author_profile_url }}"{% else %}<span{% endif %}
+                                      class="message-avatar{% if msg_grouped %} placeholder{% endif %}"
+                                      title="{{ msg_author }}"
+                                      data-author-profile-url="{{ m.author_profile_url or '' }}">
+                                    {% if m.author_avatar_url %}
+                                    <img src="{{ m.author_avatar_url }}" alt="">
+                                    {% elif selected.avatar_url and not _show_authors %}
+                                    <img src="{{ selected.avatar_url }}" alt="">
+                                    {% else %}
+                                    {{ msg_author[:2] }}
+                                    {% endif %}
+                                {% if m.author_profile_url %}</a>{% else %}</span>{% endif %}
+                                <div class="message-stack">
+                                {% endif %}
                                 <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}{% if media_caption %} media-caption{% endif %}">
+                                    {% if msg_show_source %}<div class="bubble-author">{{ msg_author }}</div>{% endif %}
                                     {% if m.deleted_at %}
                                     <div class="deleted-banner"
                                          title="Сообщение удалили в мессенджере, но мы успели сохранить">
@@ -3359,7 +3440,9 @@
                                     </div>
                                     {% endif %}
                                 </div>
+                                {% if not m.outgoing %}</div>{% endif %}
                             </div>
+                            {% set msg_ns.prev_key = msg_key %}
                             {% endfor %}
                         {% else %}
                             <div class="empty-state">Нет сообщений.</div>
@@ -5242,8 +5325,9 @@
         const outgoing = row.classList.contains('outgoing');
         const sourceEl = row.querySelector('.source');
         const author = outgoing ? 'Вы'
-            : (sourceEl ? sourceEl.textContent.split('·').pop().trim()
-                        : 'Сообщение');
+            : (row.dataset.author
+               || (sourceEl ? sourceEl.textContent.split('·').pop().trim()
+                            : 'Сообщение'));
         e.preventDefault();
         showMessageMenu(e.clientX, e.clientY, messageId, text, outgoing, author);
     });
@@ -5274,8 +5358,16 @@
     let navToken = 0;
     let pollTimer = null;
     let typingTimer = null;
+    let scrollDateTimer = null;
     let currentMessages = [];
     let olderMessages = [];
+    let currentContactIsGroup = !!(
+        feed.querySelector('.feed-header')
+        && feed.querySelector('.feed-header').dataset.showAuthors
+    );
+    let currentContactAvatarUrl = (
+        feed.querySelector('.feed-header .avatar img') || {}
+    ).src || '';
     let hasOlderMessages = false;
     let loadingOlderMessages = false;
     let pendingFile = null;   // выбранный, но ещё не отправленный файл
@@ -5287,6 +5379,42 @@
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[c]));
+    }
+
+    function authorInitials(name) {
+        const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+        if (!parts.length) return '?';
+        const chars = parts.slice(0, 2).map(p => p.charAt(0)).join('');
+        return chars.toUpperCase();
+    }
+
+    function authorColor(name) {
+        const colors = ['#ef4444', '#f97316', '#10b981', '#06b6d4',
+                        '#3b82f6', '#8b5cf6', '#ec4899', '#64748b'];
+        let hash = 0;
+        String(name || '').split('').forEach(ch => {
+            hash = ((hash << 5) - hash) + ch.charCodeAt(0);
+            hash |= 0;
+        });
+        return colors[Math.abs(hash) % colors.length];
+    }
+
+    function renderMessageAvatar(author, grouped, avatarUrl, profileUrl) {
+        const cls = 'message-avatar' + (grouped ? ' placeholder' : '');
+        const tag = profileUrl ? 'a' : 'span';
+        const href = profileUrl ? ` href="${escapeHtml(profileUrl)}"` : '';
+        const close = `</${tag}>`;
+        const title = ` title="${escapeHtml(author)}"`;
+        if (avatarUrl || (!currentContactIsGroup && currentContactAvatarUrl)) {
+            const src = avatarUrl || currentContactAvatarUrl;
+            return `<${tag}${href} class="${cls}"${title}
+                         data-author-profile-url="${escapeHtml(profileUrl || '')}">`
+                + `<img src="${escapeHtml(src)}" alt="">${close}`;
+        }
+        return `<${tag}${href} class="${cls}"${title}
+                      data-author-profile-url="${escapeHtml(profileUrl || '')}"
+                      style="background:${escapeHtml(authorColor(author))}">`
+            + `${escapeHtml(authorInitials(author))}${close}`;
     }
 
     // Безопасный санитайзер для text_html, который приходит от Telegram
@@ -5387,6 +5515,40 @@
     function scrollToBottom() {
         const el = scrollEl();
         el.scrollTop = el.scrollHeight;
+    }
+
+    function ensureScrollDatePill(container) {
+        if (!container || container.id !== 'messages-container') return null;
+        let pill = container.querySelector('.scroll-date-pill');
+        if (!pill) {
+            pill = document.createElement('div');
+            pill.className = 'scroll-date-pill';
+            pill.setAttribute('aria-hidden', 'true');
+            container.insertBefore(pill, container.firstChild);
+        }
+        return pill;
+    }
+
+    function updateScrollDate() {
+        const c = document.getElementById('messages-container');
+        const pill = ensureScrollDatePill(c);
+        if (!c || !pill) return;
+        const rows = Array.from(c.querySelectorAll('.bubble-row[data-date-label]'));
+        if (!rows.length) return;
+        const topLine = c.scrollTop + 16;
+        let active = rows[0];
+        for (const row of rows) {
+            if (row.offsetTop <= topLine) active = row;
+            else break;
+        }
+        const label = active.dataset.dateLabel || '';
+        if (!label) return;
+        pill.textContent = label;
+        pill.classList.add('show');
+        if (scrollDateTimer) clearTimeout(scrollDateTimer);
+        scrollDateTimer = setTimeout(() => {
+            pill.classList.remove('show');
+        }, 900);
     }
 
     function combinedMessages() {
@@ -5512,7 +5674,10 @@
         // и реагируем только когда источник — наш реальный scroll-эл.
         window.addEventListener('scroll', function(e) {
             const el = scrollEl();
-            if (e.target === el) updateScrollFab();
+            if (e.target === el) {
+                updateScrollFab();
+                updateScrollDate();
+            }
         }, true);
     }
 
@@ -5522,6 +5687,7 @@
         const currentM = c.messenger
             || (handles[0] && handles[0].messenger) || '';
         const isGroup = !!c.is_group;
+        const showAuthors = !!(c.show_authors || isGroup || handles.length > 1);
         const multiM = chatMessengers.length > 1;
 
         let subline;
@@ -5560,6 +5726,7 @@
         return `<div class="feed-header${expandable ? ' expandable' : ''}"
                      id="feed-header" data-contact-id="${c.id}"
                      data-is-group="${isGroup ? '1' : ''}"
+                     data-show-authors="${showAuthors ? '1' : ''}"
                      data-is-forum="${isForum ? '1' : ''}"
                      data-topic-id="${topicId ? topicId : ''}"
                      data-chat-type="${escapeHtml(c.chat_type || '')}"
@@ -5705,6 +5872,7 @@
             }
             return `<img class="sticker-img" src="/attachments/${a.id}"${packAttr} loading="lazy" alt="стикер">`;
         }
+        let prevKey = '';
         return messages.map(m => {
             const truncated = (m.text || '').length === 1024
                 ? `<div class="truncated-note">
@@ -5734,10 +5902,20 @@
                     return `<img class="media-img" src="/attachments/${a.id}" data-full="/attachments/${a.id}" loading="lazy" alt="фото">`;
                 })
                 .join('');
-            const source = m.outgoing
+            const author = m.outgoing
                 ? 'Вы'
-                : escapeHtml(m.messenger_name) + ' · '
-                  + escapeHtml(m.display_author || m.sender);
+                : (m.display_author || m.sender || '');
+            const groupKey = (m.outgoing ? 'out:' : 'in:') + author;
+            const grouped = prevKey === groupKey;
+            prevKey = groupKey;
+            const source = (currentContactIsGroup && !m.outgoing && !grouped)
+                ? `<div class="bubble-author">${escapeHtml(author)}</div>`
+                : '';
+            const avatar = !m.outgoing
+                ? renderMessageAvatar(author, grouped,
+                                      m.author_avatar_url || '',
+                                      m.author_profile_url || '')
+                : '';
             const reply = m.reply_to
                 ? `<div class="reply-quote" data-target-id="${m.reply_to.id}"
                        title="Перейти к исходному сообщению">`
@@ -5824,11 +6002,15 @@
                 && !m.reply_to
                 && !m.fwd_from
                 && (!!m.text || !!m.text_html);
-            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ''}${m.pinned ? ' pinned' : ''}"
+            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ' incoming'}${m.pinned ? ' pinned' : ''}${grouped ? ' grouped' : ''}"
                 data-message-id="${m.id}"
-                data-messenger="${escapeHtml(m.messenger_name || '')}"${editsJson}>
-                <span class="source">${source}</span>
+                data-messenger="${escapeHtml(m.messenger_name || '')}"
+                data-author="${escapeHtml(author)}"
+                data-date-label="${escapeHtml(m.date_label || '')}"${editsJson}>
+                ${avatar}
+                ${m.outgoing ? '' : '<div class="message-stack">'}
                 <div class="bubble${m.deleted ? ' deleted' : ''}${mediaOnly ? ' media-only' : ''}${mediaCaption ? ' media-caption' : ''}">
+                    ${source}
                     ${delBanner}
                     ${fwdHtml}
                     ${reply}
@@ -5843,6 +6025,7 @@
                     </div>
                     ${reactionsHtml}
                 </div>
+                ${m.outgoing ? '' : '</div>'}
             </div>`;
         }).join('');
     }
@@ -5909,6 +6092,11 @@
     }
 
     function paint(contact, messages) {
+        currentContactIsGroup = !!(
+            contact && (contact.show_authors || contact.is_group
+                        || ((contact.handles || []).length > 1))
+        );
+        currentContactAvatarUrl = (contact && contact.avatar_url) || '';
         // Форум-чат без выбранной темы → рисуем список тем вместо ленты.
         // В этом режиме composer и messages-container не нужны.
         const isForum = !!contact.is_forum;
@@ -5968,15 +6156,16 @@
     function startPolling() {
         stopPolling();
         pollTimer = setInterval(pollMessages, 5000);
-        typingTimer = setInterval(pollTyping, 3000);
+        pollTyping();
+        typingTimer = setInterval(pollTyping, 800);
     }
 
-    function setTyping(on) {
+    function setTyping(on, text) {
         const sub = feed.querySelector('.feed-header .text-muted');
         if (!sub) return;
         if (on) {
             if (sub.dataset.orig == null) sub.dataset.orig = sub.textContent;
-            sub.textContent = 'печатает…';
+            sub.textContent = text || 'печатает…';
             sub.classList.add('is-typing');
         } else if (sub.dataset.orig != null) {
             sub.textContent = sub.dataset.orig;
@@ -5994,7 +6183,7 @@
             if (!r.ok) return;
             const data = await r.json();
             if (String(idAtStart) !== String(currentContactId)) return;
-            setTyping(!!data.typing);
+            setTyping(!!data.typing, data.text || '');
         } catch (e) { /* network blip */ }
     }
 
@@ -6601,6 +6790,7 @@
                             // отформатированную версию.
                             text_html: data.text_html || null,
                             time: data.time,
+                            date_label: data.date_label || 'Сегодня',
                             outgoing: true,
                             // Telegram-исходящее сразу с одной галочкой;
                             // двойную поставит read-history-апдейт через

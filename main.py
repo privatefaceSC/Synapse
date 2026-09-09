@@ -5,7 +5,7 @@ import string
 import time
 import uuid
 import base64
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
                    request, send_from_directory, session)
@@ -131,6 +131,38 @@ def _telegram_reply_handle(handles):
         if (h.messenger_name == 'Telegram' and h.tg_chat_id is not None
                 and h.tg_chat_type != 'channel'):
             return h
+    return None
+
+
+def _message_date_label(value):
+    if value is None:
+        return ''
+    today = datetime.now().date()
+    day = value.date()
+    if day == today:
+        return 'Сегодня'
+    if day == today - timedelta(days=1):
+        return 'Вчера'
+    months = [
+        'января', 'февраля', 'марта', 'апреля', 'мая', 'июня',
+        'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря',
+    ]
+    if day.year == today.year:
+        return f'{day.day} {months[day.month - 1]}'
+    return day.strftime('%d.%m.%Y')
+
+
+def _message_author_avatar_url(msg):
+    author_id = getattr(msg, 'author_tg_chat_id', None)
+    if author_id and not getattr(msg, 'outgoing', False):
+        return f'/contacts/telegram-author/{int(author_id)}/photo'
+    return None
+
+
+def _message_author_profile_url(msg):
+    author_id = getattr(msg, 'author_tg_chat_id', None)
+    if author_id and not getattr(msg, 'outgoing', False):
+        return f'/contacts/from-tg/{int(author_id)}'
     return None
 
 
@@ -1739,6 +1771,9 @@ def register_routes(app: Flask) -> None:
         msgs = list(reversed(msgs))
         for m in msgs:
             m.display_author = display_author(m.sender, contact.display_name)
+            m.date_label = _message_date_label(m.created_at)
+            m.author_avatar_url = _message_author_avatar_url(m)
+            m.author_profile_url = _message_author_profile_url(m)
         _attach_media(db, msgs)
         _attach_replies(db, msgs, contact)
         _attach_reactions(db, msgs)
@@ -1863,6 +1898,7 @@ def register_routes(app: Flask) -> None:
                 'can_reply': can_reply,
                 'reply_via': reply_via,
                 'is_group': is_group,
+                'show_authors': bool(is_group or len(selected_handles) > 1),
                 'is_forum': is_forum,
                 'topic_id': topic_id_int,
                 'messengers': available,
@@ -1878,12 +1914,15 @@ def register_routes(app: Flask) -> None:
                 {'id': m.id, 'sender': m.sender, 'text': m.visible_text,
                  'text_html': m.visible_text_html,
                  'messenger_name': m.messenger_name, 'time': m.time,
+                 'date_label': _message_date_label(m.created_at),
                  'outgoing': bool(m.outgoing),
                  'tg_read': bool(m.tg_read_at) if m.tg_message_id else None,
                  'deleted': bool(m.deleted_at),
                  'pinned': bool(m.pinned_at),
                  'ttl_seconds': m.tg_ttl_seconds,
                  'display_author': display_author(m.sender, contact.display_name),
+                 'author_avatar_url': _message_author_avatar_url(m),
+                 'author_profile_url': _message_author_profile_url(m),
                  'reply_to': m.reply_quote,
                  'fwd_from': m.fwd_quote,
                  'edits': getattr(m, 'edit_history', []),
@@ -2262,6 +2301,7 @@ def register_routes(app: Flask) -> None:
             # звёздочки «**жирный**» 2-5 секунд, пока поллинг не подтянет
             # уже отформатированную версию.
             return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
+                            'date_label': _message_date_label(msg.created_at),
                             'text': md_plain, 'text_html': md_html,
                             'reply_to': reply_quote,
                             'forwarded': forward_source is not None})
@@ -2628,12 +2668,28 @@ def register_routes(app: Flask) -> None:
             MessengerHandle.contact_id == contact.id).all()
         tg_handle = _telegram_reply_handle(handles)
         typing = False
+        authors = []
+        text = ''
         if tg_handle is not None:
             try:
-                typing = telegram_bridge.is_typing(tg_handle.tg_chat_id)
+                status = telegram_bridge.typing_status(tg_handle.tg_chat_id)
+                typing = bool(status.get('typing'))
+                authors = [a for a in status.get('authors', []) if a]
             except Exception:  # noqa: BLE001
                 typing = False
-        return jsonify({'typing': bool(typing)})
+                authors = []
+        is_group = (tg_handle is not None and tg_handle.tg_chat_type == 'group')
+        if typing:
+            if is_group and authors:
+                if len(authors) == 1:
+                    text = f'{authors[0]} печатает…'
+                elif len(authors) == 2:
+                    text = f'{authors[0]} и {authors[1]} печатают…'
+                else:
+                    text = f'{authors[0]} и ещё {len(authors) - 1} печатают…'
+            else:
+                text = 'печатает…'
+        return jsonify({'typing': bool(typing), 'authors': authors, 'text': text})
 
     @app.route('/contacts/<int:contact_id>/members.json')
     def contact_members(contact_id):
@@ -3047,6 +3103,53 @@ def register_routes(app: Flask) -> None:
             'ok': True,
             'contact_id': handle.contact_id if handle else None,
         })
+
+    @app.route('/contacts/telegram-author/<int:tg_chat_id>/photo')
+    def telegram_author_photo(tg_chat_id):
+        if not session.get('user_id'):
+            return 'Unauthorized', 401
+        from data import telegram_bridge
+        if not telegram_bridge.is_configured():
+            return 'Not Found', 404
+        try:
+            raw = telegram_bridge.download_profile_photo(
+                tg_chat_id, user_id=session['user_id'])
+        except Exception:  # noqa: BLE001
+            raw = None
+        if not raw:
+            return 'Not Found', 404
+        return Response(raw, mimetype='image/jpeg')
+
+    @app.route('/contacts/from-tg/<int:tg_chat_id>')
+    def contact_from_tg_redirect(tg_chat_id):
+        if not session.get('user_id'):
+            return redirect('/login')
+        from data.contacts import MessengerHandle, find_or_create_handle
+        from data import telegram_bridge
+        db = get_db()
+        user_id = session['user_id']
+        handle = (db.query(MessengerHandle)
+                  .filter(MessengerHandle.user_id == user_id,
+                          MessengerHandle.tg_chat_id == tg_chat_id)
+                  .first())
+        if handle is not None:
+            return redirect(f'/contacts/{handle.contact_id}?m=Telegram')
+        if not telegram_bridge.is_configured():
+            return redirect('/contacts')
+        try:
+            info = telegram_bridge.resolve_entity_info(tg_chat_id,
+                                                       user_id=user_id)
+        except Exception:  # noqa: BLE001
+            return redirect('/contacts')
+        name = (info.get('display_name') or info.get('username')
+                or str(tg_chat_id))
+        kind = info.get('kind') or 'private'
+        norm_chat_id = int(info.get('chat_id') or tg_chat_id)
+        handle = find_or_create_handle(db, user_id, 'Telegram', name,
+                                       tg_chat_id=norm_chat_id,
+                                       tg_chat_type=kind)
+        db.commit()
+        return redirect(f'/contacts/{handle.contact_id}?m=Telegram')
 
     @app.route('/contacts/from-tg.json', methods=['POST'])
     def contact_from_tg():

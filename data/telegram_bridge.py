@@ -33,7 +33,8 @@ _skip_chat_ids = set()
 # чтобы не записать их повторно, когда Telegram пришлёт их обратно
 # как исходящее событие.
 _recent_self_sent = []
-# chat_id -> monotonic-время, до которого считаем, что собеседник печатает.
+# chat_id -> typing state. Старый формат float ещё поддерживается ниже:
+# {expires: monotonic, authors: {user_id_or_name: display_name}}.
 _typing = {}
 _DEFAULT_MEDIA_MAX_MB = 20
 _STATE_TEMPLATE = {
@@ -489,12 +490,15 @@ async def _handle_message(event, user_id=None, client=None):
         chat_type = "channel"
 
     # Автор подписи над сообщением.
+    author_tg_chat_id = None
     if is_out:
         author = "Вы"
     elif chat_type == "group":
         author = _sender_name(await event.get_sender())
+        author_tg_chat_id = getattr(event, "sender_id", None)
     else:  # личка или канал
         author = chat_key
+        author_tg_chat_id = getattr(event, "sender_id", None)
 
     kind = _media_kind(msg)
     text = msg.message or ""
@@ -509,11 +513,13 @@ async def _handle_message(event, user_id=None, client=None):
 
     await _persist_telegram_message(msg, event.chat_id, chat, chat_key,
                                     chat_type, is_out, author, kind, text,
+                                    author_tg_chat_id=author_tg_chat_id,
                                     user_id=user_id, client=client)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
-                                    is_out, author, kind, text, user_id=None,
+                                    is_out, author, kind, text,
+                                    author_tg_chat_id=None, user_id=None,
                                     client=None):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
@@ -600,6 +606,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  tg_ttl_seconds=ttl,
                                  fwd_from_name=fwd_name,
                                  fwd_from_tg_chat_id=fwd_chat_id,
+                                 author_tg_chat_id=author_tg_chat_id,
                                  tg_topic_id=int(topic_id) if topic_id else None,
                                  tg_topic_title=topic_title,
                                  tg_is_forum=is_forum_chat,
@@ -664,7 +671,29 @@ async def _register_handler(user_id=None, client=None):
     async def _on_user_update(event):
         try:
             if getattr(event, "typing", False):
-                _typing[event.chat_id] = time.monotonic() + 6
+                chat_id = int(event.chat_id)
+                exp = time.monotonic() + 6
+                name = None
+                user_key = getattr(event, "user_id", None)
+                try:
+                    user = await event.get_user()
+                    if user is not None:
+                        from telethon.utils import get_display_name
+                        name = get_display_name(user) or None
+                        user_key = getattr(user, "id", user_key)
+                except Exception:  # noqa: BLE001
+                    name = None
+                if not name:
+                    name = "Собеседник"
+                state = _typing.get(chat_id)
+                if not isinstance(state, dict):
+                    state = {"expires": exp, "authors": {}}
+                state["expires"] = exp
+                state.setdefault("authors", {})[user_key or name] = {
+                    "name": name,
+                    "expires": exp,
+                }
+                _typing[chat_id] = state
         except Exception:  # noqa: BLE001
             pass
 
@@ -943,11 +972,37 @@ async def _handle_read_outbox(update, user_id=None):
 
 def is_typing(chat_id) -> bool:
     """True, если собеседник в этом чате печатает прямо сейчас."""
+    return typing_status(chat_id)["typing"]
+
+
+def typing_status(chat_id) -> dict:
+    """Статус печати с именами авторов, если Telegram их прислал."""
     try:
-        exp = _typing.get(int(chat_id))
+        state = _typing.get(int(chat_id))
     except (TypeError, ValueError):
-        return False
-    return exp is not None and exp > time.monotonic()
+        return {"typing": False, "authors": []}
+    now = time.monotonic()
+    if isinstance(state, dict):
+        authors = state.get("authors") or {}
+        alive = []
+        for key, info in list(authors.items()):
+            if not isinstance(info, dict):
+                continue
+            if info.get("expires", 0) > now:
+                name = (info.get("name") or "").strip()
+                if name and name not in alive:
+                    alive.append(name)
+            else:
+                authors.pop(key, None)
+        if alive:
+            state["expires"] = max(
+                info.get("expires", 0)
+                for info in authors.values()
+                if isinstance(info, dict)
+            )
+            return {"typing": True, "authors": alive}
+        return {"typing": bool(state.get("expires", 0) > now), "authors": []}
+    return {"typing": bool(state is not None and state > now), "authors": []}
 
 
 def _is_muted(dialog) -> bool:

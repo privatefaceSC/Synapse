@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Продакшен WSGI-сервер для Linux/VPS. Локально на Windows запускай как раньше.
+gunicorn==23.0.0
