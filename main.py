@@ -5,6 +5,7 @@ import string
 import time
 import uuid
 import base64
+import hashlib
 from datetime import datetime, timedelta
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
@@ -153,6 +154,9 @@ def _message_date_label(value):
 
 
 def _message_author_avatar_url(msg):
+    if (getattr(msg, 'author_avatar_path', None)
+            and not getattr(msg, 'outgoing', False)):
+        return f'/messages/{int(msg.id)}/author-photo'
     author_id = getattr(msg, 'author_tg_chat_id', None)
     if author_id and not getattr(msg, 'outgoing', False):
         return f'/contacts/telegram-author/{int(author_id)}/photo'
@@ -164,6 +168,20 @@ def _message_author_profile_url(msg):
     if author_id and not getattr(msg, 'outgoing', False):
         return f'/contacts/from-tg/{int(author_id)}'
     return None
+
+
+def _is_group_handle(handle) -> bool:
+    return bool(getattr(handle, 'is_group', False)
+                or getattr(handle, 'tg_chat_type', None) == 'group')
+
+
+def _is_group_or_channel_handle(handle) -> bool:
+    return bool(_is_group_handle(handle)
+                or getattr(handle, 'tg_chat_type', None) == 'channel')
+
+
+def _form_bool(value) -> bool:
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
 def _reply_channel(handles):
@@ -602,6 +620,38 @@ def get_db():
 
 def _media_root() -> str:
     return os.environ.get('SKILLWOOD_MEDIA_ROOT') or os.path.join(os.getcwd(), 'media')
+
+
+_MAX_NOTIFICATION_AVATAR_BYTES = 512 * 1024
+
+
+def _save_notification_avatar(user_id, encoded):
+    raw_value = (encoded or '').strip()
+    if not raw_value:
+        return None
+    if raw_value.startswith('data:') and ',' in raw_value:
+        raw_value = raw_value.split(',', 1)[1]
+    try:
+        data = base64.b64decode(raw_value, validate=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if not data or len(data) > _MAX_NOTIFICATION_AVATAR_BYTES:
+        return None
+    if not (data.startswith(b'\x89PNG\r\n\x1a\n')
+            or data.startswith(b'\xff\xd8\xff')):
+        return None
+
+    from data.crypto import encrypt_bytes
+
+    digest = hashlib.sha256(data).hexdigest()[:32]
+    rel_dir = f"{user_id}/notification_avatars"
+    rel_path = f"{rel_dir}/{digest}.enc"
+    full_path = os.path.join(_media_root(), rel_path)
+    if not os.path.exists(full_path):
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        with open(full_path, 'wb') as f:
+            f.write(encrypt_bytes(data))
+    return rel_path
 
 
 def _avatar_file(user_id) -> str:
@@ -1512,10 +1562,11 @@ def register_routes(app: Flask) -> None:
     def contacts_index():
         if not session.get('user_id'):
             return redirect('/login')
-        from data.contacts import Contact
+        from data.contacts import Contact, consolidate_android_group_contacts
         db = get_db()
         user_id = session['user_id']
         _sync_direct_messages_to_contacts(db, user_id)
+        consolidate_android_group_contacts(db, user_id)
         contacts = (
             db.query(Contact)
             .filter(Contact.user_id == user_id)
@@ -1530,10 +1581,11 @@ def register_routes(app: Flask) -> None:
     def contacts_index_json():
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.contacts import Contact
+        from data.contacts import Contact, consolidate_android_group_contacts
         db = get_db()
         user_id = session['user_id']
         _sync_direct_messages_to_contacts(db, user_id)
+        consolidate_android_group_contacts(db, user_id)
         contacts = (
             db.query(Contact)
             .filter(Contact.user_id == user_id)
@@ -1755,8 +1807,7 @@ def register_routes(app: Flask) -> None:
         reply_via = ('telegram' if _tg_handle is not None
                      else ('synapse' if synapse_handle is not None
                            else ('notif' if _notif_handle is not None else None)))
-        is_group = (tg_chat_handle is not None
-                    and tg_chat_handle.tg_chat_type == 'group')
+        is_group = any(_is_group_handle(h) for h in m_handles)
         # Тип чата нужен фронту, чтобы под канальными постами появлялась
         # кнопка «💬 Комментарии» (linked discussion group).
         chat_type = (tg_chat_handle.tg_chat_type
@@ -1823,8 +1874,7 @@ def register_routes(app: Flask) -> None:
         reply_via = ('telegram' if _tg_handle is not None
                      else ('synapse' if synapse_handle is not None
                            else ('notif' if _notif_handle is not None else None)))
-        is_group = (tg_chat_handle is not None
-                    and tg_chat_handle.tg_chat_type == 'group')
+        is_group = any(_is_group_handle(h) for h in m_handles)
         is_forum = bool(tg_chat_handle is not None and tg_chat_handle.tg_is_forum)
         # Lazy-определение форума: для tg-группы/канала, где tg_is_forum
         # ещё не выставлен (handle создан до фичи или это новый чат),
@@ -2424,7 +2474,28 @@ def register_routes(app: Flask) -> None:
             return 'Not Found', 404
         with open(full, 'rb') as f:
             raw = decrypt_bytes(f.read())
-        return Response(raw, mimetype='image/jpeg')
+        rel = contact.avatar_path.replace('\\', '/')
+        mime = ('image/png' if '/notification_avatars/' in f'/{rel}'
+                else 'image/jpeg')
+        return Response(raw, mimetype=mime)
+
+    @app.route('/messages/<int:message_id>/author-photo')
+    def message_author_photo(message_id):
+        if not session.get('user_id'):
+            return 'Unauthorized', 401
+        from data.crypto import decrypt_bytes
+        db = get_db()
+        msg = (db.query(Messages)
+               .filter(Messages.id == message_id,
+                       Messages.user_id == session['user_id']).first())
+        if msg is None or not getattr(msg, 'author_avatar_path', None):
+            return 'Not Found', 404
+        full = os.path.join(_media_root(), msg.author_avatar_path)
+        if not os.path.exists(full):
+            return 'Not Found', 404
+        with open(full, 'rb') as f:
+            raw = decrypt_bytes(f.read())
+        return Response(raw, mimetype='image/png')
 
     @app.route('/contacts/<int:contact_id>/topics.json')
     def contact_topics(contact_id):
@@ -2708,7 +2779,9 @@ def register_routes(app: Flask) -> None:
             MessengerHandle.contact_id == contact.id).all()
         tg_handle = _telegram_reply_handle(handles)
         if tg_handle is None or tg_handle.tg_chat_type != 'group':
-            return jsonify({'is_group': False, 'members': []})
+            return jsonify({'is_group': any(_is_group_handle(h)
+                                            for h in handles),
+                            'members': []})
         try:
             members = telegram_bridge.get_participants(tg_handle.tg_chat_id,
                                                        user_id=user_id)
@@ -2998,9 +3071,7 @@ def register_routes(app: Flask) -> None:
                       .filter(Messages.handle_id.in_([h.id for h in handles]
                                                      or [0]))
                       .count()) if handles else 0
-        is_group = any(getattr(h, 'tg_chat_type', None) == 'group'
-                       or getattr(h, 'tg_chat_type', None) == 'channel'
-                       for h in handles)
+        is_group = any(_is_group_or_channel_handle(h) for h in handles)
         return jsonify({
             'ok': True,
             'contact': {
@@ -4005,6 +4076,9 @@ def register_routes(app: Flask) -> None:
         text_value = request.form.get('text')
         messenger_name = request.form.get('messenger_name')
         package_name = (request.form.get('package_name') or '').strip() or None
+        author = (request.form.get('author') or '').strip() or None
+        is_group = _form_bool(request.form.get('is_group'))
+        dedup_key = (request.form.get('dedup_key') or '').strip() or None
 
         if not sender or not text_value or not messenger_name:
             return 'Bad Request', 400
@@ -4017,8 +4091,16 @@ def register_routes(app: Flask) -> None:
         device.last_seen_at = datetime.now()
         db.commit()
 
+        chat_avatar_path = _save_notification_avatar(
+            device.user_id, request.form.get('chat_avatar'))
+        author_avatar_path = _save_notification_avatar(
+            device.user_id, request.form.get('author_avatar'))
+        message_author = author if is_group and author else None
         record_message(db, device.user_id, messenger_name, sender, text_value,
-                       package_name=package_name)
+                       author=message_author, package_name=package_name,
+                       is_group=is_group, contact_avatar_path=chat_avatar_path,
+                       author_avatar_path=author_avatar_path,
+                       notification_dedup_key=dedup_key)
         return 'OK', 200
 
     @app.route('/add_media', methods=['POST'])
@@ -4027,15 +4109,19 @@ def register_routes(app: Flask) -> None:
         from sqlalchemy.exc import IntegrityError
 
         from data.attachments import Attachment
-        from data.contacts import find_or_create_handle
+        from data.contacts import record_message
         from data.crypto import encrypt_bytes
 
         sender = request.form.get('sender')
         messenger_name = request.form.get('messenger_name')
         kind = request.form.get('kind') or 'image'
         dedup_key = (request.form.get('dedup_key') or '').strip() or None
+        message_dedup_key = (
+            request.form.get('message_dedup_key') or '').strip() or dedup_key
         caption = request.form.get('text') or ''
         package_name = (request.form.get('package_name') or '').strip() or None
+        author = (request.form.get('author') or '').strip() or None
+        is_group = _form_bool(request.form.get('is_group'))
         upload = request.files.get('file')
 
         if not sender or not messenger_name or upload is None:
@@ -4063,23 +4149,25 @@ def register_routes(app: Flask) -> None:
         if not data:
             return 'Bad Request', 400
 
-        now = datetime.now()
-        handle = find_or_create_handle(db, user_id, messenger_name, sender,
-                                       package_name=package_name)
+        chat_avatar_path = _save_notification_avatar(
+            user_id, request.form.get('chat_avatar'))
+        author_avatar_path = _save_notification_avatar(
+            user_id, request.form.get('author_avatar'))
         placeholder = {'image': '📷 Фото',
                        'sticker': '🩷 Стикер',
-                       'video': '🎬 Видео'}.get(kind, '📎 Вложение')
-        msg = Messages(
-            sender=sender,
-            text=caption or placeholder,
-            messenger_name=messenger_name,
-            time=now.strftime("%H:%M"),
-            user_id=user_id,
-            handle_id=handle.id,
-            created_at=now,
-        )
-        db.add(msg)
-        db.flush()
+                       'video': '🎬 Видео',
+                       'voice': '🎙 Голосовое',
+                       'audio': '🎵 Аудио',
+                       'file': '📎 Файл'}.get(kind, '📎 Вложение')
+        message_author = author if is_group and author else None
+        msg = record_message(
+            db, user_id, messenger_name, sender, caption or placeholder,
+            author=message_author, package_name=package_name,
+            is_group=is_group, contact_avatar_path=chat_avatar_path,
+            author_avatar_path=author_avatar_path,
+            notification_dedup_key=message_dedup_key)
+        if msg is None:
+            return 'OK', 200
 
         rel_dir = str(user_id)
         os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)

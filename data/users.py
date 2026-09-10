@@ -85,3 +85,8 @@ class Messages(SqlAlchemyBase):
     # момент закрепления. Telegram возвращает закрепы в любом порядке,
     # мы храним время чтобы пин-бар показывал сверху последние закрепы.
     pinned_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    # Android Notification Listener: стабильный ключ конкретного уведомления,
+    # чтобы обновления одного и того же push'а не создавали дубликаты.
+    notification_dedup_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # Аватар автора внутри группового Android-чата (Max/VK/WhatsApp).
+    author_avatar_path = sqlalchemy.Column(sqlalchemy.String, nullable=True)

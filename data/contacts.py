@@ -56,6 +56,9 @@ class MessengerHandle(SqlAlchemyBase):
     # чтобы Android-клиент мог найти соответствующее уведомление в шторке
     # и ответить через RemoteInput. У Telegram-личностей не используется.
     package_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # True — групповой чат, который пришёл из Android Notification Listener
+    # (Max/VK/WhatsApp). Telegram по-прежнему хранит тип в tg_chat_type.
+    is_group = sqlalchemy.Column(sqlalchemy.Boolean, nullable=True, default=False)
 
     __table_args__ = (
         sqlalchemy.UniqueConstraint('user_id', 'messenger_name', 'sender_raw',
@@ -65,8 +68,117 @@ class MessengerHandle(SqlAlchemyBase):
     contact = orm.relationship("Contact", back_populates="handles", foreign_keys=[contact_id])
 
 
+def _delete_empty_contacts(db, user_id, contact_ids):
+    removed = 0
+    for contact_id in sorted({cid for cid in contact_ids if cid}):
+        has_handles = (db.query(MessengerHandle.id)
+                       .filter(MessengerHandle.contact_id == contact_id)
+                       .first() is not None)
+        if has_handles:
+            continue
+        contact = (db.query(Contact)
+                   .filter(Contact.id == contact_id,
+                           Contact.user_id == user_id)
+                   .first())
+        if contact is None:
+            continue
+        db.delete(contact)
+        removed += 1
+    if removed:
+        db.flush()
+    return removed
+
+
+def _consolidate_android_group_contact(db, user_id, messenger_name, group_name):
+    from .matching import split_group_sender
+
+    group_name = (group_name or '').strip()
+    if not group_name:
+        return None, {"groups_created": 0, "handles_moved": 0,
+                      "contacts_removed": 0}
+
+    group_contacts = (db.query(Contact)
+                      .filter(Contact.user_id == user_id,
+                              Contact.display_name == group_name)
+                      .order_by(Contact.id.asc())
+                      .all())
+    if group_contacts:
+        target = group_contacts[0]
+        groups_created = 0
+    else:
+        target = Contact(user_id=user_id, display_name=group_name)
+        db.add(target)
+        db.flush()
+        groups_created = 1
+
+    old_contact_ids = {c.id for c in group_contacts[1:]}
+    handles_moved = 0
+    handles = (db.query(MessengerHandle)
+               .filter(MessengerHandle.user_id == user_id)
+               .all())
+    for handle in handles:
+        parsed = split_group_sender(handle.sender_raw)
+        old_style_group = parsed is not None and parsed[0] == group_name
+        exact_group_label = (
+            handle.sender_raw == group_name
+            and (bool(handle.is_group) or messenger_name is None
+                 or handle.messenger_name == messenger_name)
+        )
+        if not old_style_group and not exact_group_label:
+            continue
+        if exact_group_label and not bool(handle.is_group):
+            handle.is_group = True
+        if handle.contact_id != target.id:
+            old_contact_ids.add(handle.contact_id)
+            handle.contact_id = target.id
+            handles_moved += 1
+    if handles_moved:
+        db.flush()
+
+    contacts_removed = _delete_empty_contacts(db, user_id, old_contact_ids)
+    return target.id, {"groups_created": groups_created,
+                       "handles_moved": handles_moved,
+                       "contacts_removed": contacts_removed}
+
+
+def consolidate_android_group_contacts(db, user_id: int):
+    from .matching import split_group_sender
+
+    handles = (db.query(MessengerHandle)
+               .filter(MessengerHandle.user_id == user_id)
+               .all())
+    group_names = set()
+    prefix_counts = {}
+    for handle in handles:
+        sender = (handle.sender_raw or '').strip()
+        if not sender:
+            continue
+        if bool(handle.is_group):
+            group_names.add(sender)
+        parsed = split_group_sender(sender)
+        if parsed is not None:
+            prefix, _member = parsed
+            prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+
+    exact_senders = {h.sender_raw for h in handles}
+    for prefix, count in prefix_counts.items():
+        if count > 1 or prefix in exact_senders:
+            group_names.add(prefix)
+
+    stats = {"groups_created": 0, "handles_moved": 0, "contacts_removed": 0}
+    for group_name in sorted(group_names):
+        _target_id, part = _consolidate_android_group_contact(
+            db, user_id, None, group_name)
+        for key in stats:
+            stats[key] += part[key]
+    if any(stats.values()):
+        db.commit()
+    return stats
+
+
 def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str,
-                          tg_chat_id=None, tg_chat_type=None, package_name=None):
+                          tg_chat_id=None, tg_chat_type=None, package_name=None,
+                          is_group=None):
     from .matching import normalize, split_group_sender
 
     handle = (
@@ -90,6 +202,33 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
         if package_name is not None and handle.package_name != package_name:
             handle.package_name = package_name
             db.flush()
+        if is_group is True and not bool(handle.is_group):
+            handle.is_group = True
+            db.flush()
+        if is_group is True:
+            group_contact_id, _stats = _consolidate_android_group_contact(
+                db, user_id, messenger_name, sender_raw)
+            if group_contact_id is not None and handle.contact_id != group_contact_id:
+                handle.contact_id = group_contact_id
+                db.flush()
+        return handle
+
+    if is_group is True:
+        group_contact_id, _stats = _consolidate_android_group_contact(
+            db, user_id, messenger_name, sender_raw)
+        handle = MessengerHandle(
+            contact_id=group_contact_id,
+            user_id=user_id,
+            messenger_name=messenger_name,
+            sender_raw=sender_raw,
+            sender_normalized=normalize(sender_raw),
+            tg_chat_id=tg_chat_id,
+            tg_chat_type=tg_chat_type,
+            package_name=package_name,
+            is_group=True,
+        )
+        db.add(handle)
+        db.flush()
         return handle
 
     parsed = split_group_sender(sender_raw)
@@ -149,6 +288,7 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
                 tg_chat_id=tg_chat_id,
                 tg_chat_type=tg_chat_type,
                 package_name=package_name,
+                is_group=bool(is_group) if is_group is not None else None,
             )
             db.add(handle)
             db.flush()
@@ -166,6 +306,7 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
         tg_chat_id=tg_chat_id,
         tg_chat_type=tg_chat_type,
         package_name=package_name,
+        is_group=bool(is_group) if is_group is not None else None,
     )
     db.add(handle)
     db.flush()
@@ -179,7 +320,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     fwd_from_tg_chat_id=None, author_tg_chat_id=None,
                     tg_topic_id=None,
                     tg_topic_title=None, tg_is_forum=None,
-                    text_html=None):
+                    text_html=None, is_group=None, contact_avatar_path=None,
+                    author_avatar_path=None, notification_dedup_key=None):
     """Записывает сообщение.
 
     `sender_raw` — ключ личности (контакта): для лички это имя
@@ -198,17 +340,38 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
     handle = find_or_create_handle(db, user_id, messenger_name, sender_raw,
                                    tg_chat_id=tg_chat_id,
                                    tg_chat_type=tg_chat_type,
-                                   package_name=package_name)
+                                   package_name=package_name,
+                                   is_group=is_group)
+    contact = db.query(Contact).filter(Contact.id == handle.contact_id).first()
+    if (contact is not None and contact_avatar_path
+            and contact.avatar_path != contact_avatar_path):
+        contact.avatar_path = contact_avatar_path
     # Контакт заблокирован — молча игнорируем новые входящие. Свои
     # исходящие пропускаем (вдруг разблокировка и сами что-то ответили).
     if not outgoing:
-        contact = db.query(Contact).filter(Contact.id == handle.contact_id).first()
         if contact is not None and contact.blocked_at is not None:
             return None
     # Если мост только что узнал, что чат — форум-канал, отметим
     # это на handle. Делается лениво — при первом сообщении.
     if tg_is_forum is not None and bool(handle.tg_is_forum) != bool(tg_is_forum):
         handle.tg_is_forum = bool(tg_is_forum)
+
+    if notification_dedup_key is not None:
+        existing = (db.query(Messages)
+                    .filter(Messages.user_id == user_id,
+                            Messages.notification_dedup_key ==
+                            notification_dedup_key)
+                    .order_by(Messages.id.desc())
+                    .first())
+        if existing is not None:
+            if author_avatar_path and not existing.author_avatar_path:
+                existing.author_avatar_path = author_avatar_path
+            if text:
+                from .matching import is_media_placeholder
+                if is_media_placeholder(existing.text):
+                    existing.text = text
+            db.commit()
+            return existing
 
     reply_to_message_id = None
     if reply_to_tg_id is not None:
@@ -237,6 +400,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         tg_topic_id=tg_topic_id,
         tg_topic_title=tg_topic_title,
         text_html=text_html,
+        notification_dedup_key=notification_dedup_key,
+        author_avatar_path=author_avatar_path,
     )
     db.add(msg)
     db.commit()

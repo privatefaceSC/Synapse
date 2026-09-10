@@ -14,7 +14,7 @@ class Attachment(SqlAlchemyBase):
                                 sqlalchemy.ForeignKey("users.id"), nullable=False)
     message_id = sqlalchemy.Column(sqlalchemy.Integer,
                                    sqlalchemy.ForeignKey("messages.id"), nullable=False)
-    kind = sqlalchemy.Column(sqlalchemy.String, nullable=False)  # пока только 'image'
+    kind = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     mime = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     original_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     stored_path = sqlalchemy.Column(sqlalchemy.String, nullable=False)
