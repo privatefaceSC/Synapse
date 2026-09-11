@@ -1771,7 +1771,7 @@ def send_message(chat_id, text, reply_to=None, parse_mode=None,
 
 async def _send_file(chat_id, data, filename, caption, reply_to=None,
                      parse_mode=None, silent=False, schedule=None,
-                     user_id=None):
+                     user_id=None, voice_note=False):
     client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
@@ -1780,6 +1780,8 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None,
     bio.name = filename or "file"
     kwargs = {"caption": caption or None, "reply_to": reply_to,
               "parse_mode": parse_mode}
+    if voice_note:
+        kwargs["voice_note"] = True
     if silent:
         kwargs["silent"] = True
     if schedule:
@@ -1789,14 +1791,16 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None,
 
 
 def send_file(chat_id, data, filename, caption="", reply_to=None,
-              parse_mode=None, silent=False, schedule=None, user_id=None):
+              parse_mode=None, silent=False, schedule=None, user_id=None,
+              voice_note=False):
     """Отправляет файл в Telegram-чат. Поддерживает `silent` (без звука)
     и `schedule` (отложенная отправка — datetime). Возвращает id
     отправленного Telegram-сообщения."""
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     return _call(_send_file(chat_id, data, filename, caption, reply_to,
-                            parse_mode, silent, schedule, user_id=user_id),
+                            parse_mode, silent, schedule, user_id=user_id,
+                            voice_note=voice_note),
                  timeout=120)
 
 

@@ -33,9 +33,38 @@ def _avatar_for(contact):
     name = (contact.display_name or "?").strip()
     contact.initial = name[:1].upper() if name else "?"
     contact.avatar_color = _AVATAR_PALETTE[contact.id % len(_AVATAR_PALETTE)]
-    contact.avatar_url = (f'/contacts/{contact.id}/photo'
-                          if getattr(contact, 'avatar_path', None) else None)
+    contact.avatar_url = _contact_avatar_url(contact)
     return contact
+
+
+def _contact_avatar_url(contact):
+    if getattr(contact, 'avatar_path', None):
+        return f'/contacts/{contact.id}/photo'
+    try:
+        cached = _cached_tg_avatar_photo_id(contact)
+    except Exception:  # noqa: BLE001
+        cached = None
+    return (f'/contacts/{contact.id}/avatar/{cached}' if cached else None)
+
+
+def _cached_tg_avatar_photo_id(contact):
+    if not getattr(contact, 'user_id', None) or not getattr(contact, 'id', None):
+        return None
+    cache_dir = os.path.join(
+        _media_root(), str(contact.user_id), 'tg_avatars', str(contact.id))
+    if not os.path.isdir(cache_dir):
+        return None
+    candidates = []
+    for name in os.listdir(cache_dir):
+        stem, ext = os.path.splitext(name)
+        if ext != '.enc' or not stem.isdigit():
+            continue
+        full = os.path.join(cache_dir, name)
+        candidates.append((os.path.getmtime(full), stem))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
 
 
 def _enrich_with_last_message(db, contacts):
@@ -57,6 +86,8 @@ def _enrich_with_last_message(db, contacts):
             c.last_preview = None
             c.last_time = None
             c.last_at = None
+            c.last_outgoing = False
+            c.last_tg_read = None
             c.unread_count = 0
             continue
 
@@ -70,10 +101,15 @@ def _enrich_with_last_message(db, contacts):
             c.last_preview = last.text
             c.last_time = last.time
             c.last_at = last.created_at
+            c.last_outgoing = bool(last.outgoing)
+            c.last_tg_read = (bool(last.tg_read_at)
+                              if last.tg_message_id else None)
         else:
             c.last_preview = None
             c.last_time = None
             c.last_at = None
+            c.last_outgoing = False
+            c.last_tg_read = None
 
         # Свои исходящие в «непрочитанные» не считаем — иначе после отправки
         # сообщения собственный чат подсвечивается красным «1». В Telegram,
@@ -1603,6 +1639,8 @@ def register_routes(app: Flask) -> None:
                 'messengers': c.messengers,
                 'last_preview': c.last_preview,
                 'last_time': c.last_time,
+                'last_outgoing': bool(getattr(c, 'last_outgoing', False)),
+                'last_tg_read': getattr(c, 'last_tg_read', None),
                 'unread_count': c.unread_count or 0,
                 'pinned': bool(c.pinned_at),
                 'muted': bool(c.muted),
@@ -2026,6 +2064,12 @@ def register_routes(app: Flask) -> None:
                 return jsonify({'error': 'forward_not_telegram'}), 400
         if not text and upload is None and forward_source is None:
             return jsonify({'error': 'empty'}), 400
+        voice_upload = False
+        if upload is not None:
+            voice_upload = (
+                (request.form.get('voice') or '').lower()
+                in ('1', 'true', 'on')
+            )
 
         # Распознаём markdown: если текст содержит **жирный**, ||спойлер||,
         # `моноширный`, [текст](url) — шлём с parse_mode='md', а у себя
@@ -2228,7 +2272,7 @@ def register_routes(app: Flask) -> None:
                         tg_handle.tg_chat_id, data,
                         upload.filename or 'file', text,
                         **_md_kw_f, **reply_kw_tg, **_opts_f,
-                        user_id=user_id)
+                        user_id=user_id, voice_note=voice_upload)
                 except Exception as exc:  # noqa: BLE001
                     return jsonify({'error': 'send_failed',
                                     'detail': str(exc)}), 502
@@ -2243,7 +2287,9 @@ def register_routes(app: Flask) -> None:
                 # tg_message_id в `_handle_message` защитит от двойной
                 # записи, если echo всё-таки прилетит.
                 mime = (upload.mimetype or '').lower()
-                if mime.startswith('image/'):
+                if voice_upload:
+                    kind = 'voice'
+                elif mime.startswith('image/'):
                     kind = 'image'
                 elif mime.startswith('video/'):
                     kind = 'video'
@@ -2253,6 +2299,7 @@ def register_routes(app: Flask) -> None:
                     kind = 'file'
                 placeholder = {
                     'image': '📷 Фото', 'video': '🎬 Видео',
+                    'voice': '🎤 Голосовое сообщение',
                     'audio': '🎵 Аудио', 'file': '📎 Файл',
                 }.get(kind, '📎 Вложение')
                 now = datetime.now()

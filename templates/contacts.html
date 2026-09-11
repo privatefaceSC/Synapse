@@ -300,7 +300,19 @@
     .contact-row .preview {
         color: #6b7280; font-size: 13px; white-space: nowrap;
         overflow: hidden; text-overflow: ellipsis; margin-top: 1px;
+        min-width: 0; flex: 1 1 auto;
     }
+    .contact-row .preview-line {
+        display: flex; align-items: center; gap: 4px;
+        min-width: 0; flex: 1 1 auto;
+    }
+    .contact-row .list-tg-tick {
+        flex: 0 0 auto; font-size: 13px; line-height: 1;
+        color: #94a3b8;
+        font-family: -apple-system, "Segoe UI Symbol", sans-serif;
+        margin-top: 1px;
+    }
+    .contact-row .list-tg-tick.read { color: #3b82f6; }
     .contact-row .time {
         font-size: 11px; color: #9ca3af; flex: 0 0 auto;
         letter-spacing: .02em;
@@ -704,6 +716,15 @@
     .bubble.media-only:hover,
     .bubble.media-caption:hover { box-shadow: none !important; }
     .bubble .text { color: #1f2733; font-size: 14.5px; white-space: pre-wrap; word-break: break-word; }
+    @media (pointer: coarse) {
+        .bubble-row,
+        .bubble,
+        .bubble .text {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+    }
     .bubble.media-caption .text {
         display: block;
         margin-top: 6px;
@@ -1570,6 +1591,89 @@
         background: #ef4444; color: #fff; border-color: #ef4444;
         animation: voice-rec-pulse 1s ease-in-out infinite;
     }
+    .composer.voice-active {
+        flex-wrap: wrap;
+    }
+    .voice-rec-panel {
+        flex: 1 0 100%;
+        display: flex; align-items: center; gap: 10px;
+        min-width: 0;
+        padding: 8px 10px;
+        background: #eef4ff;
+        border: 1px solid #c7defe;
+        border-radius: 13px;
+        color: #1f2733;
+    }
+    .voice-rec-dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #ef4444; flex: 0 0 auto;
+        box-shadow: 0 0 0 4px rgba(239,68,68,.12);
+    }
+    .voice-rec-time {
+        flex: 0 0 auto;
+        font-variant-numeric: tabular-nums;
+        font-size: 13px; font-weight: 700;
+    }
+    .voice-rec-hint {
+        flex: 1 1 auto; min-width: 0;
+        color: #64748b; font-size: 12.5px;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        text-align: center;
+    }
+    .voice-rec-actions {
+        display: inline-flex; align-items: center; gap: 6px;
+        flex: 0 0 auto;
+    }
+    .voice-action {
+        width: 34px; height: 34px; border-radius: 999px;
+        border: 0; display: inline-flex; align-items: center;
+        justify-content: center; cursor: pointer;
+        background: #dbeafe; color: #1d4ed8;
+        font-size: 16px; line-height: 1;
+    }
+    .voice-action:hover { background: #bfdbfe; }
+    .voice-action.danger {
+        background: #fee2e2; color: #b91c1c;
+    }
+    .voice-action.primary {
+        background: #3b82f6; color: #fff;
+    }
+    .voice-preview-audio {
+        flex: 1 1 220px; min-width: 140px; height: 34px;
+    }
+    .voice-trim {
+        flex: 1 1 100%;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 6px 10px;
+        align-items: center;
+    }
+    .voice-trim-ranges {
+        display: grid; gap: 4px;
+    }
+    .voice-trim input[type="range"] {
+        width: 100%;
+        accent-color: #3b82f6;
+    }
+    .voice-trim-label {
+        color: #64748b; font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+    }
+    [data-bs-theme="dark"] .voice-rec-panel {
+        background: #172033; border-color: #24354f; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .voice-rec-hint,
+    [data-bs-theme="dark"] .voice-trim-label { color: #94a3b8; }
+    [data-bs-theme="dark"] .voice-action {
+        background: #23314a; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .voice-action.primary {
+        background: #3b82f6; color: #fff;
+    }
+    [data-bs-theme="dark"] .voice-action.danger {
+        background: #3a1f1f; color: #fca5a5;
+    }
     @keyframes voice-rec-pulse {
         0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,.5); }
         50% { box-shadow: 0 0 0 8px rgba(239,68,68,0); }
@@ -1717,6 +1821,104 @@
         .video-lightbox .vl-btn { padding: 0 10px; }
         .video-lightbox .vl-rate { padding: 0 9px; min-width: 42px; }
     }
+    .image-editor-modal {
+        position: fixed; inset: 0; z-index: 1120;
+        display: flex; align-items: center; justify-content: center;
+        padding: 18px;
+        background: rgba(15, 23, 42, .78);
+        opacity: 0; visibility: hidden; pointer-events: none;
+        transition: opacity .18s ease, visibility .18s ease;
+    }
+    .image-editor-modal.open {
+        opacity: 1; visibility: visible; pointer-events: auto;
+    }
+    .image-editor-shell {
+        width: min(980px, 100%);
+        max-height: calc(100dvh - 36px);
+        display: flex; flex-direction: column; gap: 0;
+        background: #f8fafc;
+        border-radius: 14px;
+        border: 1px solid rgba(255,255,255,.22);
+        box-shadow: 0 24px 70px rgba(0,0,0,.35);
+        overflow: hidden;
+    }
+    .image-editor-toolbar,
+    .image-editor-footer {
+        display: flex; align-items: center; gap: 8px;
+        padding: 10px;
+        background: #fff;
+        border-bottom: 1px solid #e6e8ee;
+        flex-wrap: wrap;
+    }
+    .image-editor-footer {
+        border-bottom: 0; border-top: 1px solid #e6e8ee;
+        justify-content: flex-end;
+    }
+    .image-editor-stage {
+        min-height: 0; flex: 1 1 auto;
+        display: flex; align-items: center; justify-content: center;
+        padding: 10px; overflow: auto;
+        background:
+            linear-gradient(45deg, #e2e8f0 25%, transparent 25%),
+            linear-gradient(-45deg, #e2e8f0 25%, transparent 25%),
+            linear-gradient(45deg, transparent 75%, #e2e8f0 75%),
+            linear-gradient(-45deg, transparent 75%, #e2e8f0 75%);
+        background-size: 20px 20px;
+        background-position: 0 0, 0 10px, 10px -10px, -10px 0;
+    }
+    .image-editor-canvas {
+        display: block;
+        max-width: 100%;
+        max-height: calc(100dvh - 178px);
+        background: #fff;
+        border-radius: 8px;
+        box-shadow: 0 12px 30px rgba(15,23,42,.22);
+        touch-action: none;
+    }
+    .image-editor-btn {
+        min-width: 36px; height: 36px;
+        border: 1px solid #d6dae2; border-radius: 10px;
+        background: #fff; color: #1f2733;
+        display: inline-flex; align-items: center; justify-content: center;
+        cursor: pointer; font-size: 15px; font-weight: 700;
+    }
+    .image-editor-btn.active {
+        background: #2563eb; border-color: #2563eb; color: #fff;
+    }
+    .image-editor-btn.primary {
+        background: #3b82f6; border-color: #3b82f6; color: #fff;
+        padding: 0 14px;
+    }
+    .image-editor-btn.danger { color: #b91c1c; }
+    .image-editor-swatches {
+        display: inline-flex; align-items: center; gap: 5px;
+    }
+    .image-editor-swatch {
+        width: 24px; height: 24px; border-radius: 50%;
+        border: 2px solid #fff;
+        box-shadow: 0 0 0 1px rgba(15,23,42,.24);
+        cursor: pointer;
+    }
+    .image-editor-swatch.active {
+        box-shadow: 0 0 0 2px #2563eb;
+    }
+    .image-editor-size {
+        width: 110px; accent-color: #2563eb;
+    }
+    [data-bs-theme="dark"] .image-editor-shell {
+        background: #0f1115; border-color: #2a2f3a;
+    }
+    [data-bs-theme="dark"] .image-editor-toolbar,
+    [data-bs-theme="dark"] .image-editor-footer {
+        background: #1a1d24; border-color: #2a2f3a;
+    }
+    [data-bs-theme="dark"] .image-editor-btn {
+        background: #232831; border-color: #2f3540; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .image-editor-btn.active,
+    [data-bs-theme="dark"] .image-editor-btn.primary {
+        background: #3b82f6; border-color: #3b82f6; color: #fff;
+    }
     .bubble .time {
         font-size: 10px; color: #9aa3b2; margin-top: 4px; text-align: right;
         font-variant-numeric: tabular-nums; letter-spacing: .02em;
@@ -1759,6 +1961,12 @@
     [data-bs-theme="dark"] .contact-row .name { color: #e5e7eb; }
     [data-bs-theme="dark"] .contact-row.active .name { color: #93c5fd; }
     [data-bs-theme="dark"] .contact-row .preview { color: #9ca3af; }
+    [data-bs-theme="dark"] .contact-row .list-tg-tick {
+        color: #6b7280;
+    }
+    [data-bs-theme="dark"] .contact-row .list-tg-tick.read {
+        color: #60a5fa;
+    }
     [data-bs-theme="dark"] .contact-row .time { color: #6b7280; }
     [data-bs-theme="dark"] .contact-row .avatar { border-color: rgba(255,255,255,.12); }
     [data-bs-theme="dark"] .feed-header .avatar { border-color: rgba(255,255,255,.12); }
@@ -3222,7 +3430,13 @@
                                     <span class="time">{{ c.last_time or '' }}</span>
                                 </div>
                                 <div class="d-flex justify-content-between align-items-center">
-                                    <div class="preview">{{ c.last_preview or 'Нет сообщений' }}</div>
+                                    <div class="preview-line">
+                                        {% if c.last_outgoing and c.last_tg_read is not none %}
+                                        <span class="list-tg-tick{% if c.last_tg_read %} read{% endif %}"
+                                              title="{% if c.last_tg_read %}Прочитано{% else %}Доставлено{% endif %}">{% if c.last_tg_read %}✓✓{% else %}✓{% endif %}</span>
+                                        {% endif %}
+                                        <div class="preview">{{ c.last_preview or 'Нет сообщений' }}</div>
+                                    </div>
                                     {% if c.unread_count and c.unread_count > 0 %}
                                         <span class="badge-unread{% if c.muted %} muted{% endif %}">{{ c.unread_count }}</span>
                                     {% endif %}
@@ -4411,6 +4625,18 @@
         }[c]));
     }
 
+    function listTick(c) {
+        if (!c.last_outgoing
+                || c.last_tg_read === null
+                || c.last_tg_read === undefined) {
+            return '';
+        }
+        const read = !!c.last_tg_read;
+        return `<span class="list-tg-tick${read ? ' read' : ''}"
+                      title="${read ? 'Прочитано' : 'Доставлено'}"
+                >${read ? '✓✓' : '✓'}</span>`;
+    }
+
     function render(contacts) {
         if (!contacts.length) {
             list.innerHTML =
@@ -4440,7 +4666,10 @@
                             <span class="time">${escapeHtml(c.last_time || '')}</span>
                         </div>
                         <div class="d-flex justify-content-between align-items-center">
-                            <div class="preview">${escapeHtml(c.last_preview || 'Нет сообщений')}</div>
+                            <div class="preview-line">
+                                ${listTick(c)}
+                                <div class="preview">${escapeHtml(c.last_preview || 'Нет сообщений')}</div>
+                            </div>
                             ${badge}
                         </div>
                     </div>
@@ -4465,6 +4694,9 @@
             maybeNotify(data.contacts);
             const sig = JSON.stringify(data.contacts.map(
                 c => [c.id, c.display_name, c.last_time, c.last_preview,
+                      c.last_outgoing ? 1 : 0,
+                      c.last_tg_read === null || c.last_tg_read === undefined
+                          ? null : (c.last_tg_read ? 1 : 0),
                       c.unread_count, c.pinned ? 1 : 0, c.muted ? 1 : 0]));
             if (sig !== lastSig) {
                 render(data.contacts);
@@ -5315,8 +5547,7 @@
         jumpToMessage(target);
     });
 
-    document.addEventListener('contextmenu', (e) => {
-        const row = e.target.closest('.bubble-row');
+    function showMenuForRow(row, x, y) {
         if (!row) return;
         const messageId = row.dataset.messageId;
         if (!messageId) return;
@@ -5328,10 +5559,66 @@
             : (row.dataset.author
                || (sourceEl ? sourceEl.textContent.split('·').pop().trim()
                             : 'Сообщение'));
+        showMessageMenu(x, y, messageId, text, outgoing, author);
+    }
+
+    document.addEventListener('contextmenu', (e) => {
+        const row = e.target.closest('.bubble-row');
+        if (!row) return;
         e.preventDefault();
-        showMessageMenu(e.clientX, e.clientY, messageId, text, outgoing, author);
+        showMenuForRow(row, e.clientX, e.clientY);
     });
+    let longPressTimer = null;
+    let longPressStart = null;
+    let suppressClick = false;
+    function clearLongPress() {
+        if (longPressTimer) clearTimeout(longPressTimer);
+        longPressTimer = null;
+        longPressStart = null;
+    }
+    function touchPoint(e) {
+        const t = e.touches && e.touches[0];
+        return t ? {x: t.clientX, y: t.clientY} : null;
+    }
+    document.addEventListener('touchstart', (e) => {
+        const row = e.target.closest && e.target.closest('.bubble-row');
+        if (!row) return;
+        if (e.target.closest('button, input, textarea, select, audio, video')) {
+            return;
+        }
+        const p = touchPoint(e);
+        if (!p) return;
+        clearLongPress();
+        longPressStart = {row, x: p.x, y: p.y};
+        longPressTimer = setTimeout(() => {
+            const cur = longPressStart;
+            if (!cur) return;
+            suppressClick = true;
+            showMenuForRow(cur.row, cur.x, cur.y);
+            if (navigator.vibrate) {
+                try { navigator.vibrate(12); } catch (_) {}
+            }
+            clearLongPress();
+            setTimeout(() => { suppressClick = false; }, 350);
+        }, 520);
+    }, {passive: true});
+    document.addEventListener('touchmove', (e) => {
+        if (!longPressStart) return;
+        const p = touchPoint(e);
+        if (!p) return;
+        const dx = p.x - longPressStart.x;
+        const dy = p.y - longPressStart.y;
+        if ((dx * dx + dy * dy) > 100) clearLongPress();
+    }, {passive: true});
+    document.addEventListener('touchend', clearLongPress);
+    document.addEventListener('touchcancel', clearLongPress);
     document.addEventListener('click', (e) => {
+        if (suppressClick) {
+            e.preventDefault();
+            e.stopPropagation();
+            suppressClick = false;
+            return;
+        }
         if (openMenu && !openMenu.contains(e.target)) closeMenu();
     });
     document.addEventListener('keydown', (e) => {
@@ -6316,6 +6603,9 @@
         hasOlderMessages = false;
         loadingOlderMessages = false;
         clearPreview();  // сбрасываем выбранный файл при смене чата
+        if (window.__skillwoodCancelVoiceDraft) {
+            window.__skillwoodCancelVoiceDraft();
+        }
         clearReply();    // и отменяем начатый ответ
         if (!opts.keepPendingForward) {
             clearForward();  // подготовленная пересылка живёт только в целевом чате
@@ -7086,6 +7376,292 @@
             setTimeout(() => { stickerPackSave.textContent = oldText; }, 900);
         }
     });
+    function isEditableImage(file) {
+        return !!(file && file.type && file.type.indexOf('image/') === 0);
+    }
+
+    function imageEditorFileName(file) {
+        const raw = (file && file.name) || 'image.png';
+        const dot = raw.lastIndexOf('.');
+        const base = dot > 0 ? raw.slice(0, dot) : raw;
+        const type = (file && file.type) || 'image/png';
+        const ext = type.indexOf('jpeg') >= 0 ? '.jpg'
+            : (type.indexOf('webp') >= 0 ? '.webp' : '.png');
+        return base + '-edited' + ext;
+    }
+
+    function ensureImageEditorModal() {
+        let modal = document.getElementById('image-editor-modal');
+        if (modal) return modal;
+        modal = document.createElement('div');
+        modal.id = 'image-editor-modal';
+        modal.className = 'image-editor-modal';
+        modal.innerHTML =
+            '<div class="image-editor-shell" role="dialog" aria-modal="true">'
+            + '<div class="image-editor-toolbar">'
+                + '<button type="button" class="image-editor-btn active"'
+                    + ' data-img-mode="draw" title="Маркер">✎</button>'
+                + '<button type="button" class="image-editor-btn"'
+                    + ' data-img-mode="crop" title="Обрезка">⌗</button>'
+                + '<button type="button" class="image-editor-btn"'
+                    + ' data-img-action="crop" title="Применить обрезку">✂</button>'
+                + '<button type="button" class="image-editor-btn"'
+                    + ' data-img-action="undo" title="Назад">↶</button>'
+                + '<span class="image-editor-swatches">'
+                    + '<button type="button" class="image-editor-swatch active"'
+                        + ' data-img-color="#ef4444" style="background:#ef4444"'
+                        + ' title="Красный"></button>'
+                    + '<button type="button" class="image-editor-swatch"'
+                        + ' data-img-color="#f59e0b" style="background:#f59e0b"'
+                        + ' title="Жёлтый"></button>'
+                    + '<button type="button" class="image-editor-swatch"'
+                        + ' data-img-color="#3b82f6" style="background:#3b82f6"'
+                        + ' title="Синий"></button>'
+                    + '<button type="button" class="image-editor-swatch"'
+                        + ' data-img-color="#111827" style="background:#111827"'
+                        + ' title="Чёрный"></button>'
+                + '</span>'
+                + '<input type="range" class="image-editor-size" min="3" max="28"'
+                    + ' value="8" data-img-size title="Толщина">'
+            + '</div>'
+            + '<div class="image-editor-stage">'
+                + '<canvas class="image-editor-canvas"></canvas>'
+            + '</div>'
+            + '<div class="image-editor-footer">'
+                + '<button type="button" class="image-editor-btn danger"'
+                    + ' data-img-action="cancel">Отмена</button>'
+                + '<button type="button" class="image-editor-btn"'
+                    + ' data-img-action="original">Оригинал</button>'
+                + '<button type="button" class="image-editor-btn primary"'
+                    + ' data-img-action="save">Готово</button>'
+            + '</div>'
+            + '</div>';
+        document.body.appendChild(modal);
+        return modal;
+    }
+
+    function openImageEditor(file) {
+        return new Promise((resolve) => {
+            const modal = ensureImageEditorModal();
+            const canvas = modal.querySelector('.image-editor-canvas');
+            const ctx = canvas.getContext('2d');
+            const base = document.createElement('canvas');
+            const bctx = base.getContext('2d');
+            const img = new Image();
+            const src = URL.createObjectURL(file);
+            let mode = 'draw';
+            let color = '#ef4444';
+            let size = 8;
+            let drawing = false;
+            let cropping = false;
+            let last = null;
+            let crop = null;
+            const history = [];
+
+            function pushHistory() {
+                try {
+                    history.push(bctx.getImageData(0, 0, base.width, base.height));
+                    if (history.length > 12) history.shift();
+                } catch (err) {}
+            }
+
+            function redraw() {
+                canvas.width = base.width;
+                canvas.height = base.height;
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+                ctx.drawImage(base, 0, 0);
+                if (mode === 'crop' && crop) {
+                    const x = Math.min(crop.x, crop.x2);
+                    const y = Math.min(crop.y, crop.y2);
+                    const w = Math.abs(crop.x2 - crop.x);
+                    const h = Math.abs(crop.y2 - crop.y);
+                    ctx.save();
+                    ctx.fillStyle = 'rgba(15, 23, 42, .45)';
+                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                    ctx.clearRect(x, y, w, h);
+                    ctx.strokeStyle = '#ffffff';
+                    ctx.lineWidth = Math.max(3, canvas.width / 360);
+                    ctx.setLineDash([12, 8]);
+                    ctx.strokeRect(x, y, w, h);
+                    ctx.restore();
+                }
+            }
+
+            function point(ev) {
+                const rect = canvas.getBoundingClientRect();
+                return {
+                    x: (ev.clientX - rect.left) * canvas.width / rect.width,
+                    y: (ev.clientY - rect.top) * canvas.height / rect.height,
+                };
+            }
+
+            function setMode(next) {
+                mode = next;
+                modal.querySelectorAll('[data-img-mode]').forEach(btn => {
+                    btn.classList.toggle('active', btn.dataset.imgMode === mode);
+                });
+                if (mode === 'crop' && !crop) {
+                    crop = {
+                        x: canvas.width * 0.08,
+                        y: canvas.height * 0.08,
+                        x2: canvas.width * 0.92,
+                        y2: canvas.height * 0.92,
+                    };
+                }
+                redraw();
+            }
+
+            function close(result) {
+                modal.classList.remove('open');
+                URL.revokeObjectURL(src);
+                setTimeout(() => {
+                    if (!modal.classList.contains('open')) {
+                        modal.remove();
+                    }
+                }, 160);
+                resolve(result);
+            }
+
+            function applyCrop() {
+                if (!crop) return;
+                const x = Math.max(0, Math.min(crop.x, crop.x2));
+                const y = Math.max(0, Math.min(crop.y, crop.y2));
+                const w = Math.min(base.width - x, Math.abs(crop.x2 - crop.x));
+                const h = Math.min(base.height - y, Math.abs(crop.y2 - crop.y));
+                if (w < 20 || h < 20) return;
+                pushHistory();
+                const tmp = document.createElement('canvas');
+                tmp.width = Math.round(w);
+                tmp.height = Math.round(h);
+                tmp.getContext('2d').drawImage(base, x, y, w, h,
+                                               0, 0, tmp.width, tmp.height);
+                base.width = tmp.width;
+                base.height = tmp.height;
+                bctx.drawImage(tmp, 0, 0);
+                crop = null;
+                setMode('draw');
+            }
+
+            canvas.addEventListener('pointerdown', (ev) => {
+                ev.preventDefault();
+                const p = point(ev);
+                if (mode === 'crop') {
+                    cropping = true;
+                    crop = {x: p.x, y: p.y, x2: p.x, y2: p.y};
+                } else {
+                    pushHistory();
+                    drawing = true;
+                    last = p;
+                    bctx.lineCap = 'round';
+                    bctx.lineJoin = 'round';
+                    bctx.strokeStyle = color;
+                    bctx.lineWidth = size;
+                    bctx.beginPath();
+                    bctx.moveTo(p.x, p.y);
+                    bctx.lineTo(p.x + 0.1, p.y + 0.1);
+                    bctx.stroke();
+                }
+                try { canvas.setPointerCapture(ev.pointerId); } catch (_) {}
+                redraw();
+            });
+            canvas.addEventListener('pointermove', (ev) => {
+                if (!drawing && !cropping) return;
+                ev.preventDefault();
+                const p = point(ev);
+                if (cropping && crop) {
+                    crop.x2 = p.x;
+                    crop.y2 = p.y;
+                } else if (drawing && last) {
+                    bctx.strokeStyle = color;
+                    bctx.lineWidth = size;
+                    bctx.beginPath();
+                    bctx.moveTo(last.x, last.y);
+                    bctx.lineTo(p.x, p.y);
+                    bctx.stroke();
+                    last = p;
+                }
+                redraw();
+            });
+            function finishPointer(ev) {
+                drawing = false;
+                cropping = false;
+                last = null;
+                try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
+            }
+            canvas.addEventListener('pointerup', finishPointer);
+            canvas.addEventListener('pointercancel', finishPointer);
+
+            modal.addEventListener('click', (ev) => {
+                const modeBtn = ev.target.closest('[data-img-mode]');
+                if (modeBtn) {
+                    setMode(modeBtn.dataset.imgMode);
+                    return;
+                }
+                const swatch = ev.target.closest('[data-img-color]');
+                if (swatch) {
+                    color = swatch.dataset.imgColor;
+                    modal.querySelectorAll('[data-img-color]').forEach(btn => {
+                        btn.classList.toggle('active', btn === swatch);
+                    });
+                    setMode('draw');
+                    return;
+                }
+                const action = ev.target.closest('[data-img-action]');
+                if (!action) return;
+                const act = action.dataset.imgAction;
+                if (act === 'cancel') close(null);
+                else if (act === 'original') close(file);
+                else if (act === 'crop') applyCrop();
+                else if (act === 'undo' && history.length) {
+                    const prev = history.pop();
+                    base.width = prev.width;
+                    base.height = prev.height;
+                    bctx.putImageData(prev, 0, 0);
+                    crop = null;
+                    redraw();
+                } else if (act === 'save') {
+                    const outType = file.type === 'image/jpeg'
+                        || file.type === 'image/webp' ? file.type : 'image/png';
+                    base.toBlob((blob) => {
+                        if (!blob) { close(file); return; }
+                        close(new File([blob], imageEditorFileName(file),
+                            {type: outType, lastModified: Date.now()}));
+                    }, outType, 0.92);
+                }
+            });
+            modal.querySelector('[data-img-size]').addEventListener('input',
+                (ev) => { size = Number(ev.target.value) || 8; });
+
+            img.onload = () => {
+                const maxSide = 2200;
+                const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+                base.width = Math.max(1, Math.round(img.width * scale));
+                base.height = Math.max(1, Math.round(img.height * scale));
+                bctx.drawImage(img, 0, 0, base.width, base.height);
+                redraw();
+                modal.classList.add('open');
+            };
+            img.onerror = () => close(file);
+            img.src = src;
+        });
+    }
+
+    async function attachFile(file) {
+        if (!file) return;
+        if (isEditableImage(file)) {
+            const edited = await openImageEditor(file);
+            if (!edited) {
+                clearPreview();
+                return;
+            }
+            pendingFile = edited;
+            showPreview(edited);
+            return;
+        }
+        pendingFile = file;
+        showPreview(file);
+    }
+
     function showPreview(file) {
         const box = feed.querySelector('#composer-preview');
         if (!box) return;
@@ -7734,11 +8310,10 @@
     });
 
     // Файл выбран — показываем превью; отправка только по кнопке «Отправить».
-    feed.addEventListener('change', function(e) {
+    feed.addEventListener('change', async function(e) {
         const inp = e.target.closest('#composer-file');
         if (inp && inp.files && inp.files[0]) {
-            pendingFile = inp.files[0];
-            showPreview(pendingFile);
+            await attachFile(inp.files[0]);
             inp.value = '';
         }
     });
@@ -7747,7 +8322,7 @@
     // элемент clipboard.items, делаем у него осмысленное имя и кладём в
     // pendingFile + превью. preventDefault, чтобы base64 не вставился
     // в textarea как текст.
-    feed.addEventListener('paste', function(e) {
+    feed.addEventListener('paste', async function(e) {
         const ta = e.target.closest('#composer-text');
         if (!ta) return;
         const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -7764,8 +8339,7 @@
             const ext = '.' + ((it.type.split('/')[1] || 'png').toLowerCase());
             const named = new File([raw],
                 'pasted-' + Date.now() + ext, {type: it.type});
-            pendingFile = named;
-            showPreview(named);
+            await attachFile(named);
             return;
         }
     });
@@ -8553,17 +9127,200 @@
 </script>
 
 <script>
-// --- Микрофон: запись голосового через MediaRecorder.
-//     Первый клик по 🎤 запускает запись (кнопка пульсирует красным),
-//     второй клик — останавливает и отправляет blob через тот же
-//     /contacts/<id>/send, что и обычное вложение. ---
+// --- Микрофон: голосовые через MediaRecorder.
+//     Удержание записывает, свайп вверх закрепляет запись, в закреплённом
+//     режиме можно остановиться на предпросмотр, вырезать края, продолжить
+//     или удалить черновик.
 (function() {
     let recorder = null;
     let chunks = [];
+    let segments = [];
     let stream = null;
+    let activeForm = null;
     let activeBtn = null;
+    let locked = false;
+    let pointerStart = null;
+    let elapsedMs = 0;
+    let startedAt = 0;
+    let tickTimer = null;
+    let previewBlob = null;
+    let previewUrl = null;
+    let previewDuration = 0;
 
-    async function start(btn) {
+    const LOCK_Y = 56;
+    const CANCEL_X = 92;
+
+    function pickMime() {
+        if (!window.MediaRecorder) return '';
+        if (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+            return 'audio/webm;codecs=opus';
+        }
+        if (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')) {
+            return 'audio/ogg;codecs=opus';
+        }
+        if (MediaRecorder.isTypeSupported('audio/webm')) return 'audio/webm';
+        return '';
+    }
+
+    function fmt(ms) {
+        const total = Math.max(0, Math.floor(ms / 100));
+        const sec = Math.floor(total / 10);
+        const m = Math.floor(sec / 60);
+        const s = String(sec % 60).padStart(2, '0');
+        const d = total % 10;
+        return m + ':' + s + ',' + d;
+    }
+
+    function fmtSec(sec) {
+        return fmt(Math.max(0, sec || 0) * 1000);
+    }
+
+    function currentElapsed() {
+        if (recorder && recorder.state === 'recording') {
+            return elapsedMs + (Date.now() - startedAt);
+        }
+        return elapsedMs;
+    }
+
+    function updateTimer() {
+        const time = activeForm && activeForm.querySelector('.voice-rec-time');
+        if (time) time.textContent = fmt(currentElapsed());
+    }
+
+    function startTimer() {
+        stopTimer();
+        tickTimer = setInterval(updateTimer, 100);
+        updateTimer();
+    }
+
+    function stopTimer() {
+        if (tickTimer) clearInterval(tickTimer);
+        tickTimer = null;
+    }
+
+    function ensurePanel() {
+        if (!activeForm) return null;
+        let panel = activeForm.querySelector('.voice-rec-panel');
+        if (!panel) {
+            panel = document.createElement('div');
+            panel.className = 'voice-rec-panel';
+            activeForm.insertBefore(panel, activeForm.firstChild);
+        }
+        activeForm.classList.add('voice-active');
+        return panel;
+    }
+
+    function stopStream() {
+        if (stream) {
+            stream.getTracks().forEach(t => t.stop());
+            stream = null;
+        }
+    }
+
+    function revokePreview() {
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = null;
+        previewBlob = null;
+        previewDuration = 0;
+    }
+
+    function cleanupUi() {
+        stopTimer();
+        if (activeBtn) {
+            activeBtn.classList.remove('recording');
+            activeBtn.title = 'Записать голосовое';
+        }
+        if (activeForm) {
+            activeForm.classList.remove('voice-active');
+            const panel = activeForm.querySelector('.voice-rec-panel');
+            if (panel) panel.remove();
+        }
+        revokePreview();
+        activeBtn = null;
+        activeForm = null;
+        locked = false;
+        pointerStart = null;
+        elapsedMs = 0;
+        chunks = [];
+        segments = [];
+    }
+
+    function renderRecording() {
+        const panel = ensurePanel();
+        if (!panel) return;
+        const hint = locked
+            ? 'Запись закреплена'
+            : 'Вверх — закрепить, влево — отменить';
+        const actions = locked
+            ? '<button type="button" class="voice-action danger"'
+                + ' data-voice-action="cancel" title="Удалить">🗑</button>'
+              + '<button type="button" class="voice-action"'
+                + ' data-voice-action="preview" title="Пауза">⏸</button>'
+              + '<button type="button" class="voice-action primary"'
+                + ' data-voice-action="send" title="Отправить">➤</button>'
+            : '<button type="button" class="voice-action"'
+                + ' data-voice-action="lock" title="Закрепить">⌃</button>';
+        panel.innerHTML =
+            '<span class="voice-rec-dot"></span>'
+            + '<span class="voice-rec-time">' + fmt(currentElapsed()) + '</span>'
+            + '<span class="voice-rec-hint">' + hint + '</span>'
+            + '<span class="voice-rec-actions">' + actions + '</span>';
+    }
+
+    function updateTrimLabel() {
+        if (!activeForm) return;
+        const start = activeForm.querySelector('[data-voice-trim-start]');
+        const end = activeForm.querySelector('[data-voice-trim-end]');
+        const label = activeForm.querySelector('.voice-trim-label');
+        if (!start || !end || !label) return;
+        label.textContent = fmtSec(Number(start.value))
+            + ' — ' + fmtSec(Number(end.value));
+    }
+
+    function renderPreview() {
+        const panel = ensurePanel();
+        if (!panel || !previewUrl) return;
+        const dur = Math.max(0.1, previewDuration || currentElapsed() / 1000);
+        panel.innerHTML =
+            '<button type="button" class="voice-action danger"'
+                + ' data-voice-action="cancel" title="Удалить">🗑</button>'
+            + '<audio class="voice-preview-audio" controls preload="metadata"'
+                + ' src="' + previewUrl + '"></audio>'
+            + '<span class="voice-rec-actions">'
+                + '<button type="button" class="voice-action"'
+                    + ' data-voice-action="resume" title="Продолжить">🎤</button>'
+                + '<button type="button" class="voice-action primary"'
+                    + ' data-voice-action="send" title="Отправить">➤</button>'
+            + '</span>'
+            + '<div class="voice-trim">'
+                + '<div class="voice-trim-ranges">'
+                    + '<input type="range" min="0" max="' + dur + '"'
+                        + ' step="0.1" value="0" data-voice-trim-start>'
+                    + '<input type="range" min="0" max="' + dur + '"'
+                        + ' step="0.1" value="' + dur + '" data-voice-trim-end>'
+                + '</div>'
+                + '<span class="voice-trim-label"></span>'
+            + '</div>';
+        const audio = panel.querySelector('audio');
+        if (audio) {
+            audio.addEventListener('loadedmetadata', () => {
+                if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+                previewDuration = audio.duration;
+                const start = panel.querySelector('[data-voice-trim-start]');
+                const end = panel.querySelector('[data-voice-trim-end]');
+                if (start && end) {
+                    start.max = String(audio.duration);
+                    end.max = String(audio.duration);
+                    end.value = String(audio.duration);
+                    updateTrimLabel();
+                }
+            }, {once: true});
+        }
+        updateTrimLabel();
+    }
+
+    async function startRecorderSegment() {
+        if (!activeForm) return false;
         if (recorder) return;
         try {
             stream = await navigator.mediaDevices.getUserMedia({audio: true});
@@ -8573,13 +9330,15 @@
                 text: 'Браузер не дал разрешение на запись звука.',
                 okLabel: 'Закрыть', cancelLabel: 'Отмена',
             });
-            return;
+            cleanupUi();
+            return false;
+        }
+        if (!activeForm) {
+            stopStream();
+            return false;
         }
         chunks = [];
-        const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-            ? 'audio/webm;codecs=opus'
-            : (MediaRecorder.isTypeSupported('audio/ogg;codecs=opus')
-               ? 'audio/ogg;codecs=opus' : '');
+        const mime = pickMime();
         try {
             recorder = mime ? new MediaRecorder(stream, {mimeType: mime})
                             : new MediaRecorder(stream);
@@ -8589,32 +9348,171 @@
         recorder.addEventListener('dataavailable', (e) => {
             if (e.data && e.data.size > 0) chunks.push(e.data);
         });
-        recorder.addEventListener('stop', () => {
-            const blob = new Blob(chunks,
-                {type: recorder.mimeType || 'audio/webm'});
-            const form = activeBtn && activeBtn.closest('#composer');
-            sendVoice(form, blob);
-            chunks = [];
-            recorder = null;
-            if (stream) {
-                stream.getTracks().forEach(t => t.stop());
-                stream = null;
-            }
-            if (activeBtn) {
-                activeBtn.classList.remove('recording');
-                activeBtn = null;
-            }
-        });
-        recorder.start();
-        activeBtn = btn;
-        btn.classList.add('recording');
-        btn.title = 'Остановить запись и отправить';
+        recorder.start(250);
+        startedAt = Date.now();
+        startTimer();
+        return true;
     }
 
-    function stop() {
-        if (recorder && recorder.state !== 'inactive') {
-            recorder.stop();
+    function stopRecorderSegment(keep) {
+        return new Promise((resolve) => {
+            const rec = recorder;
+            if (!rec) { resolve(null); return; }
+            if (rec.state === 'recording') {
+                elapsedMs += Date.now() - startedAt;
+            }
+            rec.addEventListener('stop', () => {
+                const type = rec.mimeType
+                    || (chunks[0] && chunks[0].type) || 'audio/webm';
+                const blob = new Blob(chunks, {type});
+                if (keep && blob.size > 0) segments.push(blob);
+                chunks = [];
+                recorder = null;
+                stopTimer();
+                stopStream();
+                resolve(blob);
+            }, {once: true});
+            try {
+                if (rec.state !== 'inactive') rec.stop();
+                else resolve(null);
+            } catch (err) {
+                recorder = null;
+                stopStream();
+                stopTimer();
+                resolve(null);
+            }
+        });
+    }
+
+    function mergedBlob() {
+        const usable = segments.filter(b => b && b.size > 0);
+        if (!usable.length) return null;
+        const type = usable[0].type || 'audio/webm';
+        return new Blob(usable, {type});
+    }
+
+    async function begin(btn, ev) {
+        if (recorder || activeForm) return;
+        const form = btn.closest('#composer');
+        if (!form) return;
+        activeForm = form;
+        activeBtn = btn;
+        locked = false;
+        pointerStart = ev ? {x: ev.clientX, y: ev.clientY,
+                             id: ev.pointerId} : null;
+        elapsedMs = 0;
+        segments = [];
+        revokePreview();
+        btn.classList.add('recording');
+        btn.title = 'Идёт запись';
+        renderRecording();
+        const ok = await startRecorderSegment();
+        if (!ok) return;
+        renderRecording();
+        if (ev && btn.setPointerCapture) {
+            try { btn.setPointerCapture(ev.pointerId); } catch (_) {}
         }
+    }
+
+    async function cancel() {
+        await stopRecorderSegment(false);
+        cleanupUi();
+    }
+
+    async function preview() {
+        await stopRecorderSegment(true);
+        previewBlob = mergedBlob();
+        if (!previewBlob) { cleanupUi(); return; }
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = URL.createObjectURL(previewBlob);
+        previewDuration = currentElapsed() / 1000;
+        renderPreview();
+    }
+
+    async function resume() {
+        if (!activeForm) return;
+        revokePreview();
+        locked = true;
+        renderRecording();
+        const ok = await startRecorderSegment();
+        if (ok) renderRecording();
+    }
+
+    function trimValues() {
+        if (!activeForm) return null;
+        const start = activeForm.querySelector('[data-voice-trim-start]');
+        const end = activeForm.querySelector('[data-voice-trim-end]');
+        if (!start || !end) return null;
+        return {start: Number(start.value) || 0,
+                end: Number(end.value) || 0};
+    }
+
+    async function trimVoiceBlob(blob, start, end) {
+        if (!blob || end <= start + 0.15) return blob;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC || !window.MediaRecorder) return blob;
+        try {
+            const data = await blob.arrayBuffer();
+            const decodeCtx = new AC();
+            const decoded = await decodeCtx.decodeAudioData(data.slice(0));
+            if (decodeCtx.close) decodeCtx.close();
+            const duration = Math.min(decoded.duration, end) - start;
+            if (duration <= 0.15) return blob;
+            const ctx = new AC({sampleRate: decoded.sampleRate});
+            const dest = ctx.createMediaStreamDestination();
+            const source = ctx.createBufferSource();
+            source.buffer = decoded;
+            source.connect(dest);
+            const mime = pickMime();
+            const out = [];
+            const rec = mime ? new MediaRecorder(dest.stream, {mimeType: mime})
+                             : new MediaRecorder(dest.stream);
+            return await new Promise((resolve, reject) => {
+                rec.addEventListener('dataavailable', e => {
+                    if (e.data && e.data.size > 0) out.push(e.data);
+                });
+                rec.addEventListener('error', reject);
+                rec.addEventListener('stop', () => {
+                    if (ctx.close) ctx.close();
+                    resolve(new Blob(out, {
+                        type: rec.mimeType || mime || blob.type || 'audio/webm',
+                    }));
+                }, {once: true});
+                source.addEventListener('ended', () => {
+                    if (rec.state !== 'inactive') rec.stop();
+                }, {once: true});
+                rec.start();
+                source.start(0, start, duration);
+            });
+        } catch (err) {
+            return blob;
+        }
+    }
+
+    async function blobForSend() {
+        if (recorder) {
+            await stopRecorderSegment(true);
+        }
+        let blob = previewBlob || mergedBlob();
+        if (!blob) return null;
+        const tv = trimValues();
+        const dur = previewDuration || currentElapsed() / 1000;
+        if (tv && dur && (tv.start > 0.15 || tv.end < dur - 0.15)) {
+            blob = await trimVoiceBlob(blob, tv.start, tv.end || dur);
+        }
+        return blob;
+    }
+
+    async function sendCurrent() {
+        const form = activeForm;
+        if (!form) return;
+        const panel = form.querySelector('.voice-rec-panel');
+        if (panel) {
+            panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
+        }
+        const blob = await blobForSend();
+        if (blob) await sendVoice(form, blob);
+        cleanupUi();
     }
 
     async function sendVoice(form, blob) {
@@ -8622,9 +9520,10 @@
         const contactId = form.dataset.contactId;
         if (!contactId) return;
         const fd = new FormData();
-        // Имя «voice.<ext>» — Telegram отобразит как audio.
-        const ext = (blob.type.includes('ogg') ? 'ogg' : 'webm');
+        const ext = (blob.type.includes('ogg') ? 'ogg'
+                     : (blob.type.includes('wav') ? 'wav' : 'webm'));
         fd.append('file', blob, 'voice.' + ext);
+        fd.append('voice', '1');
         const m = form.dataset.messenger || '';
         if (m) fd.append('messenger', m);
         try {
@@ -8643,17 +9542,87 @@
         }
     }
 
-    document.addEventListener('click', (e) => {
+    document.addEventListener('pointerdown', (e) => {
         const btn = e.target.closest('#composer-voice');
         if (!btn) return;
         e.preventDefault();
         e.stopPropagation();
-        if (btn.classList.contains('recording')) {
-            stop();
-        } else {
-            start(btn);
+        begin(btn, e);
+    });
+
+    document.addEventListener('pointermove', (e) => {
+        if (!activeForm || !pointerStart || locked) return;
+        const dx = e.clientX - pointerStart.x;
+        const dy = e.clientY - pointerStart.y;
+        if (dy < -LOCK_Y) {
+            locked = true;
+            renderRecording();
+            return;
+        }
+        if (dx < -CANCEL_X) {
+            cancel();
         }
     });
+
+    document.addEventListener('pointerup', (e) => {
+        if (!activeForm) return;
+        if (pointerStart && activeBtn && activeBtn.releasePointerCapture) {
+            try { activeBtn.releasePointerCapture(pointerStart.id); } catch (_) {}
+        }
+        pointerStart = null;
+        if (locked) return;
+        e.preventDefault();
+        e.stopPropagation();
+        sendCurrent();
+    });
+
+    document.addEventListener('click', (e) => {
+        const actionBtn = e.target.closest('[data-voice-action]');
+        if (!actionBtn) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const action = actionBtn.dataset.voiceAction;
+        if (action === 'lock') {
+            locked = true;
+            renderRecording();
+        } else if (action === 'cancel') {
+            cancel();
+        } else if (action === 'preview') {
+            preview();
+        } else if (action === 'resume') {
+            resume();
+        } else if (action === 'send') {
+            sendCurrent();
+        }
+    });
+
+    document.addEventListener('input', (e) => {
+        if (!e.target.matches('[data-voice-trim-start], [data-voice-trim-end]')) {
+            return;
+        }
+        const form = e.target.closest('#composer');
+        const start = form && form.querySelector('[data-voice-trim-start]');
+        const end = form && form.querySelector('[data-voice-trim-end]');
+        if (!start || !end) return;
+        const minGap = 0.2;
+        let s = Number(start.value) || 0;
+        let en = Number(end.value) || 0;
+        if (s > en - minGap) {
+            if (e.target === start) s = en - minGap;
+            else en = s + minGap;
+        }
+        s = Math.max(0, s);
+        en = Math.min(Number(end.max) || en, en);
+        start.value = String(s);
+        end.value = String(en);
+        updateTrimLabel();
+        const audio = form.querySelector('.voice-preview-audio');
+        if (audio && e.target === start) {
+            try { audio.currentTime = s; } catch (_) {}
+        }
+    });
+
+    window.__skillwoodCancelVoiceDraft = cancel;
 })();
 </script>
 
