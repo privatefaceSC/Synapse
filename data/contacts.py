@@ -97,35 +97,65 @@ def _consolidate_android_group_contact(db, user_id, messenger_name, group_name):
         return None, {"groups_created": 0, "handles_moved": 0,
                       "contacts_removed": 0}
 
-    group_contacts = (db.query(Contact)
-                      .filter(Contact.user_id == user_id,
-                              Contact.display_name == group_name)
-                      .order_by(Contact.id.asc())
-                      .all())
-    if group_contacts:
-        target = group_contacts[0]
-        groups_created = 0
-    else:
-        target = Contact(user_id=user_id, display_name=group_name)
-        db.add(target)
-        db.flush()
-        groups_created = 1
-
-    old_contact_ids = {c.id for c in group_contacts[1:]}
-    handles_moved = 0
     handles = (db.query(MessengerHandle)
                .filter(MessengerHandle.user_id == user_id)
                .all())
-    for handle in handles:
+
+    def matches_group(handle):
+        if messenger_name is not None and handle.messenger_name != messenger_name:
+            return False
         parsed = split_group_sender(handle.sender_raw)
         old_style_group = parsed is not None and parsed[0] == group_name
         exact_group_label = (
             handle.sender_raw == group_name
-            and (bool(handle.is_group) or messenger_name is None
-                 or handle.messenger_name == messenger_name)
+            and (messenger_name is None or handle.messenger_name == messenger_name)
         )
-        if not old_style_group and not exact_group_label:
+        return old_style_group or exact_group_label
+
+    def is_old_style(handle):
+        parsed = split_group_sender(handle.sender_raw)
+        return parsed is not None and parsed[0] == group_name
+
+    def has_foreign_group(contact_id):
+        if messenger_name is None:
+            return False
+        for handle in handles:
+            if handle.contact_id != contact_id:
+                continue
+            if handle.messenger_name == messenger_name:
+                continue
+            if handle.sender_raw != group_name:
+                continue
+            if (handle.tg_chat_type in ('group', 'channel')
+                    or bool(handle.is_group)):
+                return True
+        return False
+
+    matching = [h for h in handles if matches_group(h)]
+    old_style_contact_ids = sorted({h.contact_id for h in matching
+                                    if is_old_style(h)})
+    exact_contact_ids = sorted({h.contact_id for h in matching
+                                if h.sender_raw == group_name})
+    target = None
+    for contact_id in old_style_contact_ids + exact_contact_ids:
+        if has_foreign_group(contact_id):
             continue
+        target = db.query(Contact).filter(Contact.id == contact_id).first()
+        if target is not None:
+            break
+
+    if target is None:
+        target = Contact(user_id=user_id, display_name=group_name)
+        db.add(target)
+        db.flush()
+        groups_created = 1
+    else:
+        groups_created = 0
+
+    old_contact_ids = set()
+    handles_moved = 0
+    for handle in matching:
+        exact_group_label = handle.sender_raw == group_name
         if exact_group_label and not bool(handle.is_group):
             handle.is_group = True
         if handle.contact_id != target.id:
@@ -147,28 +177,32 @@ def consolidate_android_group_contacts(db, user_id: int):
     handles = (db.query(MessengerHandle)
                .filter(MessengerHandle.user_id == user_id)
                .all())
-    group_names = set()
+    group_keys = set()
     prefix_counts = {}
+    exact_senders = set()
     for handle in handles:
+        if (handle.messenger_name or '').strip().lower() in {'telegram', 'synapse'}:
+            continue
         sender = (handle.sender_raw or '').strip()
         if not sender:
             continue
+        exact_senders.add((handle.messenger_name, sender))
         if bool(handle.is_group):
-            group_names.add(sender)
+            group_keys.add((handle.messenger_name, sender))
         parsed = split_group_sender(sender)
         if parsed is not None:
             prefix, _member = parsed
-            prefix_counts[prefix] = prefix_counts.get(prefix, 0) + 1
+            key = (handle.messenger_name, prefix)
+            prefix_counts[key] = prefix_counts.get(key, 0) + 1
 
-    exact_senders = {h.sender_raw for h in handles}
-    for prefix, count in prefix_counts.items():
-        if count > 1 or prefix in exact_senders:
-            group_names.add(prefix)
+    for key, count in prefix_counts.items():
+        if count > 1 or key in exact_senders:
+            group_keys.add(key)
 
     stats = {"groups_created": 0, "handles_moved": 0, "contacts_removed": 0}
-    for group_name in sorted(group_names):
+    for messenger_name, group_name in sorted(group_keys):
         _target_id, part = _consolidate_android_group_contact(
-            db, user_id, None, group_name)
+            db, user_id, messenger_name, group_name)
         for key in stats:
             stats[key] += part[key]
     if any(stats.values()):
