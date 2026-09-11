@@ -7456,6 +7456,9 @@
             let cropping = false;
             let last = null;
             let crop = null;
+            let cropDrag = null;
+            let cropStart = null;
+            let cropPointStart = null;
             const history = [];
 
             function pushHistory() {
@@ -7471,18 +7474,49 @@
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
                 ctx.drawImage(base, 0, 0);
                 if (mode === 'crop' && crop) {
-                    const x = Math.min(crop.x, crop.x2);
-                    const y = Math.min(crop.y, crop.y2);
-                    const w = Math.abs(crop.x2 - crop.x);
-                    const h = Math.abs(crop.y2 - crop.y);
+                    const b = cropBounds();
+                    const x = b.x;
+                    const y = b.y;
+                    const w = b.w;
+                    const h = b.h;
+                    const handle = Math.max(10, Math.min(18, canvas.width / 52));
                     ctx.save();
-                    ctx.fillStyle = 'rgba(15, 23, 42, .45)';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                    ctx.clearRect(x, y, w, h);
-                    ctx.strokeStyle = '#ffffff';
-                    ctx.lineWidth = Math.max(3, canvas.width / 360);
-                    ctx.setLineDash([12, 8]);
-                    ctx.strokeRect(x, y, w, h);
+                    ctx.fillStyle = 'rgba(2, 6, 23, .55)';
+                    ctx.fillRect(0, 0, canvas.width, y);
+                    ctx.fillRect(0, y + h, canvas.width, canvas.height - y - h);
+                    ctx.fillRect(0, y, x, h);
+                    ctx.fillRect(x + w, y, canvas.width - x - w, h);
+                    ctx.strokeStyle = '#38bdf8';
+                    ctx.lineWidth = Math.max(2, canvas.width / 460);
+                    ctx.setLineDash([]);
+                    ctx.strokeRect(x + .5, y + .5, w - 1, h - 1);
+                    ctx.strokeStyle = 'rgba(191, 219, 254, .75)';
+                    ctx.lineWidth = Math.max(1, canvas.width / 900);
+                    ctx.beginPath();
+                    ctx.moveTo(x + w / 3, y);
+                    ctx.lineTo(x + w / 3, y + h);
+                    ctx.moveTo(x + w * 2 / 3, y);
+                    ctx.lineTo(x + w * 2 / 3, y + h);
+                    ctx.moveTo(x, y + h / 3);
+                    ctx.lineTo(x + w, y + h / 3);
+                    ctx.moveTo(x, y + h * 2 / 3);
+                    ctx.lineTo(x + w, y + h * 2 / 3);
+                    ctx.stroke();
+                    ctx.fillStyle = '#e0f2fe';
+                    ctx.strokeStyle = '#0ea5e9';
+                    ctx.lineWidth = Math.max(2, canvas.width / 520);
+                    [
+                        [x, y], [x + w / 2, y], [x + w, y],
+                        [x + w, y + h / 2], [x + w, y + h],
+                        [x + w / 2, y + h], [x, y + h], [x, y + h / 2],
+                    ].forEach(([hx, hy]) => {
+                        const px = clamp(hx, handle / 2, canvas.width - handle / 2);
+                        const py = clamp(hy, handle / 2, canvas.height - handle / 2);
+                        ctx.fillRect(px - handle / 2, py - handle / 2,
+                                     handle, handle);
+                        ctx.strokeRect(px - handle / 2, py - handle / 2,
+                                       handle, handle);
+                    });
                     ctx.restore();
                 }
             }
@@ -7495,19 +7529,103 @@
                 };
             }
 
+            function clamp(value, min, max) {
+                return Math.max(min, Math.min(max, value));
+            }
+
+            function cropBounds() {
+                const x = clamp(Math.min(crop.x, crop.x2), 0, canvas.width);
+                const y = clamp(Math.min(crop.y, crop.y2), 0, canvas.height);
+                const x2 = clamp(Math.max(crop.x, crop.x2), 0, canvas.width);
+                const y2 = clamp(Math.max(crop.y, crop.y2), 0, canvas.height);
+                return {x, y, x2, y2, w: x2 - x, h: y2 - y};
+            }
+
+            function resetCrop() {
+                crop = {x: 0, y: 0, x2: canvas.width, y2: canvas.height};
+            }
+
+            function cropHitMargin() {
+                return Math.max(18, Math.min(34, canvas.width / 26));
+            }
+
+            function hitCropHandle(p) {
+                if (!crop) return null;
+                const b = cropBounds();
+                const m = cropHitMargin();
+                const nearLeft = Math.abs(p.x - b.x) <= m;
+                const nearRight = Math.abs(p.x - b.x2) <= m;
+                const nearTop = Math.abs(p.y - b.y) <= m;
+                const nearBottom = Math.abs(p.y - b.y2) <= m;
+                const withinX = p.x >= b.x - m && p.x <= b.x2 + m;
+                const withinY = p.y >= b.y - m && p.y <= b.y2 + m;
+                if (nearLeft && nearTop) return 'nw';
+                if (nearRight && nearTop) return 'ne';
+                if (nearRight && nearBottom) return 'se';
+                if (nearLeft && nearBottom) return 'sw';
+                if (nearTop && withinX) return 'n';
+                if (nearRight && withinY) return 'e';
+                if (nearBottom && withinX) return 's';
+                if (nearLeft && withinY) return 'w';
+                if (p.x >= b.x && p.x <= b.x2 && p.y >= b.y && p.y <= b.y2) {
+                    return 'move';
+                }
+                return null;
+            }
+
+            function cropCursor(handle) {
+                return {
+                    nw: 'nwse-resize', se: 'nwse-resize',
+                    ne: 'nesw-resize', sw: 'nesw-resize',
+                    n: 'ns-resize', s: 'ns-resize',
+                    e: 'ew-resize', w: 'ew-resize',
+                    move: 'move',
+                }[handle] || 'default';
+            }
+
+            function updateCropFromDrag(p) {
+                if (!cropDrag || !cropStart || !cropPointStart) return;
+                const dx = p.x - cropPointStart.x;
+                const dy = p.y - cropPointStart.y;
+                const minSize = Math.max(32, Math.min(canvas.width, canvas.height) / 12);
+                let left = cropStart.x;
+                let top = cropStart.y;
+                let right = cropStart.x2;
+                let bottom = cropStart.y2;
+
+                if (cropDrag === 'move') {
+                    const width = cropStart.w;
+                    const height = cropStart.h;
+                    left = clamp(cropStart.x + dx, 0, canvas.width - width);
+                    top = clamp(cropStart.y + dy, 0, canvas.height - height);
+                    crop = {x: left, y: top, x2: left + width, y2: top + height};
+                    return;
+                }
+
+                if (cropDrag.indexOf('w') >= 0) {
+                    left = clamp(cropStart.x + dx, 0, right - minSize);
+                }
+                if (cropDrag.indexOf('e') >= 0) {
+                    right = clamp(cropStart.x2 + dx, left + minSize, canvas.width);
+                }
+                if (cropDrag.indexOf('n') >= 0) {
+                    top = clamp(cropStart.y + dy, 0, bottom - minSize);
+                }
+                if (cropDrag.indexOf('s') >= 0) {
+                    bottom = clamp(cropStart.y2 + dy, top + minSize, canvas.height);
+                }
+                crop = {x: left, y: top, x2: right, y2: bottom};
+            }
+
             function setMode(next) {
                 mode = next;
                 modal.querySelectorAll('[data-img-mode]').forEach(btn => {
                     btn.classList.toggle('active', btn.dataset.imgMode === mode);
                 });
                 if (mode === 'crop' && !crop) {
-                    crop = {
-                        x: canvas.width * 0.08,
-                        y: canvas.height * 0.08,
-                        x2: canvas.width * 0.92,
-                        y2: canvas.height * 0.92,
-                    };
+                    resetCrop();
                 }
+                canvas.style.cursor = (mode === 'crop') ? 'default' : 'crosshair';
                 redraw();
             }
 
@@ -7524,11 +7642,17 @@
 
             function applyCrop() {
                 if (!crop) return;
-                const x = Math.max(0, Math.min(crop.x, crop.x2));
-                const y = Math.max(0, Math.min(crop.y, crop.y2));
-                const w = Math.min(base.width - x, Math.abs(crop.x2 - crop.x));
-                const h = Math.min(base.height - y, Math.abs(crop.y2 - crop.y));
+                const b = cropBounds();
+                const x = b.x;
+                const y = b.y;
+                const w = b.w;
+                const h = b.h;
                 if (w < 20 || h < 20) return;
+                if (x <= 0 && y <= 0 && w >= base.width && h >= base.height) {
+                    crop = null;
+                    setMode('draw');
+                    return;
+                }
                 pushHistory();
                 const tmp = document.createElement('canvas');
                 tmp.width = Math.round(w);
@@ -7546,8 +7670,14 @@
                 ev.preventDefault();
                 const p = point(ev);
                 if (mode === 'crop') {
+                    if (!crop) resetCrop();
+                    cropDrag = hitCropHandle(p);
+                    if (!cropDrag) {
+                        return;
+                    }
+                    cropStart = cropBounds();
+                    cropPointStart = p;
                     cropping = true;
-                    crop = {x: p.x, y: p.y, x2: p.x, y2: p.y};
                 } else {
                     pushHistory();
                     drawing = true;
@@ -7565,12 +7695,16 @@
                 redraw();
             });
             canvas.addEventListener('pointermove', (ev) => {
-                if (!drawing && !cropping) return;
-                ev.preventDefault();
                 const p = point(ev);
+                if (!drawing && !cropping) {
+                    if (mode === 'crop') {
+                        canvas.style.cursor = cropCursor(hitCropHandle(p));
+                    }
+                    return;
+                }
+                ev.preventDefault();
                 if (cropping && crop) {
-                    crop.x2 = p.x;
-                    crop.y2 = p.y;
+                    updateCropFromDrag(p);
                 } else if (drawing && last) {
                     bctx.strokeStyle = color;
                     bctx.lineWidth = size;
@@ -7585,11 +7719,19 @@
             function finishPointer(ev) {
                 drawing = false;
                 cropping = false;
+                cropDrag = null;
+                cropStart = null;
+                cropPointStart = null;
                 last = null;
                 try { canvas.releasePointerCapture(ev.pointerId); } catch (_) {}
             }
             canvas.addEventListener('pointerup', finishPointer);
             canvas.addEventListener('pointercancel', finishPointer);
+            canvas.addEventListener('pointerleave', (ev) => {
+                if (!drawing && !cropping && mode === 'crop') {
+                    canvas.style.cursor = 'default';
+                }
+            });
 
             modal.addEventListener('click', (ev) => {
                 const modeBtn = ev.target.closest('[data-img-mode]');
@@ -7620,6 +7762,9 @@
                     crop = null;
                     redraw();
                 } else if (act === 'save') {
+                    if (mode === 'crop' && crop) {
+                        applyCrop();
+                    }
                     const outType = file.type === 'image/jpeg'
                         || file.type === 'image/webp' ? file.type : 'image/png';
                     base.toBlob((blob) => {

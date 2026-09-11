@@ -1,7 +1,10 @@
 import os
 import random
 import re
+import shutil
 import string
+import subprocess
+import tempfile
 import time
 import uuid
 import base64
@@ -762,6 +765,55 @@ def _kind_from_mime(mime: str) -> str:
     if mime.startswith('audio/'):
         return 'audio'
     return 'file'
+
+
+def _voice_input_suffix(filename: str | None, mime: str | None) -> str:
+    ext = os.path.splitext(filename or '')[1].lower()
+    if ext in ('.webm', '.ogg', '.oga', '.opus', '.wav', '.m4a', '.mp3',
+               '.mp4'):
+        return ext
+    mime = (mime or '').lower()
+    if 'ogg' in mime or 'opus' in mime:
+        return '.ogg'
+    if 'wav' in mime:
+        return '.wav'
+    if 'mpeg' in mime or 'mp3' in mime:
+        return '.mp3'
+    if 'mp4' in mime or 'm4a' in mime:
+        return '.m4a'
+    return '.webm'
+
+
+def _normalize_voice_upload(data: bytes, filename: str | None,
+                            mime: str | None):
+    """Привести голос из браузера к формату Telegram voice note."""
+    fallback_name = filename or 'voice.webm'
+    fallback_mime = (mime or 'audio/webm').lower()
+    ffmpeg = shutil.which('ffmpeg')
+    if not ffmpeg:
+        return data, fallback_name, fallback_mime
+
+    try:
+        with tempfile.TemporaryDirectory(prefix='synapse_voice_') as tmp:
+            in_path = os.path.join(
+                tmp, 'input' + _voice_input_suffix(filename, mime))
+            out_path = os.path.join(tmp, 'voice.ogg')
+            with open(in_path, 'wb') as f:
+                f.write(data)
+            subprocess.run(
+                [ffmpeg, '-y', '-hide_banner', '-loglevel', 'error',
+                 '-i', in_path, '-vn', '-ac', '1', '-c:a', 'libopus',
+                 '-b:a', '32k', '-application', 'voip', '-f', 'ogg',
+                 out_path],
+                timeout=30, check=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            with open(out_path, 'rb') as f:
+                converted = f.read()
+        if converted.startswith(b'OggS'):
+            return converted, 'voice.ogg', 'audio/ogg'
+    except Exception as exc:  # noqa: BLE001
+        print(f'Не удалось подготовить голосовое сообщение: {exc}')
+    return data, fallback_name, fallback_mime
 
 
 def _dm_user_card(user) -> dict:
@@ -2257,6 +2309,11 @@ def register_routes(app: Flask) -> None:
                 data = upload.read()
                 if not data:
                     return jsonify({'error': 'empty'}), 400
+                upload_name = upload.filename or 'file'
+                upload_mime = (upload.mimetype or '').lower()
+                if voice_upload:
+                    data, upload_name, upload_mime = _normalize_voice_upload(
+                        data, upload_name or 'voice.webm', upload_mime)
                 # parse_mode передаём только если был найден markdown —
                 # см. комментарий ниже у send_message о совместимости со
                 # старыми моками в тестах.
@@ -2270,7 +2327,7 @@ def register_routes(app: Flask) -> None:
                 try:
                     sent_id = telegram_bridge.send_file(
                         tg_handle.tg_chat_id, data,
-                        upload.filename or 'file', text,
+                        upload_name, text,
                         **_md_kw_f, **reply_kw_tg, **_opts_f,
                         user_id=user_id, voice_note=voice_upload)
                 except Exception as exc:  # noqa: BLE001
@@ -2286,7 +2343,7 @@ def register_routes(app: Flask) -> None:
                 # (зависит от версии/настроек клиента). Anti-dupe по
                 # tg_message_id в `_handle_message` защитит от двойной
                 # записи, если echo всё-таки прилетит.
-                mime = (upload.mimetype or '').lower()
+                mime = upload_mime
                 if voice_upload:
                     kind = 'voice'
                 elif mime.startswith('image/'):
@@ -2336,7 +2393,7 @@ def register_routes(app: Flask) -> None:
                     message_id=msg.id,
                     kind=kind,
                     mime=mime or None,
-                    original_name=upload.filename or None,
+                    original_name=upload_name or None,
                     stored_path=stored_path,
                     size=len(data),
                 )
