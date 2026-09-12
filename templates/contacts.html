@@ -1981,14 +1981,14 @@
     .sticker-peek-inner {
         width: min(320px, 72vw); height: min(320px, 46vh);
         display: flex; align-items: center; justify-content: center;
-        border-radius: 24px; background: rgba(15,23,42,.82);
-        box-shadow: 0 24px 90px rgba(0,0,0,.45);
-        padding: 18px;
+        border-radius: 24px; background: transparent;
+        padding: 0;
     }
     .sticker-peek-inner img,
     .sticker-peek-inner video {
         display: block; max-width: 100%; max-height: 100%;
         object-fit: contain;
+        filter: drop-shadow(0 18px 42px rgba(0,0,0,.55));
     }
     .sticker-peek-inner span {
         font-size: 92px; line-height: 1;
@@ -8062,30 +8062,115 @@
     let stickerPeekTimer = null;
     let stickerPeekPointer = null;
     let stickerPeekOpen = false;
+    let stickerPeekKey = '';
+    const stickerPeekMediaCache = new Map();
 
-    function stickerPreviewFromItem(item) {
-        if (!item) return '';
+    function stickerPreviewInfo(item) {
+        if (!item) return null;
         const video = item.querySelector('video');
         if (video && video.getAttribute('src')) {
-            return '<video src="' + escapeHtml(video.getAttribute('src'))
-                + '" autoplay loop muted playsinline></video>';
+            return {
+                type: 'video',
+                src: video.currentSrc || video.getAttribute('src'),
+            };
         }
         const img = item.querySelector('img');
         if (img && img.getAttribute('src')) {
-            return '<img src="' + escapeHtml(img.getAttribute('src'))
-                + '" alt="">';
+            return {
+                type: 'image',
+                src: img.currentSrc || img.getAttribute('src'),
+                alt: img.getAttribute('alt') || '',
+            };
         }
         const text = (item.textContent || '✦').trim() || '✦';
-        return '<span>' + escapeHtml(text.slice(0, 2)) + '</span>';
+        return {type: 'text', text: text.slice(0, 2)};
+    }
+
+    function stickerPreviewKey(info) {
+        if (!info) return '';
+        return info.type + ':' + (info.src || info.text || '');
+    }
+
+    function preloadStickerPreview(item) {
+        const info = stickerPreviewInfo(item);
+        if (!info || !info.src || stickerPeekMediaCache.has(info.src)) {
+            return;
+        }
+        if (info.type === 'image') {
+            const img = new Image();
+            img.decoding = 'async';
+            img.loading = 'eager';
+            img.src = info.src;
+            stickerPeekMediaCache.set(info.src, img);
+            if (img.decode) img.decode().catch(() => {});
+            return;
+        }
+        if (info.type === 'video') {
+            const video = document.createElement('video');
+            video.src = info.src;
+            video.preload = 'auto';
+            video.muted = true;
+            video.loop = true;
+            video.playsInline = true;
+            stickerPeekMediaCache.set(info.src, video);
+            try { video.load(); } catch (_) {}
+        }
+    }
+
+    function warmStickerPreviews(root, limit) {
+        if (!root) return;
+        const items = Array.from(root.querySelectorAll(
+            '.sticker-picker-item, .spm-item')).slice(0, limit || 36);
+        const run = () => items.forEach(preloadStickerPreview);
+        if ('requestIdleCallback' in window) {
+            window.requestIdleCallback(run, {timeout: 800});
+        } else {
+            setTimeout(run, 0);
+        }
+    }
+
+    function stickerPreviewNode(item, info) {
+        if (!info) return null;
+        if (info.type === 'image') {
+            const img = document.createElement('img');
+            img.src = info.src;
+            img.alt = info.alt || '';
+            img.decoding = 'async';
+            img.loading = 'eager';
+            return img;
+        }
+        if (info.type === 'video') {
+            const video = document.createElement('video');
+            video.src = info.src;
+            video.autoplay = true;
+            video.loop = true;
+            video.muted = true;
+            video.playsInline = true;
+            video.preload = 'auto';
+            return video;
+        }
+        const span = document.createElement('span');
+        span.textContent = info.text || '✦';
+        return span;
     }
 
     function showStickerPeek(item) {
         if (!stickerPeek || !stickerPeekInner || !item) return;
-        const html = stickerPreviewFromItem(item);
-        if (!html) return;
-        stickerPeekInner.innerHTML = html;
+        preloadStickerPreview(item);
+        const info = stickerPreviewInfo(item);
+        const key = stickerPreviewKey(info);
+        if (!key) return;
+        if (stickerPeekOpen && stickerPeekKey === key) return;
+        const node = stickerPreviewNode(item, info);
+        if (!node) return;
+        stickerPeekInner.replaceChildren(node);
+        if (node.tagName === 'VIDEO') {
+            const p = node.play();
+            if (p && p.catch) p.catch(() => {});
+        }
         stickerPeek.hidden = false;
         stickerPeek.setAttribute('aria-hidden', 'false');
+        stickerPeekKey = key;
         stickerPeekOpen = true;
         window.__skillwoodStickerPeekSuppressClick = true;
     }
@@ -8094,7 +8179,8 @@
         if (!stickerPeek || !stickerPeekInner) return;
         stickerPeek.hidden = true;
         stickerPeek.setAttribute('aria-hidden', 'true');
-        stickerPeekInner.innerHTML = '';
+        stickerPeekInner.replaceChildren();
+        stickerPeekKey = '';
         stickerPeekOpen = false;
     }
 
@@ -8115,10 +8201,11 @@
             && e.target.closest('.sticker-picker-item, .spm-item');
         if (!item || (e.button != null && e.button !== 0)) return;
         stickerPeekPointer = e.pointerId;
+        preloadStickerPreview(item);
         clearTimeout(stickerPeekTimer);
         stickerPeekTimer = setTimeout(() => {
             showStickerPeek(item);
-        }, 230);
+        }, 120);
     });
 
     document.addEventListener('pointermove', function(e) {
@@ -8141,6 +8228,8 @@
 
     document.addEventListener('pointerup', finishStickerPeek);
     document.addEventListener('pointercancel', finishStickerPeek);
+    window.__skillwoodPreloadStickerPreview = preloadStickerPreview;
+    window.__skillwoodWarmStickerPreviews = warmStickerPreviews;
 
     function renderStickerPackItem(item) {
         const mime = (item.mime || '').toLowerCase();
@@ -8148,13 +8237,13 @@
         const alt = escapeHtml(item.alt || 'стикер');
         if (mime.indexOf('video/') === 0) {
             return '<div class="spm-item"><video src="' + src
-                + '" class="spm-video" loop muted playsinline preload="metadata"></video></div>';
+                + '" class="spm-video" loop muted playsinline preload="auto"></video></div>';
         }
         if (mime === 'application/x-tgsticker') {
             return '<div class="spm-item"><span>✦</span></div>';
         }
         return '<div class="spm-item"><img src="' + src + '" alt="' + alt
-            + '" loading="lazy"></div>';
+            + '" decoding="async" loading="eager"></div>';
     }
 
     function wireStickerPackVideos() {
@@ -8215,6 +8304,9 @@
                 ? items.map(renderStickerPackItem).join('')
                 : '<div class="spm-note">В этом паке нет доступных превью.</div>';
             wireStickerPackVideos();
+            if (window.__skillwoodWarmStickerPreviews) {
+                window.__skillwoodWarmStickerPreviews(stickerPackGrid, 48);
+            }
         } catch (err) {
             stickerPackGrid.innerHTML =
                 '<div class="spm-note">Сеть недоступна.</div>';
@@ -10380,12 +10472,13 @@
         const name = esc(sticker.name || 'стикер');
         if (mime.indexOf('video/') === 0) {
             return '<video src="' + src
-                + '" autoplay loop muted playsinline preload="metadata"></video>';
+                + '" autoplay loop muted playsinline preload="auto"></video>';
         }
         if (mime === 'application/x-tgsticker') {
             return '<span aria-hidden="true">✦</span>';
         }
-        return '<img src="' + src + '" alt="' + name + '" loading="lazy">';
+        return '<img src="' + src + '" alt="' + name
+            + '" decoding="async" loading="eager">';
     }
 
     function renderStickers(picker, stickers) {
@@ -10407,6 +10500,9 @@
                 + stickerPreviewHtml(sticker)
                 + '</button>').join('')
             + '</div>';
+        if (window.__skillwoodWarmStickerPreviews) {
+            window.__skillwoodWarmStickerPreviews(body, 36);
+        }
     }
 
     async function renderPickerTab(picker, tab) {
