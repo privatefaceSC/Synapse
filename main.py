@@ -749,6 +749,262 @@ def _is_admin() -> bool:
     return session.get('user_id') == 1
 
 
+def _fmt_dt(value) -> str:
+    return value.strftime('%d.%m.%Y %H:%M') if value else '—'
+
+
+def _iso_dt(value):
+    return value.isoformat(timespec='seconds') if value else None
+
+
+def _format_bytes(size) -> str:
+    try:
+        size = int(size or 0)
+    except (TypeError, ValueError):
+        size = 0
+    units = ['Б', 'КБ', 'МБ', 'ГБ']
+    value = float(max(size, 0))
+    unit = units[0]
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            break
+        value /= 1024
+    if unit == 'Б' or value.is_integer():
+        return f'{int(value)} {unit}'
+    return f'{value:.1f}'.replace('.', ',') + f' {unit}'
+
+
+def _dir_size(path: str) -> int:
+    total = 0
+    if not os.path.isdir(path):
+        return total
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                continue
+    return total
+
+
+def _endpoint_host(endpoint: str) -> str:
+    from urllib.parse import urlparse
+
+    host = urlparse(endpoint or '').netloc
+    return host or 'push-сервис'
+
+
+def _telegram_admin_status(user_id: int) -> dict:
+    try:
+        from data import telegram_bridge
+        status = telegram_bridge.status(user_id)
+    except Exception as exc:  # noqa: BLE001
+        status = {'available': False, 'configured': False, 'authorized': False,
+                  'needs_password': False, 'phone': None, 'error': str(exc)}
+
+    configured = bool(status.get('configured'))
+    authorized = bool(status.get('authorized'))
+    if not configured:
+        label = 'ключи API не настроены'
+        badge = 'secondary'
+    elif authorized:
+        label = 'подключён'
+        badge = 'success'
+    elif status.get('needs_password'):
+        label = 'нужен пароль 2FA'
+        badge = 'warning'
+    else:
+        label = 'не подключён'
+        badge = 'warning'
+
+    return {
+        'available': bool(status.get('available')),
+        'configured': configured,
+        'authorized': authorized,
+        'needs_password': bool(status.get('needs_password')),
+        'phone': status.get('phone'),
+        'error': status.get('error'),
+        'ghost_mode': bool(status.get('ghost_mode')),
+        'skip_muted': bool(status.get('skip_muted')),
+        'skip_archived': bool(status.get('skip_archived')),
+        'label': label,
+        'badge': badge,
+    }
+
+
+def _user_media_bytes(db, user_id: int) -> int:
+    from sqlalchemy import func, or_
+    from data.attachments import Attachment
+    from data.direct import DirectAttachment, DirectMessage
+
+    external = (db.query(func.coalesce(func.sum(Attachment.size), 0))
+                .filter(Attachment.user_id == user_id)
+                .scalar() or 0)
+    direct = (db.query(func.coalesce(func.sum(DirectAttachment.size), 0))
+              .join(DirectMessage,
+                    DirectAttachment.message_id == DirectMessage.id)
+              .filter(or_(DirectMessage.sender_id == user_id,
+                          DirectMessage.recipient_id == user_id))
+              .scalar() or 0)
+    files = _dir_size(os.path.join(_media_root(), str(user_id)))
+    return max(int(external or 0) + int(direct or 0), files)
+
+
+def _admin_user_summary(db, user) -> dict:
+    from sqlalchemy import func, or_
+    from data.contacts import Contact, MessengerHandle
+    from data.devices import Device
+    from data.direct import DirectMessage
+    from data.webpush_subscriptions import WebPushSubscription
+
+    _user_avatar_for(user)
+
+    contacts = (db.query(Contact)
+                .filter(Contact.user_id == user.id)
+                .order_by(Contact.display_name.asc())
+                .all())
+    handles = (db.query(MessengerHandle)
+               .filter(MessengerHandle.user_id == user.id)
+               .all())
+
+    msg_rows = (db.query(Messages.messenger_name, func.count(Messages.id))
+                .filter(Messages.user_id == user.id)
+                .group_by(Messages.messenger_name)
+                .all())
+    direct_rows = (db.query(DirectMessage.sender_id, DirectMessage.recipient_id)
+                   .filter(or_(DirectMessage.sender_id == user.id,
+                               DirectMessage.recipient_id == user.id))
+                   .all())
+    direct_partner_ids = {
+        row.recipient_id if row.sender_id == user.id else row.sender_id
+        for row in direct_rows
+    }
+    direct_messages = len(direct_rows)
+
+    messenger_stats = {}
+    for handle in handles:
+        name = handle.messenger_name or 'Неизвестно'
+        item = messenger_stats.setdefault(
+            name, {'handles': 0, 'messages': 0, 'groups': 0})
+        item['handles'] += 1
+        if bool(handle.is_group) or handle.tg_chat_type in ('group', 'channel'):
+            item['groups'] += 1
+    for name, count in msg_rows:
+        item = messenger_stats.setdefault(
+            name or 'Неизвестно', {'handles': 0, 'messages': 0, 'groups': 0})
+        item['messages'] = int(count or 0)
+    if direct_messages or direct_partner_ids:
+        synapse = messenger_stats.setdefault(
+            SYNAPSE_MESSENGER, {'handles': 0, 'messages': 0, 'groups': 0})
+        synapse['handles'] = max(synapse['handles'], len(direct_partner_ids))
+        synapse['messages'] = max(synapse['messages'], direct_messages)
+
+    msg_total = sum(row['messages'] for row in messenger_stats.values())
+
+    devices = (db.query(Device)
+               .filter(Device.user_id == user.id)
+               .order_by(Device.last_seen_at.desc().nullslast(),
+                         Device.created_at.desc())
+               .all())
+    device_items = [
+        {
+            'id': d.id,
+            'name': d.name,
+            'created_at': _fmt_dt(d.created_at),
+            'created_at_iso': _iso_dt(d.created_at),
+            'last_seen_at': _fmt_dt(d.last_seen_at),
+            'last_seen_at_iso': _iso_dt(d.last_seen_at),
+            'last_seen_ip': d.last_seen_ip or '—',
+        }
+        for d in devices
+    ]
+
+    push_subs = (db.query(WebPushSubscription)
+                 .filter(WebPushSubscription.user_id == user.id)
+                 .order_by(WebPushSubscription.updated_at.desc().nullslast(),
+                           WebPushSubscription.id.desc())
+                 .all())
+    push_items = [
+        {
+            'id': sub.id,
+            'enabled': bool(sub.enabled),
+            'endpoint': _endpoint_host(sub.endpoint),
+            'origin': sub.origin or '—',
+            'user_agent': sub.user_agent or '—',
+            'created_at': _fmt_dt(sub.created_at),
+            'created_at_iso': _iso_dt(sub.created_at),
+            'updated_at': _fmt_dt(sub.updated_at),
+            'updated_at_iso': _iso_dt(sub.updated_at),
+            'failed_at': _fmt_dt(sub.failed_at),
+            'failed_at_iso': _iso_dt(sub.failed_at),
+            'last_error': sub.last_error,
+        }
+        for sub in push_subs
+    ]
+    last_push_error = next(
+        (sub.last_error for sub in push_subs if sub.last_error), None)
+
+    media_bytes = _user_media_bytes(db, user.id)
+    counts = {
+        'contacts': len(contacts),
+        'messages': int(msg_total),
+        'archived': sum(1 for c in contacts if bool(c.archived)),
+        'muted': sum(1 for c in contacts if bool(c.muted)),
+        'pinned_chats': sum(1 for c in contacts if bool(c.pinned_at)),
+        'blocked': sum(1 for c in contacts if bool(c.blocked_at)),
+        'pinned_messages': (db.query(func.count(Messages.id))
+                            .filter(Messages.user_id == user.id,
+                                    Messages.pinned_at.isnot(None))
+                            .scalar() or 0),
+    }
+
+    return {
+        'user': {
+            'id': user.id,
+            'name': user.name or '',
+            'surname': user.surname or '',
+            'display_name': (((user.name or '') + ' '
+                              + (user.surname or '')).strip()
+                             or user.username or user.email or f'user{user.id}'),
+            'email': user.email or '—',
+            'username': user.username or '',
+            'preferred_lang': user.preferred_lang or 'ru',
+            'created_at': _fmt_dt(getattr(user, 'created_at', None)),
+            'created_at_iso': _iso_dt(getattr(user, 'created_at', None)),
+            'modified_date': _fmt_dt(user.modified_date),
+            'modified_date_iso': _iso_dt(user.modified_date),
+            'connect_code': user.connect_code or '—',
+        },
+        'avatar': {
+            'has_avatar': bool(user.has_avatar),
+            'initial': user.initial,
+            'color': user.avatar_color,
+        },
+        'telegram': _telegram_admin_status(user.id),
+        'devices': {
+            'total': len(devices),
+            'connected': bool(devices),
+            'last_seen_at': device_items[0]['last_seen_at'] if device_items else '—',
+            'last_seen_at_iso': (device_items[0]['last_seen_at_iso']
+                                 if device_items else None),
+            'last_seen_ip': device_items[0]['last_seen_ip'] if device_items else '—',
+            'items': device_items,
+        },
+        'webpush': {
+            'total': len(push_subs),
+            'active': sum(1 for sub in push_subs if bool(sub.enabled)),
+            'last_error': last_push_error,
+            'items': push_items,
+        },
+        'counts': counts,
+        'messengers': dict(sorted(messenger_stats.items())),
+        'media': {
+            'bytes': media_bytes,
+            'label': _format_bytes(media_bytes),
+        },
+    }
+
+
 # --- Внутренний мессенджер ----------------------------------------------
 
 _USERNAME_RE = re.compile(r'^[a-z0-9_]{3,32}$')
@@ -1445,9 +1701,68 @@ def register_routes(app: Flask) -> None:
             abort(403)
         db = get_db()
         users = db.query(User).order_by(User.id.asc()).all()
-        for u in users:
-            _user_avatar_for(u)
-        return render_template('users.html', users=users)
+        summaries = [_admin_user_summary(db, u) for u in users]
+        return render_template('users.html', users=summaries)
+
+    @app.route('/users/<int:user_id>/diagnostics.json')
+    def user_diagnostics(user_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        if not _is_admin():
+            abort(403)
+        db = get_db()
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            abort(404)
+        return jsonify(_admin_user_summary(db, user))
+
+    @app.route('/users/<int:user_id>/reset-code', methods=['POST'])
+    def admin_reset_connect_code(user_id):
+        if not session.get('user_id'):
+            return redirect('/login')
+        if not _is_admin():
+            abort(403)
+        db = get_db()
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            abort(404)
+        old_code = user.connect_code
+        user.connect_code = _generate_unique_code(db, exclude=old_code)
+        user.modified_date = datetime.now()
+        db.commit()
+        return redirect('/users')
+
+    @app.route('/users/devices/<int:device_id>/delete', methods=['POST'])
+    def admin_device_delete(device_id):
+        if not session.get('user_id'):
+            return redirect('/login')
+        if not _is_admin():
+            abort(403)
+        from data.devices import Device
+        db = get_db()
+        device = db.query(Device).filter(Device.id == device_id).first()
+        if not device:
+            abort(404)
+        db.delete(device)
+        db.commit()
+        return redirect('/users')
+
+    @app.route('/users/webpush/<int:subscription_id>/delete', methods=['POST'])
+    def admin_webpush_delete(subscription_id):
+        if not session.get('user_id'):
+            return redirect('/login')
+        if not _is_admin():
+            abort(403)
+        from data.webpush_subscriptions import WebPushSubscription
+        db = get_db()
+        sub = (db.query(WebPushSubscription)
+               .filter(WebPushSubscription.id == subscription_id)
+               .first())
+        if not sub:
+            abort(404)
+        db.delete(sub)
+        db.commit()
+        return redirect('/users')
 
     @app.route('/users/<int:user_id>/avatar')
     def user_avatar(user_id):
@@ -1634,7 +1949,7 @@ def register_routes(app: Flask) -> None:
                 preferred_lang=preferred_lang,
                 hashed_password=generate_password_hash(password),
             )
-            user.connect_code = _generate_code()
+            user.connect_code = _generate_unique_code(db)
             db.add(user)
             db.commit()
             session['user_id'] = user.id
@@ -4629,6 +4944,17 @@ def register_routes(app: Flask) -> None:
 
 def _generate_code() -> str:
     return ''.join(random.choices(string.digits, k=8))
+
+
+def _generate_unique_code(db, exclude=None) -> str:
+    for _ in range(100):
+        code = _generate_code()
+        if code == exclude:
+            continue
+        exists = db.query(User.id).filter(User.connect_code == code).first()
+        if not exists:
+            return code
+    raise RuntimeError('Не удалось сгенерировать уникальный код подключения')
 
 
 if __name__ == '__main__':

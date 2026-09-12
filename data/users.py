@@ -15,6 +15,8 @@ class User(SqlAlchemyBase):
     sex = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     email = sqlalchemy.Column(sqlalchemy.String, unique=True)
     hashed_password = sqlalchemy.Column(sqlalchemy.String)
+    created_at = sqlalchemy.Column(sqlalchemy.DateTime,
+                                   default=datetime.datetime.now, nullable=True)
     modified_date = sqlalchemy.Column(sqlalchemy.DateTime, default=datetime.datetime.now)
     connect_code = sqlalchemy.Column(sqlalchemy.String, nullable=True, unique=True)
     # Публичный User ID (как @username в Telegram) — по нему пользователя

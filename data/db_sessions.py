@@ -65,6 +65,7 @@ def _apply_light_migrations(engine):
                      ("archived", "BOOLEAN"),
                      ("blocked_at", "DATETIME")],
         "users": [("username", "VARCHAR"),
+                  ("created_at", "DATETIME"),
                   ("preferred_lang", "VARCHAR")],
         "chat_topics": [("topic_id", "BIGINT")],
         "web_push_subscriptions": [("origin", "VARCHAR")],
@@ -83,6 +84,9 @@ def _apply_light_migrations(engine):
         conn.exec_driver_sql(
             "UPDATE users SET username = 'user' || id "
             "WHERE username IS NULL OR username = ''")
+        conn.exec_driver_sql(
+            "UPDATE users SET created_at = modified_date "
+            "WHERE created_at IS NULL")
         conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username "
             "ON users(username)")
