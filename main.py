@@ -819,7 +819,10 @@ def _message_attachment_rows(db, message_id: int):
 def _attach_message_file(db, user_id: int, message_id: int, kind: str,
                          mime: str | None, original_name: str | None,
                          stored_path: str, size: int | None,
-                         dedup_key: str | None = None):
+                         dedup_key: str | None = None,
+                         sticker_pack_key: str | None = None,
+                         sticker_pack_title: str | None = None,
+                         sticker_item_key: str | None = None):
     from data.attachments import Attachment
 
     existing = (db.query(Attachment)
@@ -828,6 +831,11 @@ def _attach_message_file(db, user_id: int, message_id: int, kind: str,
                         Attachment.stored_path == stored_path)
                 .first())
     if existing is not None:
+        if sticker_pack_key and not existing.sticker_pack_key:
+            existing.sticker_pack_key = sticker_pack_key
+            existing.sticker_pack_title = sticker_pack_title
+            existing.sticker_item_key = sticker_item_key
+            db.flush()
         return existing
     att = Attachment(
         user_id=user_id,
@@ -838,6 +846,9 @@ def _attach_message_file(db, user_id: int, message_id: int, kind: str,
         stored_path=stored_path,
         size=size,
         dedup_key=dedup_key,
+        sticker_pack_key=sticker_pack_key,
+        sticker_pack_title=sticker_pack_title,
+        sticker_item_key=sticker_item_key,
     )
     db.add(att)
     db.flush()
@@ -1334,7 +1345,9 @@ def _dm_message_dict(m, me_id, atts) -> dict:
         'outgoing': m.sender_id == me_id,
         'attachments': [{'id': a.id, 'kind': a.kind,
                          'mime': a.mime,
-                         'name': a.original_name} for a in atts.get(m.id, [])],
+                         'name': a.original_name,
+                         'has_sticker_pack': bool(a.sticker_pack_key)}
+                        for a in atts.get(m.id, [])],
     }
 
 
@@ -1426,12 +1439,18 @@ def _mirror_direct_attachments_to_message(db, direct_msg, owner_id: int,
     for att in atts:
         _attach_message_file(
             db, owner_id, mirror_msg.id, att.kind, att.mime,
-            att.original_name, att.stored_path, att.size)
+            att.original_name, att.stored_path, att.size,
+            sticker_pack_key=att.sticker_pack_key,
+            sticker_pack_title=att.sticker_pack_title,
+            sticker_item_key=att.sticker_item_key)
 
 
 def _add_direct_attachment_ref(db, direct_message_id: int, kind: str,
                                mime: str | None, original_name: str | None,
-                               stored_path: str, size: int | None):
+                               stored_path: str, size: int | None,
+                               sticker_pack_key: str | None = None,
+                               sticker_pack_title: str | None = None,
+                               sticker_item_key: str | None = None):
     from data.direct import DirectAttachment
 
     att = DirectAttachment(
@@ -1441,6 +1460,9 @@ def _add_direct_attachment_ref(db, direct_message_id: int, kind: str,
         original_name=original_name or None,
         stored_path=stored_path,
         size=size,
+        sticker_pack_key=sticker_pack_key,
+        sticker_pack_title=sticker_pack_title,
+        sticker_item_key=sticker_item_key,
     )
     db.add(att)
     db.flush()
@@ -1472,7 +1494,10 @@ def _copy_message_attachments_to_direct(db, source_msg, direct_message_id: int):
     for att in _message_attachment_rows(db, source_msg.id):
         copied.append(_add_direct_attachment_ref(
             db, direct_message_id, att.kind, att.mime, att.original_name,
-            att.stored_path, att.size))
+            att.stored_path, att.size,
+            sticker_pack_key=att.sticker_pack_key,
+            sticker_pack_title=att.sticker_pack_title,
+            sticker_item_key=att.sticker_item_key))
     return copied
 
 
@@ -1568,7 +1593,10 @@ def _telegram_send_fallback_copy(db, user_id: int, tg_handle, source_msg,
         db.flush()
         _attach_message_file(
             db, user_id, media_msg.id, att.kind, att.mime,
-            att.original_name, att.stored_path, att.size)
+            att.original_name, att.stored_path, att.size,
+            sticker_pack_key=att.sticker_pack_key,
+            sticker_pack_title=att.sticker_pack_title,
+            sticker_item_key=att.sticker_item_key)
         sent_media.append(sent_id)
     return local_msg, sent_media
 
@@ -1580,9 +1608,174 @@ def _saved_sticker_dict(sticker) -> dict:
         'mime': sticker.mime,
         'name': sticker.original_name,
         'url': f'/stickers/{sticker.id}',
+        'pack_key': sticker.pack_key,
+        'pack_title': sticker.pack_title,
         'created_at': (sticker.created_at.isoformat()
                        if sticker.created_at else None),
     }
+
+
+def _safe_sticker_ext(mime: str | None) -> str:
+    mime = (mime or '').lower()
+    return {
+        'image/webp': '.webp',
+        'image/png': '.png',
+        'image/jpeg': '.jpg',
+        'image/gif': '.gif',
+        'video/webm': '.webm',
+        'application/x-tgsticker': '.tgs',
+    }.get(mime, '.bin')
+
+
+def _decode_sticker_data_url(data_url: str):
+    raw = (data_url or '').strip()
+    if not raw.startswith('data:') or ';base64,' not in raw:
+        return None, None
+    head, encoded = raw.split(',', 1)
+    mime = head[5:].split(';', 1)[0] or 'application/octet-stream'
+    try:
+        return mime, base64.b64decode(encoded)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _save_sticker_bytes(db, user_id: int, data: bytes,
+                        mime: str | None, name: str | None,
+                        pack_key: str | None = None,
+                        pack_title: str | None = None,
+                        item_key: str | None = None,
+                        source_attachment_id: int | None = None):
+    from data.stickers import SavedSticker
+
+    if not data:
+        return None
+    if not item_key:
+        item_key = hashlib.sha256(data).hexdigest()
+    if pack_key:
+        existing = (db.query(SavedSticker)
+                    .filter(SavedSticker.user_id == user_id,
+                            SavedSticker.pack_key == pack_key,
+                            SavedSticker.item_key == item_key)
+                    .first())
+        if existing is not None:
+            return existing
+    stored_path = _store_media_bytes(user_id, data, subdir='stickers')
+    sticker = SavedSticker(
+        user_id=user_id,
+        source_attachment_id=source_attachment_id,
+        kind='sticker',
+        mime=mime,
+        original_name=name or ('sticker' + _safe_sticker_ext(mime)),
+        stored_path=stored_path,
+        size=len(data),
+        pack_key=pack_key,
+        pack_title=pack_title,
+        item_key=item_key,
+    )
+    db.add(sticker)
+    db.flush()
+    return sticker
+
+
+def _save_sticker_pack_payload(db, user_id: int, payload: dict,
+                               source_attachment=None):
+    stickers = []
+    items = payload.get('stickers') or []
+    title = payload.get('title') or 'Стикерпак'
+    pack_key = payload.get('pack_key')
+    if not pack_key:
+        if source_attachment is not None:
+            pack_key = f'attachment-pack:{source_attachment.id}'
+        else:
+            pack_key = 'local-pack:' + hashlib.sha256(
+                (title + ':' + str(len(items))).encode('utf-8')
+            ).hexdigest()[:24]
+    for idx, item in enumerate(items, 1):
+        mime, data = _decode_sticker_data_url(item.get('data_url') or '')
+        if not data:
+            continue
+        mime = item.get('mime') or mime
+        item_key = str(item.get('item_key') or item.get('id')
+                       or hashlib.sha256(data).hexdigest())
+        name = (item.get('name') or item.get('file_name')
+                or f'sticker-{idx}{_safe_sticker_ext(mime)}')
+        sticker = _save_sticker_bytes(
+            db, user_id, data, mime, name,
+            pack_key=pack_key, pack_title=title, item_key=item_key,
+            source_attachment_id=(source_attachment.id
+                                  if source_attachment is not None else None))
+        if sticker is not None:
+            stickers.append(sticker)
+    return stickers, pack_key, title
+
+
+def _copy_sticker_pack_to_user(db, user_id: int, pack_key: str,
+                               source_attachment=None):
+    from data.stickers import SavedSticker
+
+    source = (db.query(SavedSticker)
+              .filter(SavedSticker.pack_key == pack_key)
+              .order_by(SavedSticker.id.asc())
+              .all())
+    copied = []
+    for s in source:
+        existing = (db.query(SavedSticker)
+                    .filter(SavedSticker.user_id == user_id,
+                            SavedSticker.pack_key == s.pack_key,
+                            SavedSticker.item_key == s.item_key)
+                    .first())
+        if existing is not None:
+            copied.append(existing)
+            continue
+        clone = SavedSticker(
+            user_id=user_id,
+            source_attachment_id=(source_attachment.id
+                                  if source_attachment is not None else None),
+            kind='sticker',
+            mime=s.mime,
+            original_name=s.original_name,
+            stored_path=s.stored_path,
+            size=s.size,
+            pack_key=s.pack_key,
+            pack_title=s.pack_title,
+            item_key=s.item_key,
+        )
+        db.add(clone)
+        db.flush()
+        copied.append(clone)
+    return copied
+
+
+def _local_sticker_pack_payload(db, user_id: int, pack_key: str):
+    from data.stickers import SavedSticker
+
+    rows = (db.query(SavedSticker)
+            .filter(SavedSticker.user_id == user_id,
+                    SavedSticker.pack_key == pack_key)
+            .order_by(SavedSticker.id.asc())
+            .all())
+    if not rows:
+        rows = (db.query(SavedSticker)
+                .filter(SavedSticker.pack_key == pack_key)
+                .order_by(SavedSticker.id.asc())
+                .all())
+    items = []
+    for sticker in rows:
+        raw = _read_media_bytes(sticker.stored_path)
+        if not raw:
+            continue
+        mime = sticker.mime or 'application/octet-stream'
+        items.append({
+            'id': sticker.item_key or sticker.id,
+            'mime': mime,
+            'alt': '',
+            'name': sticker.original_name,
+            'data_url': 'data:{};base64,{}'.format(
+                mime, base64.b64encode(raw).decode('ascii')),
+        })
+    title = rows[0].pack_title if rows else 'Стикерпак'
+    return {'ok': True, 'title': title or 'Стикерпак',
+            'pack_key': pack_key, 'count': len(items), 'stickers': items}
 
 
 def _save_sticker_from_attachment(db, user_id: int, attachment):
@@ -1593,6 +1786,11 @@ def _save_sticker_from_attachment(db, user_id: int, attachment):
                         SavedSticker.stored_path == attachment.stored_path)
                 .first())
     if existing is not None:
+        if attachment.sticker_pack_key and not existing.pack_key:
+            existing.pack_key = attachment.sticker_pack_key
+            existing.pack_title = attachment.sticker_pack_title
+            existing.item_key = attachment.sticker_item_key
+            db.flush()
         return existing
     sticker = SavedSticker(
         user_id=user_id,
@@ -1602,6 +1800,9 @@ def _save_sticker_from_attachment(db, user_id: int, attachment):
         original_name=attachment.original_name,
         stored_path=attachment.stored_path,
         size=attachment.size,
+        pack_key=attachment.sticker_pack_key,
+        pack_title=attachment.sticker_pack_title,
+        item_key=attachment.sticker_item_key,
     )
     db.add(sticker)
     db.flush()
@@ -2856,7 +3057,11 @@ def register_routes(app: Flask) -> None:
                  'reactions': getattr(m, 'reactions', []),
                  'attachments': [{'id': a.id, 'kind': a.kind,
                                   'mime': a.mime,
-                                  'name': a.original_name} for a in m.media]}
+                                  'name': a.original_name,
+                                  'has_sticker_pack': (
+                                      bool(a.sticker_pack_key)
+                                      or m.messenger_name == 'Telegram')}
+                                 for a in m.media]}
                 for m in msgs
             ],
             # Закреплённые сообщения чата — UI рисует «📌»-плашку сверху
@@ -3067,7 +3272,8 @@ def register_routes(app: Flask) -> None:
                             'forwarded': forward_source is not None,
                             'attachments': [
                                 {'id': a.id, 'kind': a.kind, 'mime': a.mime,
-                                 'name': a.original_name}
+                                 'name': a.original_name,
+                                 'has_sticker_pack': bool(a.sticker_pack_key)}
                                 for a in local_atts
                             ]})
         tg_handle, notif_handle = _reply_channel(m_handles)
@@ -3387,7 +3593,10 @@ def register_routes(app: Flask) -> None:
             db.flush()
             _add_direct_attachment_ref(
                 db, direct_msg.id, 'sticker', sticker.mime,
-                sticker.original_name, sticker.stored_path, sticker.size)
+                sticker.original_name, sticker.stored_path, sticker.size,
+                sticker_pack_key=sticker.pack_key,
+                sticker_pack_title=sticker.pack_title,
+                sticker_item_key=sticker.item_key)
             me = db.get(User, user_id)
             partner = db.get(User, partner_id)
             users_by_id = {user_id: me, partner_id: partner}
@@ -3410,7 +3619,8 @@ def register_routes(app: Flask) -> None:
                 'messenger_name': SYNAPSE_MESSENGER,
                 'attachments': [
                     {'id': a.id, 'kind': a.kind, 'mime': a.mime,
-                     'name': a.original_name}
+                     'name': a.original_name,
+                     'has_sticker_pack': bool(a.sticker_pack_key)}
                     for a in local_atts
                 ],
             })
@@ -3443,7 +3653,10 @@ def register_routes(app: Flask) -> None:
         db.flush()
         att = _attach_message_file(
             db, user_id, msg.id, 'sticker', sticker.mime,
-            sticker.original_name, sticker.stored_path, sticker.size)
+            sticker.original_name, sticker.stored_path, sticker.size,
+            sticker_pack_key=sticker.pack_key,
+            sticker_pack_title=sticker.pack_title,
+            sticker_item_key=sticker.item_key)
         sticker.last_used_at = now
         db.commit()
         return jsonify({
@@ -3455,7 +3668,8 @@ def register_routes(app: Flask) -> None:
             'text_html': None,
             'messenger_name': 'Telegram',
             'attachments': [{'id': att.id, 'kind': att.kind,
-                             'mime': att.mime, 'name': att.original_name}],
+                             'mime': att.mime, 'name': att.original_name,
+                             'has_sticker_pack': bool(att.sticker_pack_key)}],
         })
 
     @app.route('/contacts/<int:contact_id>/avatars.json')
@@ -5527,6 +5741,74 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'sticker': _saved_sticker_dict(sticker)})
 
+    @app.route('/attachments/<int:attachment_id>/save-sticker-pack',
+               methods=['POST'])
+    def attachment_save_local_sticker_pack(attachment_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.attachments import Attachment
+        from data.contacts import MessengerHandle
+        from data import telegram_bridge
+
+        db = get_db()
+        user_id = session['user_id']
+        att = (db.query(Attachment)
+               .filter(Attachment.id == attachment_id,
+                       Attachment.user_id == user_id).first())
+        if att is None:
+            return jsonify({'error': 'not_found'}), 404
+        if att.kind != 'sticker':
+            return jsonify({'error': 'not_sticker'}), 400
+
+        saved = []
+        pack_key = att.sticker_pack_key
+        pack_title = att.sticker_pack_title or 'Стикерпак'
+        if pack_key:
+            saved = _copy_sticker_pack_to_user(
+                db, user_id, pack_key, source_attachment=att)
+            if not saved:
+                single = _save_sticker_from_attachment(db, user_id, att)
+                saved = [single] if single is not None else []
+            db.commit()
+            return jsonify({
+                'ok': True,
+                'mode': 'pack',
+                'pack_key': pack_key,
+                'title': pack_title,
+                'count': len(saved),
+                'stickers': [_saved_sticker_dict(s) for s in saved],
+            })
+
+        msg = db.get(Messages, att.message_id)
+        if msg is None or msg.user_id != user_id or not msg.tg_message_id:
+            return jsonify({'error': 'not_telegram_sticker'}), 400
+        handle = db.get(MessengerHandle, msg.handle_id)
+        if (handle is None or handle.user_id != user_id
+                or handle.messenger_name != 'Telegram'
+                or handle.tg_chat_id is None):
+            return jsonify({'error': 'not_telegram_sticker'}), 400
+
+        try:
+            payload = telegram_bridge.sticker_pack_from_message(
+                handle.tg_chat_id, msg.tg_message_id, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'error': 'telegram_unavailable',
+                            'detail': str(exc)}), 502
+        saved, pack_key, pack_title = _save_sticker_pack_payload(
+            db, user_id, payload or {}, source_attachment=att)
+        if pack_key:
+            att.sticker_pack_key = pack_key
+            att.sticker_pack_title = pack_title
+        db.commit()
+        return jsonify({
+            'ok': True,
+            'mode': 'pack',
+            'pack_key': pack_key,
+            'title': pack_title,
+            'count': len(saved),
+            'stickers': [_saved_sticker_dict(s) for s in saved],
+        })
+
     @app.route('/stickers.json')
     def stickers_json():
         if not session.get('user_id'):
@@ -5620,8 +5902,9 @@ def register_routes(app: Flask) -> None:
                             'detail': str(exc)}), 502
         return jsonify(result or {'ok': True, 'mode': mode})
 
+    @app.route('/attachments/<int:attachment_id>/sticker-pack')
     @app.route('/attachments/<int:attachment_id>/telegram-sticker-pack')
-    def attachment_telegram_sticker_pack(attachment_id):
+    def attachment_sticker_pack(attachment_id):
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
         from data.attachments import Attachment
@@ -5637,6 +5920,11 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'not_found'}), 404
         if att.kind != 'sticker':
             return jsonify({'error': 'not_sticker'}), 400
+        if att.sticker_pack_key:
+            payload = _local_sticker_pack_payload(
+                db, user_id, att.sticker_pack_key)
+            if payload.get('count'):
+                return jsonify(payload)
 
         msg = db.get(Messages, att.message_id)
         if msg is None or msg.user_id != user_id or not msg.tg_message_id:

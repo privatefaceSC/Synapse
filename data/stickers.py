@@ -22,6 +22,12 @@ class SavedSticker(SqlAlchemyBase):
     original_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     stored_path = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     size = sqlalchemy.Column(sqlalchemy.Integer, nullable=True)
+    # Набор, из которого пришёл стикер. Для Telegram это telegram:<set id>
+    # или telegram:<short name>; для локальных/импортированных наборов -
+    # стабильный локальный ключ.
+    pack_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    pack_title = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    item_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     created_at = sqlalchemy.Column(sqlalchemy.DateTime,
                                    default=datetime.datetime.now,
                                    nullable=False)

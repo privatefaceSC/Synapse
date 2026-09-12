@@ -71,6 +71,15 @@ def _apply_light_migrations(engine):
                   ("is_creator", "BOOLEAN")],
         "chat_topics": [("topic_id", "BIGINT")],
         "web_push_subscriptions": [("origin", "VARCHAR")],
+        "attachments": [("sticker_pack_key", "VARCHAR"),
+                        ("sticker_pack_title", "VARCHAR"),
+                        ("sticker_item_key", "VARCHAR")],
+        "direct_attachments": [("sticker_pack_key", "VARCHAR"),
+                               ("sticker_pack_title", "VARCHAR"),
+                               ("sticker_item_key", "VARCHAR")],
+        "saved_stickers": [("pack_key", "VARCHAR"),
+                           ("pack_title", "VARCHAR"),
+                           ("item_key", "VARCHAR")],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

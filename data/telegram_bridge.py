@@ -14,6 +14,7 @@
 
 import asyncio
 import base64
+import hashlib
 import json
 import os
 import threading
@@ -358,6 +359,33 @@ def _media_placeholder(kind, msg):
     }.get(kind, "📎 Вложение")
 
 
+def _sticker_pack_key_from_set(stickerset, pack_set=None):
+    if stickerset is None and pack_set is None:
+        return None
+    set_id = getattr(pack_set, "id", None) or getattr(stickerset, "id", None)
+    if set_id:
+        return f"telegram:{set_id}"
+    short_name = (getattr(pack_set, "short_name", None)
+                  or getattr(stickerset, "short_name", None))
+    if short_name:
+        return f"telegram:{short_name}"
+    return None
+
+
+def _sticker_pack_meta_from_message(msg, data=None):
+    try:
+        stickerset = _sticker_set_from_message(msg)
+    except Exception:  # noqa: BLE001
+        stickerset = None
+    document = getattr(msg, "document", None)
+    pack_key = _sticker_pack_key_from_set(stickerset)
+    pack_title = getattr(stickerset, "short_name", None) or None
+    item_key = getattr(document, "id", None)
+    if item_key is None and data:
+        item_key = hashlib.sha256(data).hexdigest()
+    return pack_key, pack_title, str(item_key) if item_key is not None else None
+
+
 def _save_attachment(db, user_id, message_id, kind, data, msg):
     """Шифрует и кладёт медиа в media/<user_id>/, создаёт Attachment.
     Хранилище и шифрование — те же, что у Android-клиента."""
@@ -374,6 +402,10 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
         f.write(encrypt_bytes(data))
 
     file_obj = getattr(msg, "file", None)
+    pack_key = pack_title = item_key = None
+    if kind == "sticker":
+        pack_key, pack_title, item_key = _sticker_pack_meta_from_message(
+            msg, data)
     att = Attachment(
         user_id=user_id,
         message_id=message_id,
@@ -383,6 +415,9 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
         stored_path=stored_path,
         size=len(data),
         dedup_key=None,
+        sticker_pack_key=pack_key,
+        sticker_pack_title=pack_title,
+        sticker_item_key=item_key,
     )
     db.add(att)
     db.commit()
@@ -2493,7 +2528,9 @@ async def _sticker_pack_from_message(chat_id, message_id, user_id=None):
     from telethon.tl.functions.messages import GetStickerSetRequest
     pack = await client(GetStickerSetRequest(stickerset=stickerset, hash=0))
     docs = list(getattr(pack, "documents", []) or [])
-    title = getattr(getattr(pack, "set", None), "title", None) or "Стикерпак"
+    pack_set = getattr(pack, "set", None)
+    title = getattr(pack_set, "title", None) or "Стикерпак"
+    pack_key = _sticker_pack_key_from_set(stickerset, pack_set)
     items = []
     for doc in docs:
         mime = getattr(doc, "mime_type", None) or "application/octet-stream"
@@ -2504,13 +2541,15 @@ async def _sticker_pack_from_message(chat_id, message_id, user_id=None):
         if not data:
             continue
         items.append({
+            "id": str(getattr(doc, "id", "") or ""),
+            "item_key": str(getattr(doc, "id", "") or ""),
             "mime": mime,
             "alt": alt,
             "data_url": "data:{};base64,{}".format(
                 mime, base64.b64encode(data).decode("ascii")),
         })
     return {"ok": True, "title": title, "count": len(items),
-            "stickers": items}
+            "pack_key": pack_key, "stickers": items}
 
 
 def sticker_pack_from_message(chat_id, message_id, user_id=None):
