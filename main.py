@@ -197,9 +197,11 @@ def _notify_webpush_message(message_id):
         return
     try:
         from data import webpush
-        webpush.notify_message(message_id)
-    except Exception:  # noqa: BLE001
-        pass
+        result = webpush.notify_message(message_id)
+        if result.get('failed') or result.get('disabled'):
+            print(f"Web Push: message={message_id} result={result}")
+    except Exception as exc:  # noqa: BLE001
+        print(f"Web Push: message={message_id} error={exc}")
 
 
 def _message_author_avatar_url(msg):
@@ -4280,12 +4282,58 @@ def register_routes(app: Flask) -> None:
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
 
+    @app.route('/manifest.webmanifest')
+    def web_manifest():
+        resp = jsonify({
+            "id": "/",
+            "name": "Synapse",
+            "short_name": "Synapse",
+            "description": "Единая лента сообщений Synapse",
+            "start_url": "/contacts",
+            "scope": "/",
+            "display": "standalone",
+            "background_color": "#0f1115",
+            "theme_color": "#2563eb",
+            "icons": [
+                {
+                    "src": "/static/synapse-icon.svg",
+                    "sizes": "any",
+                    "type": "image/svg+xml",
+                    "purpose": "any maskable",
+                },
+            ],
+        })
+        resp.mimetype = 'application/manifest+json'
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+
     @app.route('/api/webpush/vapid-public-key')
     def webpush_vapid_public_key():
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
         from data import webpush
         return jsonify({'public_key': webpush.vapid_public_key()})
+
+    @app.route('/api/webpush/status')
+    def webpush_status():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import webpush
+        return jsonify(webpush.subscription_status(get_db(), session['user_id']))
+
+    @app.route('/api/webpush/test', methods=['POST'])
+    def webpush_test():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import webpush
+        db = get_db()
+        result = webpush.notify_test(db, session['user_id'])
+        status = webpush.subscription_status(db, session['user_id'])
+        return jsonify({
+            'ok': result.get('sent', 0) > 0,
+            **result,
+            'status': status,
+        })
 
     @app.route('/api/webpush/subscribe', methods=['POST'])
     def webpush_subscribe():

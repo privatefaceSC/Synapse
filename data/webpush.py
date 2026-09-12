@@ -9,6 +9,7 @@ import base64
 import datetime
 import json
 import os
+from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -141,6 +142,85 @@ def _send_subscription_payload(sub, payload: str):
     )
 
 
+def _endpoint_label(endpoint: str) -> str:
+    host = urlparse(endpoint or "").netloc
+    return host or "push-сервис"
+
+
+def subscription_status(db, user_id: int) -> dict:
+    """Короткая диагностика push-подписок текущего пользователя."""
+    from data.webpush_subscriptions import WebPushSubscription
+
+    subs = (db.query(WebPushSubscription)
+            .filter(WebPushSubscription.user_id == user_id)
+            .order_by(WebPushSubscription.updated_at.desc().nullslast(),
+                      WebPushSubscription.id.desc())
+            .all())
+
+    def iso(value):
+        return value.isoformat(timespec="seconds") if value else None
+
+    return {
+        "subscriptions_total": len(subs),
+        "subscriptions_active": sum(1 for s in subs if bool(s.enabled)),
+        "subscriptions": [
+            {
+                "id": s.id,
+                "enabled": bool(s.enabled),
+                "endpoint": _endpoint_label(s.endpoint),
+                "user_agent": s.user_agent,
+                "created_at": iso(s.created_at),
+                "updated_at": iso(s.updated_at),
+                "failed_at": iso(s.failed_at),
+                "last_error": s.last_error,
+            }
+            for s in subs
+        ],
+    }
+
+
+def _send_payload_to_user(db, user_id: int, payload: dict) -> dict:
+    from data.webpush_subscriptions import WebPushSubscription
+
+    subs = (db.query(WebPushSubscription)
+            .filter(WebPushSubscription.user_id == user_id,
+                    WebPushSubscription.enabled.is_(True))
+            .all())
+    sent = 0
+    failed = 0
+    disabled = 0
+    changed = False
+    data = json.dumps(payload, ensure_ascii=False)
+    now = datetime.datetime.now()
+    for sub in subs:
+        try:
+            _send_subscription_payload(sub, data)
+            sent += 1
+            if sub.last_error or sub.failed_at:
+                sub.last_error = None
+                sub.failed_at = None
+                sub.updated_at = now
+                changed = True
+        except Exception as exc:  # noqa: BLE001
+            failed += 1
+            code = getattr(exc, "status_code", None)
+            sub.last_error = str(exc)[:500]
+            sub.failed_at = now
+            sub.updated_at = now
+            changed = True
+            if code in (404, 410):
+                sub.enabled = False
+                disabled += 1
+    if changed:
+        db.commit()
+    return {
+        "sent": sent,
+        "failed": failed,
+        "disabled": disabled,
+        "active": len(subs),
+    }
+
+
 def _message_payload(db, msg):
     from data.contacts import Contact, MessengerHandle
 
@@ -177,46 +257,35 @@ def notify_message(message_id: int) -> dict:
     """Отправить push по сохранённому входящему сообщению."""
     from data import db_sessions
     from data.users import Messages
-    from data.webpush_subscriptions import WebPushSubscription
 
     db = db_sessions.create_session()
-    sent = 0
-    failed = 0
-    disabled = 0
     try:
         msg = db.query(Messages).filter(Messages.id == message_id).first()
         payload = _message_payload(db, msg)
         if payload is None:
-            return {"sent": 0, "failed": 0, "disabled": 0}
-        subs = (db.query(WebPushSubscription)
-                .filter(WebPushSubscription.user_id == msg.user_id,
-                        WebPushSubscription.enabled.is_(True))
-                .all())
-        data = json.dumps(payload, ensure_ascii=False)
-        for sub in subs:
-            try:
-                _send_subscription_payload(sub, data)
-                sent += 1
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                code = getattr(exc, "status_code", None)
-                sub.last_error = str(exc)[:500]
-                sub.failed_at = datetime.datetime.now()
-                if code in (404, 410):
-                    sub.enabled = False
-                    disabled += 1
-        if failed or disabled:
-            db.commit()
-        return {"sent": sent, "failed": failed, "disabled": disabled}
+            return {"sent": 0, "failed": 0, "disabled": 0, "active": 0}
+        return _send_payload_to_user(db, msg.user_id, payload)
     finally:
         db.close()
+
+
+def notify_test(db, user_id: int) -> dict:
+    """Отправить тестовый push текущему пользователю."""
+    payload = {
+        "title": "Проверка Synapse",
+        "body": "Если это уведомление видно, фоновые push работают.",
+        "tag": "synapse-webpush-test",
+        "url": "/contacts",
+        "contact_id": None,
+        "message_id": None,
+    }
+    return _send_payload_to_user(db, user_id, payload)
 
 
 def notify_direct_message(db, direct_msg, recipient_id: int,
                           sender_name: str | None = None) -> dict:
     """Push для внутреннего Synapse до ленивого зеркалирования в Messages."""
     from data.contacts import Contact, MessengerHandle
-    from data.webpush_subscriptions import WebPushSubscription
 
     handle = (db.query(MessengerHandle)
               .filter(MessengerHandle.user_id == recipient_id,
@@ -237,21 +306,4 @@ def notify_direct_message(db, direct_msg, recipient_id: int,
         "contact_id": contact.id if contact else None,
         "message_id": None,
     }
-    subs = (db.query(WebPushSubscription)
-            .filter(WebPushSubscription.user_id == recipient_id,
-                    WebPushSubscription.enabled.is_(True))
-            .all())
-    sent = 0
-    failed = 0
-    data = json.dumps(payload, ensure_ascii=False)
-    for sub in subs:
-        try:
-            _send_subscription_payload(sub, data)
-            sent += 1
-        except Exception as exc:  # noqa: BLE001
-            failed += 1
-            sub.last_error = str(exc)[:500]
-            sub.failed_at = datetime.datetime.now()
-    if failed:
-        db.commit()
-    return {"sent": sent, "failed": failed, "disabled": 0}
+    return _send_payload_to_user(db, recipient_id, payload)

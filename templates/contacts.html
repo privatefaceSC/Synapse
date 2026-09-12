@@ -235,9 +235,9 @@
         padding: 10px 44px 10px 38px; font-size: 14px; background: #fff;
         outline: none; transition: border-color .15s ease, box-shadow .15s ease;
     }
-    .contact-search.has-new-chat input { padding-right: 84px; }
+    .contact-search.has-new-chat input { padding-right: 124px; }
     .contact-search .new-synapse-chat {
-        position: absolute; right: 44px; top: 50%; transform: translateY(-50%);
+        position: absolute; right: 84px; top: 50%; transform: translateY(-50%);
         border: 1px solid #bfdbfe; background: #eef2ff; color: #1d4ed8;
         width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
         font-size: 22px; line-height: 1; padding: 0;
@@ -250,19 +250,47 @@
         background: #2563eb; border-color: #2563eb; color: #fff;
     }
     .contact-search .enable-notif {
-        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+        position: absolute; right: 44px; top: 50%; transform: translateY(-50%);
         border: 1px solid #bfdbfe; background: #e0edff; color: #1d4ed8;
         width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
         font-size: 15px; line-height: 1; padding: 0;
         display: inline-flex; align-items: center; justify-content: center;
         transition: background .15s ease, border-color .15s ease;
     }
+    .contact-search .push-test {
+        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+        border: 1px solid #cbd5e1; background: #fff; color: #334155;
+        width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
+        font-size: 15px; line-height: 1; padding: 0;
+        display: inline-flex; align-items: center; justify-content: center;
+        transition: background .15s ease, border-color .15s ease, color .15s ease;
+    }
+    .contact-search .push-test:hover { background: #f1f5f9; }
+    .contact-search .push-test.ok {
+        background: #dcfce7; border-color: #86efac; color: #15803d;
+    }
+    .contact-search .push-test.warn {
+        background: #fff7ed; border-color: #fed7aa; color: #c2410c;
+    }
+    .contact-search .push-test:disabled { opacity: .68; cursor: default; }
     .contact-search .enable-notif:hover { background: #c7defe; }
     [data-bs-theme="dark"] .contact-search .enable-notif {
         background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
     }
     [data-bs-theme="dark"] .contact-search .enable-notif:hover {
         background: #233d5e;
+    }
+    [data-bs-theme="dark"] .contact-search .push-test {
+        background: #151922; color: #cbd5e1; border-color: #2f3540;
+    }
+    [data-bs-theme="dark"] .contact-search .push-test:hover {
+        background: #232831;
+    }
+    [data-bs-theme="dark"] .contact-search .push-test.ok {
+        background: #14311f; border-color: #276749; color: #86efac;
+    }
+    [data-bs-theme="dark"] .contact-search .push-test.warn {
+        background: #34210f; border-color: #7c2d12; color: #fdba74;
     }
     [data-bs-theme="dark"] .contact-search .new-synapse-chat {
         background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
@@ -3559,6 +3587,9 @@
                         title="Новый чат Synapse" aria-label="Новый чат Synapse">+</button>
                 <button type="button" id="enable-notif-btn" class="enable-notif"
                         hidden title="Включить уведомления о новых сообщениях">🔔</button>
+                <button type="button" id="push-test-btn" class="push-test"
+                        title="Проверить фоновые уведомления"
+                        aria-label="Проверить фоновые уведомления">✓</button>
                 <div class="search-results" id="search-results" role="listbox"></div>
             </div>
             <div class="messenger-folders" id="messenger-folders"></div>
@@ -4750,13 +4781,101 @@
         }
     }
 
-    // Разрешение на уведомления: явная кнопка справа от поиска (видна, когда
-    // permission==default). На первый клик мышки по странице тоже пробуем
-    // тихо — если браузер ещё не успел показать prompt пользователю.
+    function supportsWebPush() {
+        return ('serviceWorker' in navigator)
+            && ('PushManager' in window)
+            && ('Notification' in window);
+    }
+
+    function isInstalledWebApp() {
+        return (window.matchMedia
+                && window.matchMedia('(display-mode: standalone)').matches)
+            || window.navigator.standalone === true;
+    }
+
+    function webPushProblemText() {
+        if (!('Notification' in window)) {
+            return 'Этот браузер не поддерживает уведомления.';
+        }
+        if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+            if (/iPhone|iPad|iPod/i.test(navigator.userAgent)
+                    && !isInstalledWebApp()) {
+                return 'На iPhone откройте Synapse именно через иконку на рабочем столе, а не как вкладку Safari.';
+            }
+            return 'Этот браузер не поддерживает фоновые Web Push-уведомления.';
+        }
+        if (Notification.permission === 'denied') {
+            return 'Уведомления запрещены в настройках браузера или iOS.';
+        }
+        return '';
+    }
+
+    async function loadWebPushStatus() {
+        try {
+            const r = await fetch('/api/webpush/status', {
+                headers: {'Accept': 'application/json'},
+            });
+            if (!r.ok) return null;
+            return await r.json();
+        } catch (e) {
+            return null;
+        }
+    }
+
+    function firstPushError(status) {
+        const subs = status && Array.isArray(status.subscriptions)
+            ? status.subscriptions : [];
+        for (const sub of subs) {
+            if (sub.last_error) return sub.last_error;
+        }
+        return '';
+    }
+
+    function updatePushTestBtn(status) {
+        if (!pushTestBtn) return;
+        pushTestBtn.disabled = false;
+        pushTestBtn.classList.remove('ok', 'warn');
+        pushTestBtn.textContent = '✓';
+        const problem = webPushProblemText();
+        if (problem) {
+            pushTestBtn.classList.add('warn');
+            pushTestBtn.title = problem;
+            return;
+        }
+        if (Notification.permission !== 'granted') {
+            pushTestBtn.classList.add('warn');
+            pushTestBtn.title = 'Нажмите, чтобы включить и проверить фоновые уведомления';
+            return;
+        }
+        if (status && status.subscriptions_active > 0) {
+            pushTestBtn.classList.add('ok');
+            pushTestBtn.title = 'Push-подписка активна. Нажмите для тестового уведомления';
+            return;
+        }
+        pushTestBtn.classList.add('warn');
+        pushTestBtn.title = 'Push-подписка ещё не создана. Нажмите для проверки';
+    }
+
+    async function refreshWebPushStatus() {
+        const status = await loadWebPushStatus();
+        updatePushTestBtn(status);
+        return status;
+    }
+
+    function pushStatusLine(status) {
+        if (!status) return '';
+        let line = 'Подписок: ' + status.subscriptions_active
+            + ' активных из ' + status.subscriptions_total + '.';
+        const err = firstPushError(status);
+        if (err) line += '\nПоследняя ошибка: ' + err;
+        return line;
+    }
+
+    const pushTestBtn = document.getElementById('push-test-btn');
     const notifBtn = document.getElementById('enable-notif-btn');
     function syncNotifBtn() {
         if (!notifBtn) return;
-        if (!('Notification' in window)) { notifBtn.hidden = true; return; }
+        if (!supportsWebPush()) { notifBtn.hidden = true; return; }
         const perm = Notification.permission;
         notifBtn.hidden = (perm !== 'default');
         if (perm === 'denied') {
@@ -4776,23 +4895,65 @@
             }
             try { await Notification.requestPermission(); } catch (e) {}
             await ensureWebPushSubscription();
+            await refreshWebPushStatus();
             syncNotifBtn();
         });
     }
-    if ('Notification' in window && Notification.permission === 'default') {
-        document.addEventListener('click', function ask() {
-            document.removeEventListener('click', ask);
-            try {
-                Notification.requestPermission().then(async () => {
-                    await ensureWebPushSubscription();
-                    syncNotifBtn();
-                });
+
+    if (pushTestBtn) {
+        pushTestBtn.addEventListener('click', async () => {
+            const problem = webPushProblemText();
+            if (problem) {
+                alert(problem);
+                updatePushTestBtn(await loadWebPushStatus());
+                return;
             }
-            catch (e) {}
-        }, { once: true });
-    } else if ('Notification' in window && Notification.permission === 'granted') {
+            pushTestBtn.disabled = true;
+            pushTestBtn.textContent = '…';
+            try {
+                if (Notification.permission !== 'granted') {
+                    await Notification.requestPermission();
+                }
+                const ready = await ensureWebPushSubscription();
+                if (!ready) {
+                    const status = await refreshWebPushStatus();
+                    alert('Push-подписку создать не получилось.\n'
+                        + pushStatusLine(status));
+                    return;
+                }
+                const r = await fetch('/api/webpush/test', {
+                    method: 'POST',
+                    headers: {'Accept': 'application/json'},
+                });
+                const data = await r.json().catch(() => null);
+                const status = data && data.status ? data.status
+                    : await loadWebPushStatus();
+                if (!r.ok || !data) throw new Error('bad_response');
+                if ((data.sent || 0) > 0) {
+                    pushTestBtn.classList.add('ok');
+                    alert('Тестовое уведомление отправлено. Если iPhone его не показал, проверьте настройки уведомлений Synapse в iOS.');
+                } else {
+                    pushTestBtn.classList.add('warn');
+                    alert('Сервер не отправил push.\n'
+                        + 'Активных подписок: ' + (data.active || 0)
+                        + ', ошибок: ' + (data.failed || 0) + '.\n'
+                        + pushStatusLine(status));
+                }
+                updatePushTestBtn(status);
+            } catch (e) {
+                const status = await refreshWebPushStatus();
+                alert('Не удалось проверить push.\n' + pushStatusLine(status));
+            } finally {
+                pushTestBtn.disabled = false;
+                if (pushTestBtn.textContent === '…') pushTestBtn.textContent = '✓';
+            }
+        });
+    }
+
+    if ('Notification' in window && Notification.permission === 'granted') {
         ensureWebPushSubscription().then(syncNotifBtn).catch(syncNotifBtn);
     }
+    refreshWebPushStatus();
 
     function playBeep() {
         try {
