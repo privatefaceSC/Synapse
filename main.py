@@ -24,7 +24,7 @@ _AVATAR_PALETTE = [
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
 ]
 SYNAPSE_MESSENGER = "Synapse"
-CREATOR_USERNAMES = {"ivan"}
+CREATOR_USERNAMES = {"ivan", "dfyzkjcmrjd_cdby"}
 CREATOR_BADGE = "Создатель"
 
 
