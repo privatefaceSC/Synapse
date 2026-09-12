@@ -4744,6 +4744,23 @@
         return outputArray;
     }
 
+    function arrayBufferToBase64Url(buffer) {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        bytes.forEach(b => { binary += String.fromCharCode(b); });
+        return window.btoa(binary)
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=+$/g, '');
+    }
+
+    function applicationServerKeyMatches(sub, publicKey) {
+        const current = sub && sub.options
+            ? sub.options.applicationServerKey : null;
+        if (!current) return true;
+        return arrayBufferToBase64Url(current) === publicKey;
+    }
+
     async function ensureWebPushSubscription() {
         if (!('serviceWorker' in navigator)
                 || !('PushManager' in window)
@@ -4757,12 +4774,16 @@
             if (!keyResp.ok) throw new Error('vapid');
             const keyData = await keyResp.json();
             const reg = await navigator.serviceWorker.register('/sw.js');
+            const appServerKey = urlBase64ToUint8Array(keyData.public_key);
             let sub = await reg.pushManager.getSubscription();
+            if (sub && !applicationServerKeyMatches(sub, keyData.public_key)) {
+                await sub.unsubscribe();
+                sub = null;
+            }
             if (!sub) {
                 sub = await reg.pushManager.subscribe({
                     userVisibleOnly: true,
-                    applicationServerKey: urlBase64ToUint8Array(
-                        keyData.public_key),
+                    applicationServerKey: appServerKey,
                 });
             }
             const body = JSON.stringify({
@@ -4831,7 +4852,10 @@
         const subs = status && Array.isArray(status.subscriptions)
             ? status.subscriptions : [];
         for (const sub of subs) {
-            if (sub.last_error) return sub.last_error;
+            if (sub.enabled && sub.last_error) return sub.last_error;
+        }
+        for (const sub of subs) {
+            if (!sub.enabled && sub.last_error) return sub.last_error;
         }
         return '';
     }

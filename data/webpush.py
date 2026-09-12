@@ -66,10 +66,20 @@ def _vapid_private_for_pywebpush():
     return os.environ.get("WEB_PUSH_VAPID_PRIVATE_KEY") or _vapid_private_path()
 
 
-def _vapid_claims():
-    sub = (os.environ.get("WEB_PUSH_SUBJECT")
-           or os.environ.get("WEB_PUSH_VAPID_SUBJECT")
-           or "mailto:synapse@example.invalid")
+def _vapid_subject(origin: str | None = None) -> str:
+    configured = (os.environ.get("WEB_PUSH_SUBJECT")
+                  or os.environ.get("WEB_PUSH_VAPID_SUBJECT")
+                  or "").strip()
+    if configured:
+        return configured
+    public_origin = _public_origin(origin)
+    if public_origin.startswith("https://"):
+        return public_origin
+    return "mailto:admin@example.com"
+
+
+def _vapid_claims(origin: str | None = None):
+    sub = _vapid_subject(origin)
     return {"sub": sub}
 
 
@@ -122,6 +132,21 @@ def save_subscription(db, user_id: int, payload: dict, user_agent=None):
     sub.updated_at = now
     sub.failed_at = None
     sub.last_error = None
+    if sub.user_agent:
+        stale_subs = (db.query(WebPushSubscription)
+                      .filter(WebPushSubscription.user_id == user_id,
+                              WebPushSubscription.endpoint != endpoint,
+                              WebPushSubscription.user_agent == sub.user_agent,
+                              WebPushSubscription.enabled.is_(True))
+                      .all())
+        for stale in stale_subs:
+            stale_origin = _clean_origin(getattr(stale, "origin", None))
+            if stale_origin and sub.origin and stale_origin != sub.origin:
+                continue
+            stale.enabled = False
+            stale.updated_at = now
+            stale.failed_at = None
+            stale.last_error = None
     db.commit()
     return sub
 
@@ -148,7 +173,7 @@ def _send_subscription_payload(sub, payload: str):
         subscription_info=_subscription_info(sub),
         data=payload,
         vapid_private_key=_vapid_private_for_pywebpush(),
-        vapid_claims=_vapid_claims(),
+        vapid_claims=_vapid_claims(getattr(sub, "origin", None)),
         ttl=24 * 60 * 60,
         timeout=5,
     )
@@ -223,6 +248,7 @@ def _wire_payload(payload: dict, origin: str | None = None) -> dict:
         "body": body,
         "url": url,
         "navigate": notification["navigate"],
+        "vapid_subject": _vapid_subject(origin),
     })
     if tag:
         compat["tag"] = str(tag)
