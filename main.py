@@ -784,12 +784,24 @@ def _voice_input_suffix(filename: str | None, mime: str | None) -> str:
     return '.webm'
 
 
+def _ffmpeg_executable():
+    system_ffmpeg = shutil.which('ffmpeg')
+    if system_ffmpeg:
+        return system_ffmpeg
+    try:
+        import imageio_ffmpeg
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:  # noqa: BLE001
+        print(f'ffmpeg для голосовых недоступен: {exc}')
+        return None
+
+
 def _normalize_voice_upload(data: bytes, filename: str | None,
                             mime: str | None):
     """Привести голос из браузера к формату Telegram voice note."""
     fallback_name = filename or 'voice.webm'
     fallback_mime = (mime or 'audio/webm').lower()
-    ffmpeg = shutil.which('ffmpeg')
+    ffmpeg = _ffmpeg_executable()
     if not ffmpeg:
         return data, fallback_name, fallback_mime
 
