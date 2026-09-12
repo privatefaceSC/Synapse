@@ -4000,7 +4000,16 @@
                                     {% endif %}
                                     {% if m.fwd_quote %}
                                     <div class="fwd-header" title="Это сообщение переслано">
-                                        <span class="fwd-ico">↪</span><span class="fwd-label">Переслано от </span>{% if m.fwd_quote.contact_id %}<a class="fwd-name fwd-link" href="/contacts/{{ m.fwd_quote.contact_id }}" data-fwd-contact-id="{{ m.fwd_quote.contact_id }}" title="Перейти к чату с {{ m.fwd_quote.name }}">{{ m.fwd_quote.name }}</a>{% else %}<span class="fwd-name">{{ m.fwd_quote.name }}</span>{% endif %}
+                                        <span class="fwd-ico">↪</span><span class="fwd-label">Переслано от </span>
+                                        {% if m.fwd_quote.url %}
+                                            <a class="fwd-name fwd-link"
+                                               href="{{ m.fwd_quote.url }}"
+                                               {% if m.fwd_quote.contact_id %}data-fwd-contact-id="{{ m.fwd_quote.contact_id }}"{% endif %}
+                                               {% if m.fwd_quote.messenger %}data-fwd-messenger="{{ m.fwd_quote.messenger }}"{% endif %}
+                                               title="Перейти к чату с {{ m.fwd_quote.name }}">{{ m.fwd_quote.name }}</a>
+                                        {% else %}
+                                            <span class="fwd-name">{{ m.fwd_quote.name }}</span>
+                                        {% endif %}
                                     </div>
                                     {% endif %}
                                     {% if m.reply_quote %}
@@ -6939,18 +6948,23 @@
                   + `<span class="rq-text">${escapeHtml(m.reply_to.text)}</span>`
                   + `</div>`
                 : '';
-            // Шапка «↪ Переслано от …». Ник кликабельный, если у нас есть
-            // контакт оригинального автора (contact_id) — клик ведёт в его
-            // чат через SPA-навигацию. Если нет (скрытый отправитель или
-            // мы с ним не переписываемся) — просто текст без перехода.
+            // Шапка «↪ Переслано от …». Если сервер знает маршрут, ник
+            // становится активной ссылкой на чат в нужном мессенджере.
+            const fwdUrl = m.fwd_from && m.fwd_from.url
+                ? m.fwd_from.url
+                : (m.fwd_from && m.fwd_from.contact_id
+                    ? `/contacts/${m.fwd_from.contact_id}` : '');
+            const fwdAttrs = m.fwd_from && m.fwd_from.contact_id
+                ? ` data-fwd-contact-id="${m.fwd_from.contact_id}"`
+                  + ` data-fwd-messenger="${escapeHtml(m.fwd_from.messenger || '')}"`
+                : '';
             const fwdHtml = m.fwd_from
                 ? `<div class="fwd-header"
                         title="Это сообщение переслано">`
                   + `<span class="fwd-ico">↪</span>`
                   + `<span class="fwd-label">Переслано от </span>`
-                  + (m.fwd_from.contact_id
-                      ? `<a class="fwd-name fwd-link" href="/contacts/${m.fwd_from.contact_id}"
-                              data-fwd-contact-id="${m.fwd_from.contact_id}"
+                  + (fwdUrl
+                      ? `<a class="fwd-name fwd-link" href="${escapeHtml(fwdUrl)}"${fwdAttrs}
                               title="Перейти к чату с ${escapeHtml(m.fwd_from.name)}"
                           >${escapeHtml(m.fwd_from.name)}</a>`
                       : `<span class="fwd-name">${escapeHtml(m.fwd_from.name)}</span>`)
@@ -7832,6 +7846,7 @@
                             tg_read: false,
                             messenger_name: data.messenger_name || 'Telegram',
                             reply_to: data.reply_to || null,
+                            fwd_from: data.fwd_from || null,
                             attachments: [],
                         }]));
                         // Анимация появления свежей bubble
@@ -9045,7 +9060,7 @@
         if (!cid) return;
         e.preventDefault();
         e.stopPropagation();
-        openContact(cid, null);
+        openContact(cid, link.dataset.fwdMessenger || null);
     });
     // Клик по «📝 ред.» — popover с историей всех версий сообщения.
     let editsPopover = null;

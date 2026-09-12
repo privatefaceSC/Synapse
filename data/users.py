@@ -72,6 +72,12 @@ class Messages(SqlAlchemyBase):
     # тогда ник остаётся некликабельным.
     fwd_from_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     fwd_from_tg_chat_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
+    # Для пересылок, которые мы имитируем сами (например Synapse -> Telegram
+    # обычным текстом), сохраняем источник отдельно от текста, чтобы UI мог
+    # рисовать кликабельную шапку, а не показывать сырой префикс.
+    fwd_from_messenger = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    fwd_from_synapse_user_id = sqlalchemy.Column(sqlalchemy.Integer,
+                                                nullable=True)
     # Telegram-id автора сообщения внутри группы. У handle.tg_chat_id в группе
     # хранится id самой группы, поэтому для аватарки/перехода нужен отдельный id.
     author_tg_chat_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)

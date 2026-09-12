@@ -693,12 +693,9 @@ def _attach_edits(db, msgs):
 
 
 def _attach_forwards(db, msgs, user_id):
-    """Проставляет каждому сообщению `fwd_quote` — {name, contact_id} того,
-    от кого его переслали (если это форвард из Telegram). `contact_id` —
-    наш Contact, у которого есть MessengerHandle с этим tg_chat_id; если
-    автора у нас в контактах нет (или он скрыт) — None, ник в UI
-    становится некликабельным."""
+    """Проставляет каждому сообщению `fwd_quote` для шапки пересылки."""
     from data.contacts import MessengerHandle
+
     chat_ids = {m.fwd_from_tg_chat_id for m in msgs
                 if getattr(m, 'fwd_from_tg_chat_id', None) is not None}
     cid_by_chat = {}
@@ -716,10 +713,29 @@ def _attach_forwards(db, msgs, user_id):
             m.fwd_quote = None
             continue
         chat_id = getattr(m, 'fwd_from_tg_chat_id', None)
+        synapse_user_id = getattr(m, 'fwd_from_synapse_user_id', None)
+        messenger = getattr(m, 'fwd_from_messenger', None)
+        if not messenger and chat_id is not None:
+            messenger = 'Telegram'
+        contact_id = cid_by_chat.get(chat_id)
+        url = None
+        if synapse_user_id:
+            url = f'/messenger/{int(synapse_user_id)}'
+        elif chat_id is not None:
+            url = (f'/contacts/{int(contact_id)}?m=Telegram'
+                   if contact_id else f'/contacts/from-tg/{int(chat_id)}')
         m.fwd_quote = {
             'name': name,
-            'contact_id': cid_by_chat.get(chat_id),
+            'messenger': messenger,
+            'contact_id': contact_id,
+            'url': url,
         }
+        if hasattr(m, 'visible_text'):
+            stripped = _strip_forward_prefix(
+                m.visible_text, _existing_forward_meta(m))
+            if stripped != m.visible_text:
+                m.visible_text = stripped
+                m.visible_text_html = None
     return msgs
 
 
@@ -1501,6 +1517,106 @@ def _copy_message_attachments_to_direct(db, source_msg, direct_message_id: int):
     return copied
 
 
+def _message_tg_chat_id(db, msg):
+    """Telegram chat_id чата, которому принадлежит локальное сообщение."""
+    from data.contacts import MessengerHandle
+
+    if msg.handle_id is None:
+        return None
+    handle = db.get(MessengerHandle, msg.handle_id)
+    return handle.tg_chat_id if handle is not None else None
+
+
+def _message_synapse_user_id(db, owner_id: int, msg):
+    """User.id автора Synapse-сообщения глазами владельца owner_id."""
+    if msg.messenger_name != SYNAPSE_MESSENGER:
+        return None
+    if msg.outgoing:
+        return owner_id
+    from data.contacts import MessengerHandle
+
+    handle = db.get(MessengerHandle, msg.handle_id) if msg.handle_id else None
+    if handle is None:
+        return None
+    return _synapse_partner_id(handle)
+
+
+def _existing_forward_meta(msg):
+    name = getattr(msg, 'fwd_from_name', None)
+    if not name:
+        return None
+    messenger = getattr(msg, 'fwd_from_messenger', None)
+    tg_chat_id = getattr(msg, 'fwd_from_tg_chat_id', None)
+    synapse_user_id = getattr(msg, 'fwd_from_synapse_user_id', None)
+    if not messenger and tg_chat_id is not None:
+        messenger = 'Telegram'
+    return {
+        'name': name,
+        'messenger': messenger or 'мессенджера',
+        'tg_chat_id': tg_chat_id,
+        'synapse_user_id': synapse_user_id,
+    }
+
+
+def _forward_source_meta(db, owner_id: int, msg) -> dict:
+    """Структурный источник пересылки для кликабельной шапки в UI."""
+    existing = _existing_forward_meta(msg)
+    if existing is not None:
+        return existing
+
+    messenger = msg.messenger_name or 'мессенджера'
+    if messenger not in ('Telegram', SYNAPSE_MESSENGER):
+        return None
+    meta = {
+        'name': _forward_author_label(db, owner_id, msg),
+        'messenger': messenger,
+        'tg_chat_id': None,
+        'synapse_user_id': None,
+    }
+    if messenger == 'Telegram':
+        chat_id = None
+        if not msg.outgoing:
+            chat_id = (getattr(msg, 'author_tg_chat_id', None)
+                       or _message_tg_chat_id(db, msg))
+        meta['tg_chat_id'] = chat_id
+    elif messenger == SYNAPSE_MESSENGER:
+        meta['synapse_user_id'] = _message_synapse_user_id(
+            db, owner_id, msg)
+    return meta
+
+
+def _apply_forward_meta(msg, meta: dict | None):
+    if msg is None or not meta:
+        return
+    msg.fwd_from_name = meta.get('name')
+    msg.fwd_from_messenger = meta.get('messenger')
+    msg.fwd_from_tg_chat_id = meta.get('tg_chat_id')
+    msg.fwd_from_synapse_user_id = meta.get('synapse_user_id')
+
+
+def _strip_forward_prefix(text: str, meta: dict | None) -> str:
+    if not text or not meta:
+        return text or ''
+    messenger = meta.get('messenger')
+    name = meta.get('name')
+    if not messenger or not name:
+        return text
+    prefix = f'Переслано из {messenger} "{name}"\n\n'
+    if text.startswith(prefix):
+        return text[len(prefix):]
+    return text
+
+
+def _forward_source_body(db, msg) -> str:
+    body = (msg.text or '').strip()
+    if body:
+        return _strip_forward_prefix(body, _existing_forward_meta(msg)).strip()
+    atts = _message_attachment_rows(db, msg.id)
+    if atts:
+        return _DM_PLACEHOLDER.get(atts[0].kind, '📎 Вложение')
+    return 'Сообщение'
+
+
 def _forward_author_label(db, owner_id: int, msg) -> str:
     from data.contacts import Contact, MessengerHandle
     from data.matching import display_author
@@ -1535,18 +1651,26 @@ def _forward_author_label(db, owner_id: int, msg) -> str:
 
 
 def _forward_delivery_text(db, owner_id: int, msg) -> str:
-    messenger = msg.messenger_name or 'мессенджера'
-    author = _forward_author_label(db, owner_id, msg)
-    body = (msg.text or '').strip()
-    if not body:
-        atts = _message_attachment_rows(db, msg.id)
-        body = _DM_PLACEHOLDER.get(atts[0].kind, '📎 Вложение') if atts else 'Сообщение'
+    meta = _forward_source_meta(db, owner_id, msg) or {}
+    messenger = meta.get('messenger') or msg.messenger_name or 'мессенджера'
+    author = meta.get('name') or _forward_author_label(db, owner_id, msg)
+    body = _forward_source_body(db, msg)
     return f'Переслано из {messenger} "{author}"\n\n{body}'
+
+
+def _forward_text_for_target(db, owner_id: int, msg,
+                             target_messenger: str) -> str:
+    if target_messenger == SYNAPSE_MESSENGER and (
+            msg.messenger_name in ('Telegram', SYNAPSE_MESSENGER)
+            or _existing_forward_meta(msg) is not None):
+        return _forward_source_body(db, msg)
+    return _forward_delivery_text(db, owner_id, msg)
 
 
 def _telegram_send_fallback_copy(db, user_id: int, tg_handle, source_msg,
                                  text: str, reply_kw_tg: dict,
-                                 options: dict, local_reply_target=None):
+                                 options: dict, local_reply_target=None,
+                                 forward_meta: dict | None = None):
     from data import telegram_bridge
 
     sent_text_id = telegram_bridge.send_message(
@@ -1566,6 +1690,7 @@ def _telegram_send_fallback_copy(db, user_id: int, tg_handle, source_msg,
         reply_to_message_id=(
             local_reply_target.id if local_reply_target else None),
     )
+    _apply_forward_meta(local_msg, forward_meta)
     db.add(local_msg)
     db.flush()
 
@@ -1589,6 +1714,7 @@ def _telegram_send_fallback_copy(db, user_id: int, tg_handle, source_msg,
             outgoing=True,
             tg_message_id=sent_id,
         )
+        _apply_forward_meta(media_msg, forward_meta)
         db.add(media_msg)
         db.flush()
         _attach_message_file(
@@ -3093,6 +3219,7 @@ def register_routes(app: Flask) -> None:
         upload = request.files.get('file')
         forward_raw = (request.form.get('forward_message_id') or '').strip()
         forward_source = None
+        forward_meta = None
         if forward_raw:
             try:
                 forward_id = int(forward_raw)
@@ -3104,6 +3231,7 @@ def register_routes(app: Flask) -> None:
                     Messages.user_id == user_id).first()
             if forward_source is None:
                 return jsonify({'error': 'forward_not_found'}), 404
+            forward_meta = _forward_source_meta(db, user_id, forward_source)
         if not text and upload is None and forward_source is None:
             return jsonify({'error': 'empty'}), 400
         voice_upload = False
@@ -3178,7 +3306,8 @@ def register_routes(app: Flask) -> None:
             now = datetime.now()
             direct_text = text
             if forward_source is not None:
-                direct_text = _forward_delivery_text(db, user_id, forward_source)
+                direct_text = _forward_text_for_target(
+                    db, user_id, forward_source, SYNAPSE_MESSENGER)
                 if text:
                     direct_text = direct_text + '\n\n' + text
             if not direct_text and upload is None:
@@ -3221,6 +3350,9 @@ def register_routes(app: Flask) -> None:
                     db, direct_msg, user_id, users_by_id)
                 recipient_msg = _mirror_direct_message_for_owner(
                     db, direct_msg, partner_id, users_by_id)
+            if forward_meta is not None:
+                _apply_forward_meta(msg, forward_meta)
+                _apply_forward_meta(recipient_msg, forward_meta)
             if msg is None:
                 msg = Messages(
                     sender='Вы',
@@ -3234,6 +3366,7 @@ def register_routes(app: Flask) -> None:
                 )
                 db.add(msg)
                 db.flush()
+                _apply_forward_meta(msg, forward_meta)
                 _mirror_direct_attachments_to_message(
                     db, direct_msg, user_id, msg)
 
@@ -3264,11 +3397,16 @@ def register_routes(app: Flask) -> None:
             if recipient_msg is not None:
                 _notify_webpush_message(recipient_msg.id)
             local_atts = _message_attachment_rows(db, msg.id)
+            msg.media = local_atts
+            msg.visible_text = msg.text or ''
+            msg.visible_text_html = None
+            _attach_forwards(db, [msg], user_id)
             return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
-                            'text': msg.text, 'text_html': None,
+                            'text': msg.visible_text, 'text_html': None,
                             'date_label': _message_date_label(msg.created_at),
                             'messenger_name': SYNAPSE_MESSENGER,
                             'reply_to': reply_quote,
+                            'fwd_from': msg.fwd_quote,
                             'forwarded': forward_source is not None,
                             'attachments': [
                                 {'id': a.id, 'kind': a.kind, 'mime': a.mime,
@@ -3345,19 +3483,23 @@ def register_routes(app: Flask) -> None:
                         local_msg, sent_media = _telegram_send_fallback_copy(
                             db, user_id, tg_handle, forward_source,
                             forward_text, reply_kw_tg, _opts_fw,
-                            local_reply_target=reply_target)
+                            local_reply_target=reply_target,
+                            forward_meta=forward_meta)
                     except Exception as exc:  # noqa: BLE001
                         return jsonify({'error': 'send_failed',
                                         'detail': str(exc)}), 502
                     db.commit()
+                    _attach_media(db, [local_msg])
+                    _attach_forwards(db, [local_msg], user_id)
                     return jsonify({
                         'ok': True,
                         'id': local_msg.id,
                         'time': local_msg.time,
                         'date_label': _message_date_label(
                             local_msg.created_at),
-                        'text': local_msg.text,
-                        'text_html': None,
+                        'text': local_msg.visible_text,
+                        'text_html': local_msg.visible_text_html,
+                        'fwd_from': local_msg.fwd_quote,
                         'reply_to': None,
                         'forwarded': True,
                         'sent_media': sent_media,
@@ -4717,12 +4859,7 @@ def register_routes(app: Flask) -> None:
 
     def _msg_tg_chat_id(db, msg):
         """tg_chat_id чата, которому принадлежит сообщение, либо None."""
-        from data.contacts import MessengerHandle
-        if msg.handle_id is None:
-            return None
-        h = db.query(MessengerHandle).filter(
-            MessengerHandle.id == msg.handle_id).first()
-        return h.tg_chat_id if h is not None else None
+        return _message_tg_chat_id(db, msg)
 
     @app.route('/messages/<int:message_id>/forward', methods=['POST'])
     def message_forward(message_id):
