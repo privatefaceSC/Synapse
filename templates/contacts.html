@@ -4871,6 +4871,13 @@
         return line;
     }
 
+    function pushSuccessStatusLine(data) {
+        const statuses = data && Array.isArray(data.success_statuses)
+            ? data.success_statuses.filter(Boolean) : [];
+        return statuses.length ? '\nОтвет push-сервиса: '
+            + statuses.join(', ') + '.' : '';
+    }
+
     const pushTestBtn = document.getElementById('push-test-btn');
     const notifBtn = document.getElementById('enable-notif-btn');
     function syncNotifBtn() {
@@ -4931,7 +4938,10 @@
                 if (!r.ok || !data) throw new Error('bad_response');
                 if ((data.sent || 0) > 0) {
                     pushTestBtn.classList.add('ok');
-                    alert('Тестовое уведомление отправлено. Если iPhone его не показал, проверьте настройки уведомлений Synapse в iOS.');
+                    alert('Тестовое уведомление отправлено.'
+                        + pushSuccessStatusLine(data)
+                        + '\nЕсли iPhone его не показал, закройте Synapse, '
+                        + 'заблокируйте экран и отправьте себе тест ещё раз.');
                 } else {
                     pushTestBtn.classList.add('warn');
                     alert('Сервер не отправил push.\n'

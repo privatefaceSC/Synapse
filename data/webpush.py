@@ -147,6 +147,64 @@ def _endpoint_label(endpoint: str) -> str:
     return host or "push-сервис"
 
 
+def _public_origin() -> str:
+    origin = (os.environ.get("WEB_PUSH_ORIGIN")
+              or os.environ.get("SKILLWOOD_PUBLIC_ORIGIN")
+              or "").strip().rstrip("/")
+    if origin:
+        return origin
+    try:
+        from flask import has_request_context, request
+        if has_request_context():
+            return request.url_root.rstrip("/")
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+def _absolute_notification_url(url: str | None) -> str:
+    url = (url or "/contacts").strip() or "/contacts"
+    parsed = urlparse(url)
+    if parsed.scheme and parsed.netloc:
+        return url
+    if not url.startswith("/"):
+        url = "/" + url
+    origin = _public_origin()
+    return f"{origin}{url}" if origin else url
+
+
+def _wire_payload(payload: dict) -> dict:
+    """Payload одновременно для Declarative Web Push и старого SW-формата."""
+    title = str(payload.get("title") or "Synapse").strip() or "Synapse"
+    body = str(payload.get("body") or "Новое сообщение")
+    url = str(payload.get("url") or payload.get("navigate") or "/contacts")
+    notification = {
+        "title": title,
+        "body": body,
+        "navigate": _absolute_notification_url(url),
+        "silent": False,
+    }
+    tag = payload.get("tag")
+    if tag:
+        notification["tag"] = str(tag)
+    app_badge = payload.get("app_badge")
+    if app_badge is not None:
+        notification["app_badge"] = str(app_badge)
+
+    compat = dict(payload)
+    compat.update({
+        "web_push": 8030,
+        "notification": notification,
+        "title": title,
+        "body": body,
+        "url": url,
+        "navigate": notification["navigate"],
+    })
+    if tag:
+        compat["tag"] = str(tag)
+    return compat
+
+
 def subscription_status(db, user_id: int) -> dict:
     """Короткая диагностика push-подписок текущего пользователя."""
     from data.webpush_subscriptions import WebPushSubscription
@@ -190,12 +248,17 @@ def _send_payload_to_user(db, user_id: int, payload: dict) -> dict:
     failed = 0
     disabled = 0
     changed = False
-    data = json.dumps(payload, ensure_ascii=False)
+    data = json.dumps(_wire_payload(payload), ensure_ascii=False)
     now = datetime.datetime.now()
+    success_statuses = []
     for sub in subs:
         try:
-            _send_subscription_payload(sub, data)
+            response = _send_subscription_payload(sub, data)
             sent += 1
+            status = (getattr(response, "status_code", None)
+                      or getattr(response, "status", None))
+            if status is not None:
+                success_statuses.append(status)
             if sub.last_error or sub.failed_at:
                 sub.last_error = None
                 sub.failed_at = None
@@ -218,6 +281,7 @@ def _send_payload_to_user(db, user_id: int, payload: dict) -> dict:
         "failed": failed,
         "disabled": disabled,
         "active": len(subs),
+        "success_statuses": success_statuses[:5],
     }
 
 
