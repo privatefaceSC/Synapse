@@ -773,6 +773,17 @@ async def _register_handler(user_id=None, client=None):
         except Exception as exc:  # noqa: BLE001
             state["error"] = f"notify_settings: {exc}"
 
+    # Смена архива в Telegram должна отражаться на сайте без ожидания
+    # следующего периодического refresh.
+    from telethon.tl.types import UpdateFolderPeers
+
+    @client.on(events.Raw([UpdateFolderPeers]))
+    async def _on_folder_peers(update):
+        try:
+            await _handle_folder_peers_update(update, user_id=owner)
+        except Exception as exc:  # noqa: BLE001
+            state["error"] = f"folder_peers: {exc}"
+
     # Редактирование сообщений (мои с другого устройства и собеседника).
     # Telegram в UI показывает только финальный текст с пометкой «ред.»;
     # мы храним ВСЕ прошлые версии в `message_edits`, чтобы видеть, что
@@ -1137,6 +1148,36 @@ def _apply_telegram_mute_cache(user_id, known_ids, muted_ids):
         db.close()
 
 
+def _apply_telegram_archive_state(user_id, chat_id, archived):
+    """Записать archive/unarchive конкретного Telegram-диалога в Contact."""
+    ids = _chat_id_variants(chat_id)
+    if not ids:
+        return 0
+    from data import db_sessions
+    from data.contacts import Contact, MessengerHandle
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    changed = 0
+    try:
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.user_id == owner,
+                           MessengerHandle.messenger_name == "Telegram",
+                           MessengerHandle.tg_chat_id.in_(list(ids)))
+                   .all())
+        for handle in handles:
+            contact = db.query(Contact).filter(
+                Contact.id == handle.contact_id,
+                Contact.user_id == owner).first()
+            if contact is not None and bool(contact.archived) != bool(archived):
+                contact.archived = bool(archived)
+                changed += 1
+        if changed:
+            db.commit()
+        return changed
+    finally:
+        db.close()
+
+
 def _set_cached_mute_state(user_id, chat_id, muted):
     owner = _normalize_user_id(user_id)
     ids = _chat_id_variants(chat_id)
@@ -1149,6 +1190,20 @@ def _set_cached_mute_state(user_id, chat_id, muted):
     else:
         muted_ids.difference_update(ids)
     _muted_chat_ids_by_user[owner] = (time.monotonic(), muted_ids)
+
+
+def _set_cached_archive_state(user_id, chat_id, archived):
+    owner = _normalize_user_id(user_id)
+    ids = _chat_id_variants(chat_id)
+    if not ids:
+        return
+    cached = _archived_chat_ids_by_user.get(owner)
+    archived_ids = set(cached[1]) if cached is not None else set()
+    if archived:
+        archived_ids.update(ids)
+    else:
+        archived_ids.difference_update(ids)
+    _archived_chat_ids_by_user[owner] = (time.monotonic(), archived_ids)
 
 
 async def _refresh_mute_cache(user_id=None, client=None):
@@ -1222,6 +1277,34 @@ async def _handle_notify_settings_update(update, user_id=None):
     muted = _notify_settings_muted(getattr(update, "notify_settings", None))
     _set_cached_mute_state(user_id, chat_id, muted)
     _apply_telegram_mute_state(user_id, chat_id, muted)
+
+
+async def _handle_folder_peers_update(update, user_id=None):
+    """Telegram сообщил, что диалог переместили в/из архива."""
+    if not _skip_archived():
+        return
+    folder_peers = getattr(update, "folder_peers", None) or []
+    for folder_peer in folder_peers:
+        peer = getattr(folder_peer, "peer", None)
+        chat_id = None
+        try:
+            from telethon import utils
+            chat_id = int(utils.get_peer_id(peer))
+        except Exception:  # noqa: BLE001
+            for attr in ("user_id", "chat_id", "channel_id"):
+                value = getattr(peer, attr, None)
+                if value is None:
+                    continue
+                try:
+                    chat_id = int(value)
+                    break
+                except (TypeError, ValueError):
+                    continue
+        if chat_id is None:
+            continue
+        archived = int(getattr(folder_peer, "folder_id", 0) or 0) == 1
+        _set_cached_archive_state(user_id, chat_id, archived)
+        _apply_telegram_archive_state(user_id, chat_id, archived)
 
 
 async def _refresh_filter_cache(user_id=None, client=None):
@@ -1997,6 +2080,25 @@ def set_mute(chat_id, muted=True, user_id=None):
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     _call(_set_mute(chat_id, bool(muted), user_id=user_id), timeout=30)
+
+
+async def _set_archive(chat_id, archived, user_id=None):
+    """Перенести Telegram-диалог в архив или вернуть в общий список."""
+    owner = _normalize_user_id(user_id)
+    client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    peer = await client.get_input_entity(int(chat_id))
+    await client.edit_folder(peer, 1 if archived else 0)
+    _set_cached_archive_state(owner, chat_id, archived)
+    _apply_telegram_archive_state(owner, chat_id, archived)
+
+
+def set_archive(chat_id, archived=True, user_id=None):
+    """Архивировать или вернуть Telegram-диалог в самом Telegram."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    _call(_set_archive(chat_id, bool(archived), user_id=user_id), timeout=30)
 
 
 async def _send_message(chat_id, text, reply_to=None, parse_mode=None,

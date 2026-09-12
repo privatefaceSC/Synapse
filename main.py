@@ -3482,21 +3482,46 @@ def register_routes(app: Flask) -> None:
         """Переместить контакт в архив или вернуть его в общий список."""
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.contacts import Contact
+        from data.contacts import Contact, MessengerHandle
+        from data import telegram_bridge
         db = get_db()
+        user_id = session['user_id']
         contact = db.query(Contact).filter(
             Contact.id == contact_id,
-            Contact.user_id == session['user_id']).first()
+            Contact.user_id == user_id).first()
         if not contact:
             return jsonify({'error': 'not_found'}), 404
         raw = request.form.get('archived')
         if raw is None:
-            contact.archived = not bool(contact.archived)
+            new_archived = not bool(contact.archived)
         else:
-            contact.archived = _form_bool(raw)
+            new_archived = _form_bool(raw)
+        tg_handles = (db.query(MessengerHandle)
+                      .filter(MessengerHandle.contact_id == contact.id,
+                              MessengerHandle.user_id == user_id,
+                              MessengerHandle.messenger_name == 'Telegram',
+                              MessengerHandle.tg_chat_id.isnot(None))
+                      .all())
+        tg_synced = None
+        if tg_handles and telegram_bridge.is_configured():
+            tg_synced = True
+            seen = set()
+            for handle in tg_handles:
+                if handle.tg_chat_id in seen:
+                    continue
+                seen.add(handle.tg_chat_id)
+                try:
+                    telegram_bridge.set_archive(handle.tg_chat_id,
+                                                new_archived,
+                                                user_id=user_id)
+                except Exception:  # noqa: BLE001
+                    tg_synced = False
+        contact.archived = new_archived
         db.commit()
         if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
-            return jsonify({'ok': True, 'archived': bool(contact.archived)})
+            return jsonify({'ok': True,
+                            'archived': bool(contact.archived),
+                            'tg_synced': tg_synced})
         return redirect('/contacts?archived=1' if contact.archived else '/contacts')
 
     @app.route('/contacts/<int:contact_id>/rename', methods=['POST'])
