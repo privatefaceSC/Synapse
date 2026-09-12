@@ -104,18 +104,13 @@ def _save_settings(data: dict):
 
 
 def _skip_muted():
-    """Синхронизировать ли чаты с выключенными уведомлениями.
-    Настройка из веб-панели имеет приоритет над переменной окружения."""
-    s = _load_settings()
-    if "sync_muted" in s:
-        return bool(s["sync_muted"])
-    if "skip_muted" in s:
-        # Legacy: этот ключ раньше означал «не принимать сообщения из
-        # muted-чатов». Теперь сообщения не пропадают, а muted-состояние
-        # синхронизируется отдельно, поэтому старое false не отключает sync.
-        return True
-    return _env_flag("TELEGRAM_SYNC_MUTED",
-                     _env_flag("TELEGRAM_SKIP_MUTED", True))
+    """Muted-чаты всегда синхронизируются с Contact.muted.
+
+    Раньше это было настройкой из UI/env, но теперь это базовое поведение:
+    пользователь выключает звук в Telegram или на сайте, а состояние просто
+    догоняет вторую сторону.
+    """
+    return True
 
 
 def _skip_archived():
@@ -131,8 +126,8 @@ def update_filters(skip_muted=None, skip_archived=None, user_id=None):
     кэш, чтобы изменение применилось без перезапуска сервера."""
     s = _load_settings()
     if skip_muted is not None:
-        s["sync_muted"] = bool(skip_muted)
-        s["skip_muted"] = bool(skip_muted)
+        s["sync_muted"] = True
+        s["skip_muted"] = True
     if skip_archived is not None:
         s["skip_archived"] = bool(skip_archived)
     _save_settings(s)

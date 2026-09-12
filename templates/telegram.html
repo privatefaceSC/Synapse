@@ -137,17 +137,6 @@
                 <div class="tg-filters-title">Фильтрация входящих</div>
                 <form method="post" action="/telegram/settings"
                       class="form-check form-switch m-0">
-                    <input type="hidden" name="field" value="skip_muted">
-                    <input class="form-check-input" type="checkbox" role="switch"
-                           name="skip_muted" id="sw-muted"
-                           onchange="this.form.submit()"
-                           {% if tg.skip_muted %}checked{% endif %}>
-                    <label class="form-check-label" for="sw-muted">
-                        Синхронизировать чаты без звука с сайтом
-                    </label>
-                </form>
-                <form method="post" action="/telegram/settings"
-                      class="form-check form-switch m-0">
                     <input type="hidden" name="field" value="skip_archived">
                     <input class="form-check-input" type="checkbox" role="switch"
                            name="skip_archived" id="sw-archived"
