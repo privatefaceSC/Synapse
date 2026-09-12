@@ -1341,6 +1341,10 @@ def register_routes(app: Flask) -> None:
             return redirect('/home')
         return render_template('main_menu.html')
 
+    @app.route('/about')
+    def about_page():
+        return render_template('about.html')
+
     @app.route('/logout')
     def logout():
         session.pop('user_id', None)

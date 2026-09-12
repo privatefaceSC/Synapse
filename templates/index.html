@@ -144,6 +144,14 @@
     }
     .btn-cta:hover { transform: translateY(-2px);
         box-shadow: 0 10px 26px rgba(59,130,246,.36); }
+    .btn-about {
+        border-radius: 14px; padding: 12px 14px; font-weight: 600;
+        border-color: #c7d2e3; background: rgba(255,255,255,.72);
+        color: #1f2a44;
+    }
+    .btn-about:hover {
+        background: #eef4ff; border-color: #93b7f5; color: #1d4ed8;
+    }
 
     /* Тёмная тема. */
     [data-bs-theme="dark"] .card-soft {
@@ -166,6 +174,12 @@
     [data-bs-theme="dark"] .copy-btn:hover { background: #1c2c44; }
     [data-bs-theme="dark"] .copy-btn.done {
         background: #15301f; border-color: #2f6b48; color: #6ee7b7;
+    }
+    [data-bs-theme="dark"] .btn-about {
+        background: #1a1d24; border-color: #344155; color: #dbe7f6;
+    }
+    [data-bs-theme="dark"] .btn-about:hover {
+        background: #1c2c44; border-color: #3b82f6; color: #bfdbfe;
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -277,6 +291,7 @@
     <div class="home-card d-grid gap-2">
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть портал мессенджеров</a>
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть контакты</a>
+        <a href="/about" class="btn btn-about">Что вообще это за сайт?</a>
     </div>
 </div>
 
