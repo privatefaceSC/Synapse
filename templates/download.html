@@ -15,6 +15,7 @@
         transition: background .25s ease, border-color .25s ease;
     }
     .dl-card:nth-child(2) { animation-delay: .1s; }
+    .dl-card:nth-child(3) { animation-delay: .16s; }
     .dl-hero {
         position: relative; overflow: hidden; border: 0; color: #fff;
         background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
@@ -52,13 +53,54 @@
         align-items: center; justify-content: center;
     }
     .dl-step .tx { color: #374151; line-height: 1.45; padding-top: 2px; }
+    .dl-connect {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 18px; background: #fff; border: 1px solid #ecedf1;
+        border-radius: 18px; box-shadow: 0 1px 3px rgba(16,24,40,.06);
+        padding: 18px 20px;
+    }
+    .dl-connect-title { font-weight: 700; margin-bottom: 4px; }
+    .dl-connect-text { color: #64748b; font-size: .94rem; }
+    .dl-code-row {
+        display: flex; align-items: center; gap: 10px; flex: 0 0 auto;
+    }
+    .dl-code {
+        display: inline-flex; align-items: center; min-height: 42px;
+        padding: 8px 13px; border-radius: 12px;
+        background: #eff6ff; color: #1d4ed8; font-weight: 800;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 1.25rem; letter-spacing: .08em;
+    }
+    .dl-copy {
+        min-height: 42px; border-radius: 12px; border: 1px solid #cbd5e1;
+        background: #fff; color: #334155; font-weight: 700;
+        padding: 8px 14px;
+    }
+    .dl-copy:hover { background: #f1f5f9; }
+    .dl-copy.done { background: #16a34a; color: #fff; border-color: #16a34a; }
 
     [data-bs-theme="dark"] .dl-steps {
         background: #1a1d24; border-color: #262b34;
         box-shadow: 0 1px 3px rgba(0,0,0,.4);
     }
+    [data-bs-theme="dark"] .dl-connect {
+        background: #1a1d24; border-color: #262b34;
+        box-shadow: 0 1px 3px rgba(0,0,0,.4);
+    }
     [data-bs-theme="dark"] .dl-step .n { background: #1c2c44; color: #93c5fd; }
     [data-bs-theme="dark"] .dl-step .tx { color: #c9ccd3; }
+    [data-bs-theme="dark"] .dl-connect-text { color: #94a3b8; }
+    [data-bs-theme="dark"] .dl-code { background: #1c2c44; color: #93c5fd; }
+    [data-bs-theme="dark"] .dl-copy {
+        background: #232831; border-color: #2f3540; color: #e2e8f0;
+    }
+    [data-bs-theme="dark"] .dl-copy:hover { background: #263244; }
+
+    @media (max-width: 560px) {
+        .dl-connect { align-items: stretch; flex-direction: column; }
+        .dl-code-row { width: 100%; }
+        .dl-code { flex: 1; justify-content: center; }
+    }
 
     @media (prefers-reduced-motion: reduce) {
         .dl-card { opacity: 1; animation: none; }
@@ -78,6 +120,23 @@
             <a href="/download/skillwood.apk" class="btn dl-btn">⬇ Скачать APK</a>
         </div>
     </div>
+
+    {% if connect_code %}
+    <div class="dl-card dl-connect mb-3">
+        <div>
+            <div class="dl-connect-title">Код подключения</div>
+            <div class="dl-connect-text">
+                Введите этот код в Android-клиенте после установки APK.
+            </div>
+        </div>
+        <div class="dl-code-row">
+            <code class="dl-code" id="android-connect-code">{{ connect_code }}</code>
+            <button type="button" class="dl-copy" id="android-copy-code">
+                Скопировать
+            </button>
+        </div>
+    </div>
+    {% endif %}
 
     <div class="dl-card dl-steps">
         <h5>Как установить</h5>
@@ -100,4 +159,37 @@
                 ваши контакты.</span></div>
     </div>
 </div>
+{% if connect_code %}
+<script>
+    (function() {
+        var copyBtn = document.getElementById('android-copy-code');
+        var codeEl = document.getElementById('android-connect-code');
+        if (!copyBtn || !codeEl) return;
+        copyBtn.addEventListener('click', function() {
+            var text = codeEl.textContent.trim();
+            function done() {
+                copyBtn.textContent = 'Скопировано';
+                copyBtn.classList.add('done');
+                setTimeout(function() {
+                    copyBtn.textContent = 'Скопировать';
+                    copyBtn.classList.remove('done');
+                }, 1600);
+            }
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(text).then(done).catch(done);
+                return;
+            }
+            var ta = document.createElement('textarea');
+            ta.value = text;
+            ta.style.position = 'fixed';
+            ta.style.opacity = '0';
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand('copy');
+            ta.remove();
+            done();
+        });
+    })();
+</script>
+{% endif %}
 {% endblock %}

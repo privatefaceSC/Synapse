@@ -68,43 +68,6 @@
         [data-bs-theme="dark"] .gear-menu a:hover,
         [data-bs-theme="dark"] .gear-menu button:hover { background: #232831; }
         [data-bs-theme="dark"] .gear-menu hr { border-top-color: #2a2f3a; }
-        /* Блок с connect_code в шестерёнке. */
-        .gm-code-block {
-            padding: 8px 10px 6px 10px;
-            background: #f8fafc; border-radius: 8px;
-            margin: 4px 2px;
-        }
-        .gm-code-label {
-            font-size: 11px; color: #64748b; text-transform: uppercase;
-            letter-spacing: .04em; margin-bottom: 4px;
-        }
-        .gm-code-row {
-            display: flex; align-items: center; gap: 8px;
-        }
-        .gm-code-row code {
-            font-size: 16px; font-weight: 700; color: #1d4ed8;
-            font-family: ui-monospace, monospace; letter-spacing: .08em;
-            background: transparent; padding: 0;
-        }
-        .gm-code-row button {
-            margin-left: auto; padding: 4px 8px;
-            background: transparent; border: 1px solid #cbd5e1;
-            border-radius: 6px; cursor: pointer; font-size: 13px;
-            transition: background .12s ease;
-        }
-        .gm-code-row button:hover { background: #e0e7ff; }
-        .gm-code-row button.done {
-            background: #16a34a; color: #fff; border-color: #16a34a;
-        }
-        [data-bs-theme="dark"] .gm-code-block {
-            background: #232831;
-        }
-        [data-bs-theme="dark"] .gm-code-label { color: #94a3b8; }
-        [data-bs-theme="dark"] .gm-code-row code { color: #93c5fd; }
-        [data-bs-theme="dark"] .gm-code-row button {
-            border-color: #2f3540; color: #e2e8f0;
-        }
-        [data-bs-theme="dark"] .gm-code-row button:hover { background: #1c2c44; }
     </style>
 </head>
 <body>
@@ -138,16 +101,6 @@
                                 <span class="gm-ico">📱</span>Устройства</a>
                             <a href="/download">
                                 <span class="gm-ico">⤓</span>Клиент для Android</a>
-                            {% if gear_user and gear_user.connect_code %}
-                            <div class="gm-code-block" id="gm-code-block">
-                                <div class="gm-code-label">Код подключения</div>
-                                <div class="gm-code-row">
-                                    <code id="gear-connect-code">{{ gear_user.connect_code }}</code>
-                                    <button type="button" id="gear-copy-code"
-                                            title="Скопировать">📋</button>
-                                </div>
-                            </div>
-                            {% endif %}
                             <a href="/telegram">
                                 <span class="gm-ico">✈</span>Telegram</a>
                             {% if session.get('user_id') == 1 %}
@@ -195,33 +148,6 @@
                     if (e.key === 'Escape' && gearMenu.classList.contains('open')) {
                         gearMenu.classList.remove('open');
                         gearBtn.setAttribute('aria-expanded', 'false');
-                    }
-                });
-            }
-            // Копирование connect_code из шестерёнки.
-            var copyBtn = document.getElementById('gear-copy-code');
-            var codeEl = document.getElementById('gear-connect-code');
-            if (copyBtn && codeEl) {
-                copyBtn.addEventListener('click', function(e) {
-                    e.stopPropagation();
-                    var text = codeEl.textContent.trim();
-                    function done() {
-                        copyBtn.textContent = '✓';
-                        copyBtn.classList.add('done');
-                        setTimeout(function() {
-                            copyBtn.textContent = '📋';
-                            copyBtn.classList.remove('done');
-                        }, 1600);
-                    }
-                    if (navigator.clipboard && navigator.clipboard.writeText) {
-                        navigator.clipboard.writeText(text).then(done).catch(done);
-                    } else {
-                        var ta = document.createElement('textarea');
-                        ta.value = text; ta.style.position = 'fixed';
-                        ta.style.opacity = '0';
-                        document.body.appendChild(ta);
-                        ta.select(); document.execCommand('copy');
-                        ta.remove(); done();
                     }
                 });
             }

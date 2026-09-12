@@ -1077,21 +1077,6 @@ def _dm_load_conversation(db, me_id, partner, mark_read=False):
 
 def register_routes(app: Flask) -> None:
 
-    @app.context_processor
-    def inject_gear_user():
-        """Передаёт текущего пользователя во все шаблоны под именем
-        `gear_user` — нужно base.html'у, чтобы показать connect_code
-        в выпадающем меню шестерёнки. Если не залогинен — None."""
-        uid = session.get('user_id')
-        if not uid:
-            return {'gear_user': None}
-        try:
-            db = get_db()
-            return {'gear_user': db.query(User)
-                    .filter(User.id == uid).first()}
-        except Exception:  # noqa: BLE001
-            return {'gear_user': None}
-
     @app.route('/')
     def main_menu():
         if session.get('user_id'):
@@ -4262,7 +4247,12 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/download')
     def download_index():
-        return render_template('download.html')
+        connect_code = None
+        uid = session.get('user_id')
+        if uid:
+            user = get_db().query(User).filter(User.id == uid).first()
+            connect_code = user.connect_code if user else None
+        return render_template('download.html', connect_code=connect_code)
 
     @app.route('/download/skillwood.apk')
     def download_apk():
