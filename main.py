@@ -192,6 +192,16 @@ def _message_date_label(value):
     return day.strftime('%d.%m.%Y')
 
 
+def _notify_webpush_message(message_id):
+    if not message_id:
+        return
+    try:
+        from data import webpush
+        webpush.notify_message(message_id)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _message_author_avatar_url(msg):
     if (getattr(msg, 'author_avatar_path', None)
             and not getattr(msg, 'outgoing', False)):
@@ -1365,7 +1375,14 @@ def register_routes(app: Flask) -> None:
             attachments = [{'id': att.id, 'kind': att.kind,
                             'name': att.original_name}]
 
+        sender = db.query(User).filter(User.id == me_id).first()
+        users_by_id = {me_id: sender, user_id: partner}
+        recipient_msg = _mirror_direct_message_for_owner(
+            db, msg, user_id, users_by_id)
+
         db.commit()
+        if recipient_msg is not None:
+            _notify_webpush_message(recipient_msg.id)
         return jsonify({'ok': True, 'id': msg.id, 'text': msg.text or '',
                         'time': now.strftime('%H:%M'), 'outgoing': True,
                         'attachments': attachments})
@@ -2255,9 +2272,10 @@ def register_routes(app: Flask) -> None:
             db.flush()
             me = db.query(User).filter(User.id == user_id).first()
             partner = db.query(User).filter(User.id == partner_id).first()
+            recipient_msg = None
             if me is not None and partner is not None:
                 users_by_id = {user_id: me, partner_id: partner}
-                _mirror_direct_message_for_owner(
+                recipient_msg = _mirror_direct_message_for_owner(
                     db, direct_msg, partner_id, users_by_id)
 
             reply_quote = None
@@ -2284,6 +2302,8 @@ def register_routes(app: Flask) -> None:
                             'text': rt_text[:120] + ('...' if len(rt_text) > 120 else ''),
                         }
             db.commit()
+            if recipient_msg is not None:
+                _notify_webpush_message(recipient_msg.id)
             return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
                             'text': msg.text, 'text_html': None,
                             'messenger_name': SYNAPSE_MESSENGER,
@@ -4259,6 +4279,53 @@ def register_routes(app: Flask) -> None:
                 )
         abort(404)
 
+    @app.route('/sw.js')
+    def service_worker():
+        resp = send_from_directory(
+            os.path.join(app.root_path, 'static'),
+            'synapse-sw.js',
+            mimetype='application/javascript',
+        )
+        resp.headers['Service-Worker-Allowed'] = '/'
+        resp.headers['Cache-Control'] = 'no-cache'
+        return resp
+
+    @app.route('/api/webpush/vapid-public-key')
+    def webpush_vapid_public_key():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import webpush
+        return jsonify({'public_key': webpush.vapid_public_key()})
+
+    @app.route('/api/webpush/subscribe', methods=['POST'])
+    def webpush_subscribe():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import webpush
+        db = get_db()
+        payload = request.get_json(silent=True) or {}
+        try:
+            sub = webpush.save_subscription(
+                db, session['user_id'], payload,
+                user_agent=request.headers.get('User-Agent'))
+        except ValueError:
+            return jsonify({'error': 'bad_subscription'}), 400
+        return jsonify({'ok': True, 'id': sub.id})
+
+    @app.route('/api/webpush/unsubscribe', methods=['POST'])
+    def webpush_unsubscribe():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import webpush
+        db = get_db()
+        payload = request.get_json(silent=True) or {}
+        endpoint = (payload.get('endpoint') or '').strip()
+        if not endpoint:
+            return jsonify({'error': 'bad_subscription'}), 400
+        removed = webpush.disable_subscription(
+            db, session['user_id'], endpoint)
+        return jsonify({'ok': True, 'removed': removed})
+
     @app.route('/add', methods=['POST'])
     def add_message():
         from data.contacts import record_message
@@ -4287,11 +4354,14 @@ def register_routes(app: Flask) -> None:
         author_avatar_path = _save_notification_avatar(
             device.user_id, request.form.get('author_avatar'))
         message_author = author if is_group and author else None
-        record_message(db, device.user_id, messenger_name, sender, text_value,
-                       author=message_author, package_name=package_name,
-                       is_group=is_group, contact_avatar_path=chat_avatar_path,
-                       author_avatar_path=author_avatar_path,
-                       notification_dedup_key=dedup_key)
+        msg = record_message(db, device.user_id, messenger_name, sender,
+                             text_value, author=message_author,
+                             package_name=package_name, is_group=is_group,
+                             contact_avatar_path=chat_avatar_path,
+                             author_avatar_path=author_avatar_path,
+                             notification_dedup_key=dedup_key)
+        if msg is not None:
+            _notify_webpush_message(msg.id)
         return 'OK', 200
 
     @app.route('/add_media', methods=['POST'])
@@ -4383,6 +4453,7 @@ def register_routes(app: Flask) -> None:
         except IntegrityError:
             db.rollback()
             return 'OK Duplicate', 200
+        _notify_webpush_message(msg.id)
         return 'OK', 200
 
     @app.route('/attachments/<int:attachment_id>')

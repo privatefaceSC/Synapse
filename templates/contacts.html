@@ -4698,6 +4698,57 @@
     let lastSig = '';
     let notifBaseline = null;
     let audioCtx = null;
+    let webPushReady = false;
+
+    function urlBase64ToUint8Array(base64String) {
+        const padding = '='.repeat((4 - base64String.length % 4) % 4);
+        const base64 = (base64String + padding)
+            .replace(/-/g, '+')
+            .replace(/_/g, '/');
+        const rawData = window.atob(base64);
+        const outputArray = new Uint8Array(rawData.length);
+        for (let i = 0; i < rawData.length; ++i) {
+            outputArray[i] = rawData.charCodeAt(i);
+        }
+        return outputArray;
+    }
+
+    async function ensureWebPushSubscription() {
+        if (!('serviceWorker' in navigator)
+                || !('PushManager' in window)
+                || !('Notification' in window)
+                || Notification.permission !== 'granted') {
+            webPushReady = false;
+            return false;
+        }
+        try {
+            const keyResp = await fetch('/api/webpush/vapid-public-key');
+            if (!keyResp.ok) throw new Error('vapid');
+            const keyData = await keyResp.json();
+            const reg = await navigator.serviceWorker.register('/sw.js');
+            let sub = await reg.pushManager.getSubscription();
+            if (!sub) {
+                sub = await reg.pushManager.subscribe({
+                    userVisibleOnly: true,
+                    applicationServerKey: urlBase64ToUint8Array(
+                        keyData.public_key),
+                });
+            }
+            const body = JSON.stringify({
+                subscription: sub.toJSON ? sub.toJSON() : sub,
+            });
+            const saveResp = await fetch('/api/webpush/subscribe', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body,
+            });
+            webPushReady = saveResp.ok;
+            return webPushReady;
+        } catch (e) {
+            webPushReady = false;
+            return false;
+        }
+    }
 
     // Разрешение на уведомления: явная кнопка справа от поиска (видна, когда
     // permission==default). На первый клик мышки по странице тоже пробуем
@@ -4724,15 +4775,23 @@
                 return;
             }
             try { await Notification.requestPermission(); } catch (e) {}
+            await ensureWebPushSubscription();
             syncNotifBtn();
         });
     }
     if ('Notification' in window && Notification.permission === 'default') {
         document.addEventListener('click', function ask() {
             document.removeEventListener('click', ask);
-            try { Notification.requestPermission().then(syncNotifBtn); }
+            try {
+                Notification.requestPermission().then(async () => {
+                    await ensureWebPushSubscription();
+                    syncNotifBtn();
+                });
+            }
             catch (e) {}
         }, { once: true });
+    } else if ('Notification' in window && Notification.permission === 'granted') {
+        ensureWebPushSubscription().then(syncNotifBtn).catch(syncNotifBtn);
     }
 
     function playBeep() {
@@ -4764,7 +4823,7 @@
             // для него подавляем (как в TG «без звука»).
             if (now > before && String(c.id) !== activeId && !c.muted) {
                 fired = true;
-                if ('Notification' in window &&
+                if (!webPushReady && 'Notification' in window &&
                         Notification.permission === 'granted') {
                     try {
                         const n = new Notification(

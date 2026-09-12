@@ -9,3 +9,4 @@ from . import edits
 from . import chat_topics
 from . import topic_reads
 from . import discussion_groups
+from . import webpush_subscriptions

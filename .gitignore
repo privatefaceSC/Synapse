@@ -31,6 +31,9 @@ tg_credentials.bat
 # Локальные настройки Telegram-моста (фильтрация) — у каждого свои
 db/tg_settings.json
 
+# Локальный приватный ключ Web Push (VAPID) — генерируется сервером
+db/webpush_vapid_private.pem
+
 # Build artifacts
 dist/
 

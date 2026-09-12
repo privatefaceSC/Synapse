@@ -618,6 +618,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     from data import db_sessions
     from data.contacts import record_message
     db = db_sessions.create_session()
+    notify_message_id = None
     try:
         owner = _normalize_user_id(user_id)
         message = record_message(db, owner, "Telegram", chat_key, text,
@@ -635,11 +636,20 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  text_html=text_html,
                                  archived=archived,
                                  muted=muted)
+        if message is not None:
+            notify_message_id = message.id
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
         if message is not None and data is not None and kind is not None:
             _save_attachment(db, owner, message.id, kind, data, msg)
     finally:
         db.close()
+
+    if notify_message_id is not None:
+        try:
+            from data import webpush
+            await asyncio.to_thread(webpush.notify_message, notify_message_id)
+        except Exception as exc:  # noqa: BLE001
+            _state_for(user_id)["error"] = f"webpush: {exc}"
 
     # Фото профиля собеседника/группы — лениво, один раз.
     try:
