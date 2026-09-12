@@ -26,9 +26,13 @@ _clients = {}
 _handler_registered = False
 _handler_registered_users = set()
 _refresh_task = None
-# chat_id диалогов, сообщения из которых мост игнорирует
-# (выключенные уведомления). Обновляется периодически.
+# chat_id диалогов, сообщения из которых мост игнорирует. Сейчас muted-чаты
+# не попадают сюда: они синхронизируются с Contact.muted, но не теряются.
 _skip_chat_ids = set()
+# chat_id диалогов, где в Telegram выключены уведомления. Обновляется
+# периодически и точечно через UpdateNotifySettings.
+_muted_chat_ids_by_user = {}
+_MUTE_CACHE_TTL = 120
 # chat_id диалогов, которые в самом Telegram лежат в архиве. Их не
 # отбрасываем: сохраняем сообщение и помечаем локальный Contact архивным.
 _archived_chat_ids_by_user = {}
@@ -100,16 +104,22 @@ def _save_settings(data: dict):
 
 
 def _skip_muted():
-    """Игнорировать ли сообщения из чатов с выключенными уведомлениями.
+    """Синхронизировать ли чаты с выключенными уведомлениями.
     Настройка из веб-панели имеет приоритет над переменной окружения."""
     s = _load_settings()
+    if "sync_muted" in s:
+        return bool(s["sync_muted"])
     if "skip_muted" in s:
-        return bool(s["skip_muted"])
-    return _env_flag("TELEGRAM_SKIP_MUTED", True)
+        # Legacy: этот ключ раньше означал «не принимать сообщения из
+        # muted-чатов». Теперь сообщения не пропадают, а muted-состояние
+        # синхронизируется отдельно, поэтому старое false не отключает sync.
+        return True
+    return _env_flag("TELEGRAM_SYNC_MUTED",
+                     _env_flag("TELEGRAM_SKIP_MUTED", True))
 
 
 def _skip_archived():
-    """Игнорировать ли сообщения из архивированных чатов."""
+    """Складывать ли архивированные Telegram-чаты в локальный архив."""
     s = _load_settings()
     if "skip_archived" in s:
         return bool(s["skip_archived"])
@@ -121,6 +131,7 @@ def update_filters(skip_muted=None, skip_archived=None, user_id=None):
     кэш, чтобы изменение применилось без перезапуска сервера."""
     s = _load_settings()
     if skip_muted is not None:
+        s["sync_muted"] = bool(skip_muted)
         s["skip_muted"] = bool(skip_muted)
     if skip_archived is not None:
         s["skip_archived"] = bool(skip_archived)
@@ -496,6 +507,8 @@ async def _handle_message(event, user_id=None, client=None):
 
     archived = await _chat_archived_by_telegram(
         event.chat_id, user_id=user_id, client=client)
+    muted = await _chat_muted_by_telegram(
+        event.chat_id, user_id=user_id, client=client)
 
     # Автор подписи над сообщением.
     author_tg_chat_id = None
@@ -523,13 +536,13 @@ async def _handle_message(event, user_id=None, client=None):
                                     chat_type, is_out, author, kind, text,
                                     author_tg_chat_id=author_tg_chat_id,
                                     user_id=user_id, client=client,
-                                    archived=archived)
+                                    archived=archived, muted=muted)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                     is_out, author, kind, text,
                                     author_tg_chat_id=None, user_id=None,
-                                    client=None, archived=False):
+                                    client=None, archived=False, muted=None):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
     созданные синхронно прямо из веб-панели (forward / send) — иначе UI ждёт
@@ -620,7 +633,8 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  tg_topic_title=topic_title,
                                  tg_is_forum=is_forum_chat,
                                  text_html=text_html,
-                                 archived=archived)
+                                 archived=archived,
+                                 muted=muted)
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
         if message is not None and data is not None and kind is not None:
             _save_attachment(db, owner, message.id, kind, data, msg)
@@ -742,6 +756,17 @@ async def _register_handler(user_id=None, client=None):
             await _handle_reactions(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
             state["error"] = f"reactions: {exc}"
+
+    # Смена mute/unmute в Telegram должна отражаться на сайте без ожидания
+    # периодического refresh.
+    from telethon.tl.types import UpdateNotifySettings
+
+    @client.on(events.Raw([UpdateNotifySettings]))
+    async def _on_notify_settings(update):
+        try:
+            await _handle_notify_settings_update(update, user_id=owner)
+        except Exception as exc:  # noqa: BLE001
+            state["error"] = f"notify_settings: {exc}"
 
     # Редактирование сообщений (мои с другого устройства и собеседника).
     # Telegram в UI показывает только финальный текст с пометкой «ред.»;
@@ -1017,36 +1042,196 @@ def typing_status(chat_id) -> dict:
 
 def _is_muted(dialog) -> bool:
     """True, если у диалога выключены уведомления (mute_until в будущем)."""
-    import datetime as _dt
     ns = getattr(getattr(dialog, "dialog", None), "notify_settings", None)
-    mute_until = getattr(ns, "mute_until", None)
+    return _notify_settings_muted(ns)
+
+
+def _notify_settings_muted(settings) -> bool:
+    """True, если notify_settings Telegram задаёт mute_until в будущем."""
+    import datetime as _dt
+    mute_until = getattr(settings, "mute_until", None)
     if mute_until is None:
         return False
+    if isinstance(mute_until, (int, float)):
+        return mute_until > time.time()
     now = _dt.datetime.now(_dt.timezone.utc)
     if mute_until.tzinfo is None:
         mute_until = mute_until.replace(tzinfo=_dt.timezone.utc)
     return mute_until > now
 
 
+def _chat_id_variants(chat_id):
+    try:
+        from data.telegram_ids import chat_id_variants
+        return {int(v) for v in chat_id_variants(chat_id)}
+    except Exception:  # noqa: BLE001
+        try:
+            return {int(chat_id)}
+        except (TypeError, ValueError):
+            return set()
+
+
+def _apply_telegram_mute_state(user_id, chat_id, muted):
+    """Записать mute/unmute конкретного Telegram-диалога в Contact.muted."""
+    ids = _chat_id_variants(chat_id)
+    if not ids:
+        return 0
+    from data import db_sessions
+    from data.contacts import Contact, MessengerHandle
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    changed = 0
+    try:
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.user_id == owner,
+                           MessengerHandle.messenger_name == "Telegram",
+                           MessengerHandle.tg_chat_id.in_(list(ids)))
+                   .all())
+        for handle in handles:
+            contact = db.query(Contact).filter(
+                Contact.id == handle.contact_id,
+                Contact.user_id == owner).first()
+            if contact is not None and bool(contact.muted) != bool(muted):
+                contact.muted = bool(muted)
+                changed += 1
+        if changed:
+            db.commit()
+        return changed
+    finally:
+        db.close()
+
+
+def _apply_telegram_mute_cache(user_id, known_ids, muted_ids):
+    """Синхронизировать все уже известные Telegram-контакты с кэшем mute."""
+    from data import db_sessions
+    from data.contacts import Contact, MessengerHandle
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    changed = 0
+    try:
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.user_id == owner,
+                           MessengerHandle.messenger_name == "Telegram",
+                           MessengerHandle.tg_chat_id.isnot(None))
+                   .all())
+        for handle in handles:
+            handle_ids = _chat_id_variants(handle.tg_chat_id)
+            if not handle_ids or not (handle_ids & known_ids):
+                continue
+            contact = db.query(Contact).filter(
+                Contact.id == handle.contact_id,
+                Contact.user_id == owner).first()
+            should_mute = bool(handle_ids & muted_ids)
+            if contact is not None and bool(contact.muted) != should_mute:
+                contact.muted = should_mute
+                changed += 1
+        if changed:
+            db.commit()
+        return changed
+    finally:
+        db.close()
+
+
+def _set_cached_mute_state(user_id, chat_id, muted):
+    owner = _normalize_user_id(user_id)
+    ids = _chat_id_variants(chat_id)
+    if not ids:
+        return
+    cached = _muted_chat_ids_by_user.get(owner)
+    muted_ids = set(cached[1]) if cached is not None else set()
+    if muted:
+        muted_ids.update(ids)
+    else:
+        muted_ids.difference_update(ids)
+    _muted_chat_ids_by_user[owner] = (time.monotonic(), muted_ids)
+
+
+async def _refresh_mute_cache(user_id=None, client=None):
+    """Возвращает множество chat_id, где в Telegram выключен звук."""
+    owner = _normalize_user_id(user_id)
+    if client is None:
+        client = _clients.get(owner)
+    if client is None:
+        return set()
+    known_ids = set()
+    muted_ids = set()
+    async for d in client.iter_dialogs():
+        try:
+            dialog_ids = _chat_id_variants(int(d.id))
+        except (TypeError, ValueError):
+            continue
+        known_ids.update(dialog_ids)
+        if _is_muted(d):
+            muted_ids.update(dialog_ids)
+    _muted_chat_ids_by_user[owner] = (time.monotonic(), muted_ids)
+    _apply_telegram_mute_cache(owner, known_ids, muted_ids)
+    return muted_ids
+
+
+async def _chat_muted_by_telegram(chat_id, user_id=None, client=None):
+    """Best effort: знает ли Telegram, что в диалоге выключен звук."""
+    if not _skip_muted():
+        return None
+    owner = _normalize_user_id(user_id)
+    now = time.monotonic()
+    cached = _muted_chat_ids_by_user.get(owner)
+    if cached is None or now - cached[0] > _MUTE_CACHE_TTL:
+        try:
+            ids = await _refresh_mute_cache(owner, client)
+        except Exception:  # noqa: BLE001
+            return None
+    else:
+        ids = cached[1]
+    variants = _chat_id_variants(chat_id)
+    if not variants:
+        return None
+    return bool(variants & ids)
+
+
+def _notify_peer_chat_id(peer):
+    """Достать обычный chat_id из NotifyPeer, который прислал Telegram."""
+    inner = getattr(peer, "peer", None)
+    if inner is None:
+        return None
+    try:
+        from telethon import utils
+        return int(utils.get_peer_id(inner))
+    except Exception:  # noqa: BLE001
+        for attr in ("user_id", "chat_id", "channel_id"):
+            value = getattr(inner, attr, None)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    return None
+    return None
+
+
+async def _handle_notify_settings_update(update, user_id=None):
+    """Telegram сообщил, что у диалога поменялись настройки уведомлений."""
+    if not _skip_muted():
+        return
+    chat_id = _notify_peer_chat_id(getattr(update, "peer", None))
+    if chat_id is None:
+        return
+    muted = _notify_settings_muted(getattr(update, "notify_settings", None))
+    _set_cached_mute_state(user_id, chat_id, muted)
+    _apply_telegram_mute_state(user_id, chat_id, muted)
+
+
 async def _refresh_filter_cache(user_id=None, client=None):
-    """Пересобирает множество chat_id, которые мост игнорирует."""
+    """Пересобирает кэши Telegram-состояний, влияющих на контакты."""
     global _skip_chat_ids
     owner = _normalize_user_id(user_id)
     if client is None:
         client = _clients.get(owner)
     if client is None:
         return
-    skip_muted = _skip_muted()
-    if not skip_muted:
-        _skip_chat_ids = set()
-        if _skip_archived():
-            await _refresh_archive_cache(owner, client)
-        return
-    skip = set()
-    async for d in client.iter_dialogs():
-        if skip_muted and _is_muted(d):
-            skip.add(d.id)
-    _skip_chat_ids = skip
+    _skip_chat_ids = set()
+    if _skip_muted():
+        await _refresh_mute_cache(owner, client)
+    else:
+        _muted_chat_ids_by_user.pop(owner, None)
     if _skip_archived():
         await _refresh_archive_cache(owner, client)
 
@@ -1777,6 +1962,36 @@ def set_block(chat_id, block=True, user_id=None):
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     _call(_set_block(chat_id, bool(block), user_id=user_id), timeout=30)
+
+
+async def _set_mute(chat_id, muted, user_id=None):
+    """Mute/Unmute Telegram-диалога через настройки уведомлений."""
+    import datetime as _dt
+    from telethon.tl import functions, types
+    owner = _normalize_user_id(user_id)
+    client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    peer = await client.get_input_entity(int(chat_id))
+    if muted:
+        mute_until = _dt.datetime(2038, 1, 19, 3, 14, 7,
+                                  tzinfo=_dt.timezone.utc)
+    else:
+        mute_until = _dt.datetime.fromtimestamp(0, tz=_dt.timezone.utc)
+    settings = types.InputPeerNotifySettings(mute_until=mute_until)
+    await client(functions.account.UpdateNotifySettingsRequest(
+        peer=types.InputNotifyPeer(peer),
+        settings=settings,
+    ))
+    _set_cached_mute_state(owner, chat_id, muted)
+    _apply_telegram_mute_state(owner, chat_id, muted)
+
+
+def set_mute(chat_id, muted=True, user_id=None):
+    """Выключить или включить звук у Telegram-диалога."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    _call(_set_mute(chat_id, bool(muted), user_id=user_id), timeout=30)
 
 
 async def _send_message(chat_id, text, reply_to=None, parse_mode=None,

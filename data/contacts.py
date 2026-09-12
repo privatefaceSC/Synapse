@@ -358,7 +358,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     tg_topic_title=None, tg_is_forum=None,
                     text_html=None, is_group=None, contact_avatar_path=None,
                     author_avatar_path=None, notification_dedup_key=None,
-                    archived=None):
+                    archived=None, muted=None):
     """Записывает сообщение.
 
     `sender_raw` — ключ личности (контакта): для лички это имя
@@ -385,6 +385,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         contact.avatar_path = contact_avatar_path
     if contact is not None and archived is True and not bool(contact.archived):
         contact.archived = True
+    if contact is not None and muted is not None:
+        contact.muted = bool(muted)
     # Контакт заблокирован — молча игнорируем новые входящие. Свои
     # исходящие пропускаем (вдруг разблокировка и сами что-то ответили).
     if not outgoing:

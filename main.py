@@ -3044,20 +3044,43 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/contacts/<int:contact_id>/mute', methods=['POST'])
     def contact_mute(contact_id):
-        """Беззвучный режим: контакт остаётся в списке (и бэйджи считаются),
-        но браузерные пуши и звуковой сигнал отключаются."""
+        """Беззвучный режим локально и, если это Telegram, в самом TG."""
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.contacts import Contact
+        from data.contacts import Contact, MessengerHandle
+        from data import telegram_bridge
         db = get_db()
+        user_id = session['user_id']
         contact = db.query(Contact).filter(
             Contact.id == contact_id,
-            Contact.user_id == session['user_id']).first()
+            Contact.user_id == user_id).first()
         if not contact:
             return jsonify({'error': 'not_found'}), 404
-        contact.muted = not bool(contact.muted)
+        new_muted = not bool(contact.muted)
+        tg_handles = (db.query(MessengerHandle)
+                      .filter(MessengerHandle.contact_id == contact.id,
+                              MessengerHandle.user_id == user_id,
+                              MessengerHandle.messenger_name == 'Telegram',
+                              MessengerHandle.tg_chat_id.isnot(None))
+                      .all())
+        tg_synced = None
+        if tg_handles and telegram_bridge.is_configured():
+            tg_synced = True
+            seen = set()
+            for handle in tg_handles:
+                if handle.tg_chat_id in seen:
+                    continue
+                seen.add(handle.tg_chat_id)
+                try:
+                    telegram_bridge.set_mute(handle.tg_chat_id, new_muted,
+                                             user_id=user_id)
+                except Exception:  # noqa: BLE001
+                    tg_synced = False
+        contact.muted = new_muted
         db.commit()
-        return jsonify({'ok': True, 'muted': bool(contact.muted)})
+        return jsonify({'ok': True,
+                        'muted': bool(contact.muted),
+                        'tg_synced': tg_synced})
 
     @app.route('/contacts/<int:contact_id>/archive', methods=['POST'])
     def contact_archive(contact_id):
