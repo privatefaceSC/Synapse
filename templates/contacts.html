@@ -217,6 +217,9 @@
         background: rgba(245, 158, 11, .11); color: inherit;
         transform: translateX(2px);
     }
+    .creator-suggestion-row.is-self {
+        cursor: not-allowed;
+    }
     .creator-suggestion-row .avatar {
         width: 40px; height: 40px; font-size: 15px;
         border: 2px solid rgba(255,255,255,.68);
@@ -2592,9 +2595,11 @@
         width: 100%; height: 100%; object-fit: cover;
     }
     .profile-name {
+        display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
         font-size: 20px; font-weight: 700; color: #ffffff;
         line-height: 1.2; word-break: break-word;
     }
+    .profile-name .creator-inline { margin-left: 0; }
     .profile-sub {
         font-size: 13px; color: #cbd5e1; margin-top: 2px;
     }
@@ -3716,9 +3721,11 @@
                     <div class="creator-suggestions-title">Создатели Synapse</div>
                     {% if creator_cards %}
                         {% for creator in creator_cards %}
-                        <a class="creator-suggestion-row"
-                           href="/messenger/{{ creator.id }}"
-                           data-user-id="{{ creator.id }}">
+                        <a class="creator-suggestion-row{% if creator.is_self %} is-self{% endif %}"
+                           href="{% if creator.is_self %}#{% else %}/messenger/{{ creator.id }}{% endif %}"
+                           data-user-id="{{ creator.id }}"
+                           data-is-self="{{ '1' if creator.is_self else '0' }}"
+                           data-self-message="Вы не можете написать сами себе.">
                             {% if creator.avatar_url %}
                             <span class="avatar"><img src="{{ creator.avatar_url }}" alt=""></span>
                             {% else %}
@@ -3732,7 +3739,8 @@
                                     <span class="creator-inline">★ {{ creator.creator_title }}</span>
                                 </span>
                                 <span class="creator-suggestion-meta">
-                                    @{{ creator.username }} · можно написать вопрос
+                                    @{{ creator.username }} ·
+                                    {% if creator.is_self %}это ваш профиль{% else %}можно написать вопрос{% endif %}
                                 </span>
                             </span>
                         </a>
@@ -5105,8 +5113,14 @@
             + '<div class="creator-suggestions-title">Создатели Synapse</div>'
             + creatorCards.map(c => {
                 const username = c.username ? '@' + c.username : 'Synapse';
-                return `<a class="creator-suggestion-row"
-                           href="/messenger/${c.id}" data-user-id="${c.id}">
+                const isSelf = !!c.is_self;
+                const href = isSelf ? '#' : `/messenger/${c.id}`;
+                const meta = isSelf ? 'это ваш профиль' : 'можно написать вопрос';
+                return `<a class="creator-suggestion-row${isSelf ? ' is-self' : ''}"
+                           href="${href}"
+                           data-user-id="${c.id}"
+                           data-is-self="${isSelf ? '1' : '0'}"
+                           data-self-message="Вы не можете написать сами себе.">
                     ${avatarHtml(c)}
                     <span class="flex-fill" style="min-width:0;">
                         <span class="creator-suggestion-name">
@@ -5114,13 +5128,20 @@
                             ${creatorBadgeHtml(c)}
                         </span>
                         <span class="creator-suggestion-meta">
-                            ${escapeHtml(username)} · можно написать вопрос
+                            ${escapeHtml(username)} · ${escapeHtml(meta)}
                         </span>
                     </span>
                 </a>`;
             }).join('')
             + '</div>';
     }
+
+    document.addEventListener('click', function(e) {
+        const row = e.target.closest('.creator-suggestion-row[data-is-self="1"]');
+        if (!row) return;
+        e.preventDefault();
+        alert(row.dataset.selfMessage || 'Вы не можете написать сами себе.');
+    });
 
     function listTick(c) {
         if (!c.last_outgoing
@@ -10771,6 +10792,12 @@
         }[c]));
     }
 
+    function creatorBadgeHtml(item) {
+        if (!item || !item.is_creator) return '';
+        return '<span class="creator-inline">★ '
+            + escapeHtml(item.creator_title || 'Создатель') + '</span>';
+    }
+
     function avatarHtml(c) {
         if (c.avatar_url) {
             return '<span class="avatar">'
@@ -11047,7 +11074,8 @@
           +     avatarHtml(c)
           +     '<div style="min-width:0;">'
           +       '<div class="profile-name">'
-          +         escapeHtml(c.display_name) + '</div>'
+          +         '<span>' + escapeHtml(c.display_name) + '</span>'
+          +         creatorBadgeHtml(c) + '</div>'
           +       '<div class="profile-sub">' + sub + '</div>'
           +     '</div>'
           +   '</div>'

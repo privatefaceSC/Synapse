@@ -25,6 +25,8 @@ class User(SqlAlchemyBase):
     # ISO-код языка пользователя (ru, en, es, …) — на него Ollama переводит
     # сообщения по правому клику «Перевести». Если NULL — считаем русский.
     preferred_lang = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # Когда пользователь открывал страницу «Что вообще это за сайт?».
+    about_seen_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
 
 
 class Messages(SqlAlchemyBase):

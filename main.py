@@ -1009,6 +1009,10 @@ def _admin_user_summary(db, user) -> dict:
             'created_at_iso': _iso_dt(getattr(user, 'created_at', None)),
             'modified_date': _fmt_dt(user.modified_date),
             'modified_date_iso': _iso_dt(user.modified_date),
+            'about_seen': bool(getattr(user, 'about_seen_at', None)),
+            'about_seen_at': _fmt_dt(getattr(user, 'about_seen_at', None)),
+            'about_seen_at_iso': _iso_dt(
+                getattr(user, 'about_seen_at', None)),
             'connect_code': user.connect_code or '—',
         },
         'avatar': {
@@ -1166,11 +1170,15 @@ def _creator_cards(db, me_id: int) -> list[dict]:
 
     users = (db.query(User)
              .filter(func.lower(User.username).in_(
-                 sorted(CREATOR_USERNAMES)),
-                     User.id != me_id)
+                 sorted(CREATOR_USERNAMES)))
              .order_by(User.id.asc())
              .all())
-    return [_dm_user_card(user) for user in users]
+    cards = []
+    for user in users:
+        card = _dm_user_card(user)
+        card['is_self'] = user.id == me_id
+        cards.append(card)
+    return cards
 
 
 def _dm_attachments(db, msgs) -> dict:
@@ -1396,6 +1404,12 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/about')
     def about_page():
+        if session.get('user_id'):
+            db = get_db()
+            user = db.query(User).filter(User.id == session['user_id']).first()
+            if user is not None:
+                user.about_seen_at = datetime.now()
+                db.commit()
         return render_template('about.html')
 
     @app.route('/logout')
@@ -3677,6 +3691,9 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'not_found'}), 404
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
+        _avatar_for(contact)
+        _mark_contact_creator_from_handles(contact, handles,
+                                           _creator_user_ids(db))
         msgs_count = (db.query(Messages)
                       .filter(Messages.handle_id.in_([h.id for h in handles]
                                                      or [0]))
@@ -3694,6 +3711,8 @@ def register_routes(app: Flask) -> None:
                 'archived': bool(contact.archived),
                 'blocked': contact.blocked_at is not None,
                 'messages_count': int(msgs_count),
+                'is_creator': bool(getattr(contact, 'is_creator', False)),
+                'creator_title': getattr(contact, 'creator_title', ''),
             },
             'messengers': [{
                 'name': h.messenger_name,

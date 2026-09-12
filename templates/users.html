@@ -193,6 +193,14 @@
                     <div class="user-card__small">
                         Регистрация: {{ s.user.created_at }} · Изменён: {{ s.user.modified_date }}
                     </div>
+                    <div class="user-card__small">
+                        Документация:
+                        {% if s.user.about_seen %}
+                            открывал {{ s.user.about_seen_at }}
+                        {% else %}
+                            не открывал
+                        {% endif %}
+                    </div>
                 </div>
 
                 <div class="user-actions">
