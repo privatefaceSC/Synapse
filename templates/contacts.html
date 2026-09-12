@@ -5648,6 +5648,10 @@
         if (openMenu) { openMenu.remove(); openMenu = null; }
     }
 
+    function stickerCollectionInDevelopment() {
+        alert('Функция в разработке.');
+    }
+
     function showMessageMenu(x, y, messageId, text, outgoing, author) {
         closeMenu();
         const menu = document.createElement('div');
@@ -5834,28 +5838,10 @@
         }
         const saveStickerBtn = menu.querySelector('.save-sticker-btn');
         if (saveStickerBtn) {
-            saveStickerBtn.addEventListener('click', async (e) => {
+            saveStickerBtn.addEventListener('click', (e) => {
                 e.stopPropagation();
-                saveStickerBtn.disabled = true;
-                try {
-                    const r = await fetch('/attachments/' + stickerAttachmentId
-                        + '/save-sticker', {
-                            method: 'POST',
-                            credentials: 'same-origin',
-                            headers: {'X-Requested-With': 'XMLHttpRequest'},
-                        });
-                    const d = await r.json().catch(() => ({}));
-                    if (!r.ok || !d.ok) {
-                        alert('Не удалось сохранить стикер: '
-                              + (d.detail || d.error || 'HTTP ' + r.status));
-                        return;
-                    }
-                    window.__skillwoodStickerCache = null;
-                } catch (err) {
-                    alert('Сеть недоступна — стикер не сохранён.');
-                } finally {
-                    closeMenu();
-                }
+                closeMenu();
+                stickerCollectionInDevelopment();
             });
         }
         const selBtn = menu.querySelector('.select-msg-btn');
@@ -8500,30 +8486,7 @@
     }
     if (stickerPackSave) stickerPackSave.addEventListener('click', async function() {
         if (!stickerPackAttachmentId) return;
-        stickerPackSave.disabled = true;
-        const oldText = stickerPackSave.textContent;
-        stickerPackSave.textContent = 'Сохраняем...';
-        try {
-            const r = await fetch('/attachments/' + stickerPackAttachmentId
-                + '/save-sticker-pack', {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                });
-            const data = await r.json().catch(() => ({}));
-            if (!r.ok || !data.ok) {
-                alert('Не удалось сохранить стикерпак: '
-                    + (data.detail || data.error || ('HTTP ' + r.status)));
-                return;
-            }
-            window.__skillwoodStickerCache = null;
-            stickerPackSave.textContent = 'Сохранено · ' + (data.count || 0);
-            setTimeout(closeStickerPackModal, 700);
-        } catch (err) {
-            alert('Сеть недоступна — стикерпак не сохранён.');
-        } finally {
-            stickerPackSave.disabled = false;
-            setTimeout(() => { stickerPackSave.textContent = oldText; }, 900);
-        }
+        stickerCollectionInDevelopment();
     });
     function isEditableImage(file) {
         return !!(file && file.type && file.type.indexOf('image/') === 0);
@@ -10704,8 +10667,8 @@
         if (!stickers.length) {
             body.innerHTML =
                 '<div class="sticker-picker-empty">'
-                + 'Сохранённых стикеров пока нет. Откройте меню у '
-                + 'Telegram-стикера и нажмите «Сохранить стикер».'
+                + 'Коллекция стикеров пока в разработке. '
+                + 'Входящие Telegram-стикеры по-прежнему видны в чатах.'
                 + '</div>';
             return;
         }

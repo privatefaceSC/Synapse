@@ -1,3 +1,4 @@
+import os
 from datetime import datetime
 
 import sqlalchemy
@@ -152,6 +153,14 @@ def migrate_encrypt_messages_v1(db) -> dict:
     return {"encrypted": encrypted}
 
 
+def migrate_purge_saved_stickers_v1(db) -> dict:
+    from .stickers import SavedSticker
+
+    deleted = db.query(SavedSticker).delete(synchronize_session=False)
+    db.commit()
+    return {"deleted": deleted}
+
+
 if __name__ == "__main__":
     import sys
     name = sys.argv[1] if len(sys.argv) > 1 else "migrate_to_contacts_v1"
@@ -159,7 +168,7 @@ if __name__ == "__main__":
     if func is None or not callable(func) or not name.startswith("migrate_"):
         print(f"Неизвестная миграция: {name}")
         sys.exit(1)
-    db_sessions.global_init("db/blogs.db")
+    db_sessions.global_init(os.environ.get("SKILLWOOD_DB_PATH", "db/blogs.db"))
     session = db_sessions.create_session()
     try:
         stats = func(session)

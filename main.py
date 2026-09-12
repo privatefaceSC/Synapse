@@ -27,6 +27,14 @@ SYNAPSE_MESSENGER = "Synapse"
 CREATOR_USER_IDS = {1}
 LEGACY_CREATOR_USERNAMES = {"ivan", "dfyzkjcmrjd_cdby"}
 CREATOR_BADGE = "Создатель"
+STICKER_COLLECTION_DISABLED_DETAIL = "Функция в разработке."
+
+
+def _sticker_collection_disabled_response():
+    return jsonify({
+        'error': 'sticker_collection_in_development',
+        'detail': STICKER_COLLECTION_DISABLED_DETAIL,
+    }), 501
 
 
 def _configured_creator_ids() -> set[int]:
@@ -5896,104 +5904,25 @@ def register_routes(app: Flask) -> None:
     def attachment_save_local_sticker(attachment_id):
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.attachments import Attachment
-
-        db = get_db()
-        user_id = session['user_id']
-        att = (db.query(Attachment)
-               .filter(Attachment.id == attachment_id,
-                       Attachment.user_id == user_id).first())
-        if att is None:
-            return jsonify({'error': 'not_found'}), 404
-        if att.kind != 'sticker':
-            return jsonify({'error': 'not_sticker'}), 400
-        sticker = _save_sticker_from_attachment(db, user_id, att)
-        db.commit()
-        return jsonify({'ok': True, 'sticker': _saved_sticker_dict(sticker)})
+        return _sticker_collection_disabled_response()
 
     @app.route('/attachments/<int:attachment_id>/save-sticker-pack',
                methods=['POST'])
     def attachment_save_local_sticker_pack(attachment_id):
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.attachments import Attachment
-        from data.contacts import MessengerHandle
-        from data import telegram_bridge
-
-        db = get_db()
-        user_id = session['user_id']
-        att = (db.query(Attachment)
-               .filter(Attachment.id == attachment_id,
-                       Attachment.user_id == user_id).first())
-        if att is None:
-            return jsonify({'error': 'not_found'}), 404
-        if att.kind != 'sticker':
-            return jsonify({'error': 'not_sticker'}), 400
-
-        saved = []
-        pack_key = att.sticker_pack_key
-        pack_title = att.sticker_pack_title or 'Стикерпак'
-        if pack_key:
-            saved = _copy_sticker_pack_to_user(
-                db, user_id, pack_key, source_attachment=att)
-            if not saved:
-                single = _save_sticker_from_attachment(db, user_id, att)
-                saved = [single] if single is not None else []
-            db.commit()
-            return jsonify({
-                'ok': True,
-                'mode': 'pack',
-                'pack_key': pack_key,
-                'title': pack_title,
-                'count': len(saved),
-                'stickers': [_saved_sticker_dict(s) for s in saved],
-            })
-
-        msg = db.get(Messages, att.message_id)
-        if msg is None or msg.user_id != user_id or not msg.tg_message_id:
-            return jsonify({'error': 'not_telegram_sticker'}), 400
-        handle = db.get(MessengerHandle, msg.handle_id)
-        if (handle is None or handle.user_id != user_id
-                or handle.messenger_name != 'Telegram'
-                or handle.tg_chat_id is None):
-            return jsonify({'error': 'not_telegram_sticker'}), 400
-
-        try:
-            payload = telegram_bridge.sticker_pack_from_message(
-                handle.tg_chat_id, msg.tg_message_id, user_id=user_id)
-        except Exception as exc:  # noqa: BLE001
-            return jsonify({'error': 'telegram_unavailable',
-                            'detail': str(exc)}), 502
-        saved, pack_key, pack_title = _save_sticker_pack_payload(
-            db, user_id, payload or {}, source_attachment=att)
-        if pack_key:
-            att.sticker_pack_key = pack_key
-            att.sticker_pack_title = pack_title
-        db.commit()
-        return jsonify({
-            'ok': True,
-            'mode': 'pack',
-            'pack_key': pack_key,
-            'title': pack_title,
-            'count': len(saved),
-            'stickers': [_saved_sticker_dict(s) for s in saved],
-        })
+        return _sticker_collection_disabled_response()
 
     @app.route('/stickers.json')
     def stickers_json():
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.stickers import SavedSticker
-
-        db = get_db()
-        stickers = (db.query(SavedSticker)
-                    .filter(SavedSticker.user_id == session['user_id'])
-                    .order_by(SavedSticker.last_used_at.desc().nullslast(),
-                              SavedSticker.created_at.desc(),
-                              SavedSticker.id.desc())
-                    .all())
-        return jsonify({'ok': True,
-                        'stickers': [_saved_sticker_dict(s) for s in stickers]})
+        return jsonify({
+            'ok': True,
+            'disabled': True,
+            'detail': STICKER_COLLECTION_DISABLED_DETAIL,
+            'stickers': [],
+        })
 
     @app.route('/stickers/<int:sticker_id>')
     def sticker_get(sticker_id):
