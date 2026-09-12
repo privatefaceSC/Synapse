@@ -235,9 +235,9 @@
         padding: 10px 44px 10px 38px; font-size: 14px; background: #fff;
         outline: none; transition: border-color .15s ease, box-shadow .15s ease;
     }
-    .contact-search.has-new-chat input { padding-right: 124px; }
+    .contact-search.has-new-chat input { padding-right: 86px; }
     .contact-search .new-synapse-chat {
-        position: absolute; right: 84px; top: 50%; transform: translateY(-50%);
+        position: absolute; right: 44px; top: 50%; transform: translateY(-50%);
         border: 1px solid #bfdbfe; background: #eef2ff; color: #1d4ed8;
         width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
         font-size: 22px; line-height: 1; padding: 0;
@@ -250,47 +250,19 @@
         background: #2563eb; border-color: #2563eb; color: #fff;
     }
     .contact-search .enable-notif {
-        position: absolute; right: 44px; top: 50%; transform: translateY(-50%);
+        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
         border: 1px solid #bfdbfe; background: #e0edff; color: #1d4ed8;
         width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
         font-size: 15px; line-height: 1; padding: 0;
         display: inline-flex; align-items: center; justify-content: center;
         transition: background .15s ease, border-color .15s ease;
     }
-    .contact-search .push-test {
-        position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
-        border: 1px solid #cbd5e1; background: #fff; color: #334155;
-        width: 32px; height: 32px; border-radius: 9px; cursor: pointer;
-        font-size: 15px; line-height: 1; padding: 0;
-        display: inline-flex; align-items: center; justify-content: center;
-        transition: background .15s ease, border-color .15s ease, color .15s ease;
-    }
-    .contact-search .push-test:hover { background: #f1f5f9; }
-    .contact-search .push-test.ok {
-        background: #dcfce7; border-color: #86efac; color: #15803d;
-    }
-    .contact-search .push-test.warn {
-        background: #fff7ed; border-color: #fed7aa; color: #c2410c;
-    }
-    .contact-search .push-test:disabled { opacity: .68; cursor: default; }
     .contact-search .enable-notif:hover { background: #c7defe; }
     [data-bs-theme="dark"] .contact-search .enable-notif {
         background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
     }
     [data-bs-theme="dark"] .contact-search .enable-notif:hover {
         background: #233d5e;
-    }
-    [data-bs-theme="dark"] .contact-search .push-test {
-        background: #151922; color: #cbd5e1; border-color: #2f3540;
-    }
-    [data-bs-theme="dark"] .contact-search .push-test:hover {
-        background: #232831;
-    }
-    [data-bs-theme="dark"] .contact-search .push-test.ok {
-        background: #14311f; border-color: #276749; color: #86efac;
-    }
-    [data-bs-theme="dark"] .contact-search .push-test.warn {
-        background: #34210f; border-color: #7c2d12; color: #fdba74;
     }
     [data-bs-theme="dark"] .contact-search .new-synapse-chat {
         background: #1c2c44; color: #93c5fd; border-color: #2c3f5e;
@@ -3079,6 +3051,9 @@
     }
     .contacts-app-menu-btn:hover { background: #fff; }
     .contacts-app-menu-btn:active { transform: scale(.97); }
+    .contacts-app-menu-btn.chat-open {
+        display: inline-flex;
+    }
     .contacts-app-menu-panel {
         position: absolute; top: 56px; left: 12px; z-index: 90;
         width: 238px; padding: 6px; border-radius: 14px;
@@ -3206,6 +3181,10 @@
 
     /* Mobile contacts layout */
     @media (max-width: 767.98px) {
+        .contacts-app-menu-btn.chat-open,
+        .contacts-app-menu-btn.chat-open + .contacts-app-menu-panel {
+            display: none !important;
+        }
         body.contacts-locked > nav {
             display: none;
         }
@@ -3435,7 +3414,7 @@
     }
 </style>
 
-<button type="button" class="contacts-app-menu-btn"
+<button type="button" class="contacts-app-menu-btn{% if selected %} chat-open{% endif %}"
         data-contacts-menu-btn aria-label="Меню"
         aria-haspopup="true" aria-expanded="false">☰</button>
 <div class="contacts-app-menu-panel" data-contacts-menu-panel role="menu">
@@ -3475,6 +3454,14 @@
             panel.classList.toggle('open', open);
             btn.setAttribute('aria-expanded', open ? 'true' : 'false');
         }
+
+        function syncForContactsView(view) {
+            const chatOpen = view === 'feed';
+            btn.classList.toggle('chat-open', chatOpen);
+            if (chatOpen) setOpen(false);
+        }
+
+        window.__skillwoodSyncContactsMenuForView = syncForContactsView;
 
         function syncThemeLabel() {
             const cur = document.documentElement.getAttribute('data-bs-theme');
@@ -3587,9 +3574,6 @@
                         title="Новый чат Synapse" aria-label="Новый чат Synapse">+</button>
                 <button type="button" id="enable-notif-btn" class="enable-notif"
                         hidden title="Включить уведомления о новых сообщениях">🔔</button>
-                <button type="button" id="push-test-btn" class="push-test"
-                        title="Проверить фоновые уведомления"
-                        aria-label="Проверить фоновые уведомления">✓</button>
                 <div class="search-results" id="search-results" role="listbox"></div>
             </div>
             <div class="messenger-folders" id="messenger-folders"></div>
@@ -4815,10 +4799,6 @@
             || window.navigator.standalone === true;
     }
 
-    function isIOSDevice() {
-        return /iPhone|iPad|iPod/i.test(navigator.userAgent);
-    }
-
     function webPushProblemText() {
         if (!('Notification' in window)) {
             return 'Этот браузер не поддерживает уведомления.';
@@ -4836,93 +4816,6 @@
         return '';
     }
 
-    async function loadWebPushStatus() {
-        try {
-            const r = await fetch('/api/webpush/status', {
-                headers: {'Accept': 'application/json'},
-            });
-            if (!r.ok) return null;
-            return await r.json();
-        } catch (e) {
-            return null;
-        }
-    }
-
-    function firstPushError(status) {
-        const subs = status && Array.isArray(status.subscriptions)
-            ? status.subscriptions : [];
-        for (const sub of subs) {
-            if (sub.enabled && sub.last_error) return sub.last_error;
-        }
-        for (const sub of subs) {
-            if (!sub.enabled && sub.last_error) return sub.last_error;
-        }
-        return '';
-    }
-
-    function updatePushTestBtn(status) {
-        if (!pushTestBtn) return;
-        pushTestBtn.disabled = false;
-        pushTestBtn.classList.remove('ok', 'warn');
-        pushTestBtn.textContent = '✓';
-        const problem = webPushProblemText();
-        if (problem) {
-            pushTestBtn.classList.add('warn');
-            pushTestBtn.title = problem;
-            return;
-        }
-        if (Notification.permission !== 'granted') {
-            pushTestBtn.classList.add('warn');
-            pushTestBtn.title = 'Нажмите, чтобы включить и проверить фоновые уведомления';
-            return;
-        }
-        if (status && status.subscriptions_active > 0) {
-            pushTestBtn.classList.add('ok');
-            pushTestBtn.title = 'Push-подписка активна. Нажмите для тестового уведомления';
-            return;
-        }
-        pushTestBtn.classList.add('warn');
-        pushTestBtn.title = 'Push-подписка ещё не создана. Нажмите для проверки';
-    }
-
-    async function refreshWebPushStatus() {
-        const status = await loadWebPushStatus();
-        updatePushTestBtn(status);
-        return status;
-    }
-
-    function pushStatusLine(status) {
-        if (!status) return '';
-        let line = 'Подписок: ' + status.subscriptions_active
-            + ' активных из ' + status.subscriptions_total + '.';
-        const err = firstPushError(status);
-        if (err) line += '\nПоследняя ошибка: ' + err;
-        return line;
-    }
-
-    function pushSuccessStatusLine(data) {
-        const statuses = data && Array.isArray(data.success_statuses)
-            ? data.success_statuses.filter(Boolean) : [];
-        return statuses.length ? '\nОтвет push-сервиса: '
-            + statuses.join(', ') + '.' : '';
-    }
-
-    function startPushTestCountdown(seconds) {
-        if (!pushTestBtn || !seconds) return () => {};
-        const started = Date.now();
-        pushTestBtn.title = 'Заблокируйте экран: тест отправится через '
-            + seconds + ' сек.';
-        function tick() {
-            const left = Math.max(0, seconds
-                - Math.floor((Date.now() - started) / 1000));
-            pushTestBtn.textContent = String(left);
-        }
-        tick();
-        const timer = window.setInterval(tick, 250);
-        return () => window.clearInterval(timer);
-    }
-
-    const pushTestBtn = document.getElementById('push-test-btn');
     const notifBtn = document.getElementById('enable-notif-btn');
     function syncNotifBtn() {
         if (!notifBtn) return;
@@ -4946,77 +4839,13 @@
             }
             try { await Notification.requestPermission(); } catch (e) {}
             await ensureWebPushSubscription();
-            await refreshWebPushStatus();
             syncNotifBtn();
-        });
-    }
-
-    if (pushTestBtn) {
-        pushTestBtn.addEventListener('click', async () => {
-            const problem = webPushProblemText();
-            if (problem) {
-                alert(problem);
-                updatePushTestBtn(await loadWebPushStatus());
-                return;
-            }
-            pushTestBtn.disabled = true;
-            pushTestBtn.textContent = '…';
-            let stopCountdown = null;
-            try {
-                if (Notification.permission !== 'granted') {
-                    await Notification.requestPermission();
-                }
-                const ready = await ensureWebPushSubscription();
-                if (!ready) {
-                    const status = await refreshWebPushStatus();
-                    alert('Push-подписку создать не получилось.\n'
-                        + pushStatusLine(status));
-                    return;
-                }
-                const delaySeconds = isIOSDevice() ? 8 : 0;
-                stopCountdown = startPushTestCountdown(delaySeconds);
-                const r = await fetch('/api/webpush/test', {
-                    method: 'POST',
-                    headers: {
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({delay_seconds: delaySeconds}),
-                });
-                const data = await r.json().catch(() => null);
-                const status = data && data.status ? data.status
-                    : await loadWebPushStatus();
-                if (!r.ok || !data) throw new Error('bad_response');
-                if ((data.sent || 0) > 0) {
-                    pushTestBtn.classList.add('ok');
-                    alert('Тестовое уведомление отправлено.'
-                        + pushSuccessStatusLine(data)
-                        + (delaySeconds
-                            ? '\nЕсли iPhone молчал даже на заблокированном экране, пришлите этот текст диагностики.'
-                            : '\nЕсли iPhone его не показал, закройте Synapse, заблокируйте экран и отправьте себе тест ещё раз.'));
-                } else {
-                    pushTestBtn.classList.add('warn');
-                    alert('Сервер не отправил push.\n'
-                        + 'Активных подписок: ' + (data.active || 0)
-                        + ', ошибок: ' + (data.failed || 0) + '.\n'
-                        + pushStatusLine(status));
-                }
-                updatePushTestBtn(status);
-            } catch (e) {
-                const status = await refreshWebPushStatus();
-                alert('Не удалось проверить push.\n' + pushStatusLine(status));
-            } finally {
-                if (stopCountdown) stopCountdown();
-                pushTestBtn.disabled = false;
-                if (pushTestBtn.textContent !== '✓') pushTestBtn.textContent = '✓';
-            }
         });
     }
 
     if ('Notification' in window && Notification.permission === 'granted') {
         ensureWebPushSubscription().then(syncNotifBtn).catch(syncNotifBtn);
     }
-    refreshWebPushStatus();
 
     function playBeep() {
         try {
@@ -6937,6 +6766,9 @@
         if (!colList || !colFeed) return;
         document.documentElement.dataset.contactsView = view;
         document.body.dataset.contactsView = view;
+        if (window.__skillwoodSyncContactsMenuForView) {
+            window.__skillwoodSyncContactsMenuForView(view);
+        }
         // d-md-flex (а не d-md-block!) — иначе на md+ bootstrap-овский
         // `display: block !important` перебьёт наш `display: flex` на
         // #col-list / #col-feed, и внутренний скролл .contact-list / .feed
