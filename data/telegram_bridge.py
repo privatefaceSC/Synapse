@@ -27,8 +27,12 @@ _handler_registered = False
 _handler_registered_users = set()
 _refresh_task = None
 # chat_id диалогов, сообщения из которых мост игнорирует
-# (архив + выключенные уведомления). Обновляется периодически.
+# (выключенные уведомления). Обновляется периодически.
 _skip_chat_ids = set()
+# chat_id диалогов, которые в самом Telegram лежат в архиве. Их не
+# отбрасываем: сохраняем сообщение и помечаем локальный Contact архивным.
+_archived_chat_ids_by_user = {}
+_ARCHIVE_CACHE_TTL = 120
 # Недавние отправки из веб-панели (chat_id, text, monotonic-время) —
 # чтобы не записать их повторно, когда Telegram пришлёт их обратно
 # как исходящее событие.
@@ -441,7 +445,8 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
 
 
 async def _handle_message(event, user_id=None, client=None):
-    # Пропускаем чаты из архива и с выключенными уведомлениями.
+    # Пропускаем чаты с выключенными уведомлениями. Архив Telegram не
+    # отбрасываем: такие сообщения попадут в локальный раздел «Архив».
     if event.chat_id in _skip_chat_ids:
         return
     # Discussion-группы каналов (комментарии) — не создаём из них
@@ -489,6 +494,9 @@ async def _handle_message(event, user_id=None, client=None):
     else:
         chat_type = "channel"
 
+    archived = await _chat_archived_by_telegram(
+        event.chat_id, user_id=user_id, client=client)
+
     # Автор подписи над сообщением.
     author_tg_chat_id = None
     if is_out:
@@ -514,13 +522,14 @@ async def _handle_message(event, user_id=None, client=None):
     await _persist_telegram_message(msg, event.chat_id, chat, chat_key,
                                     chat_type, is_out, author, kind, text,
                                     author_tg_chat_id=author_tg_chat_id,
-                                    user_id=user_id, client=client)
+                                    user_id=user_id, client=client,
+                                    archived=archived)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                     is_out, author, kind, text,
                                     author_tg_chat_id=None, user_id=None,
-                                    client=None):
+                                    client=None, archived=False):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
     созданные синхронно прямо из веб-панели (forward / send) — иначе UI ждёт
@@ -610,7 +619,8 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  tg_topic_id=int(topic_id) if topic_id else None,
                                  tg_topic_title=topic_title,
                                  tg_is_forum=is_forum_chat,
-                                 text_html=text_html)
+                                 text_html=text_html,
+                                 archived=archived)
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
         if message is not None and data is not None and kind is not None:
             _save_attachment(db, owner, message.id, kind, data, msg)
@@ -1026,16 +1036,61 @@ async def _refresh_filter_cache(user_id=None, client=None):
         client = _clients.get(owner)
     if client is None:
         return
-    skip_muted, skip_archived = _skip_muted(), _skip_archived()
-    if not skip_muted and not skip_archived:
+    skip_muted = _skip_muted()
+    if not skip_muted:
         _skip_chat_ids = set()
+        if _skip_archived():
+            await _refresh_archive_cache(owner, client)
         return
     skip = set()
     async for d in client.iter_dialogs():
-        if (skip_archived and getattr(d, "archived", False)) or \
-                (skip_muted and _is_muted(d)):
+        if skip_muted and _is_muted(d):
             skip.add(d.id)
     _skip_chat_ids = skip
+    if _skip_archived():
+        await _refresh_archive_cache(owner, client)
+
+
+async def _refresh_archive_cache(user_id=None, client=None):
+    """Возвращает множество chat_id, которые лежат в архиве Telegram."""
+    owner = _normalize_user_id(user_id)
+    if client is None:
+        client = _clients.get(owner)
+    if client is None:
+        return set()
+    ids = set()
+    async for d in client.iter_dialogs(archived=True):
+        try:
+            ids.add(int(d.id))
+        except (TypeError, ValueError):
+            continue
+    _archived_chat_ids_by_user[owner] = (time.monotonic(), ids)
+    return ids
+
+
+async def _chat_archived_by_telegram(chat_id, user_id=None, client=None):
+    """Best effort: знает ли Telegram, что диалог сейчас в архиве."""
+    if not _skip_archived():
+        return False
+    owner = _normalize_user_id(user_id)
+    now = time.monotonic()
+    cached = _archived_chat_ids_by_user.get(owner)
+    if cached is None or now - cached[0] > _ARCHIVE_CACHE_TTL:
+        try:
+            ids = await _refresh_archive_cache(owner, client)
+        except Exception:  # noqa: BLE001
+            return False
+    else:
+        ids = cached[1]
+    try:
+        cid = int(chat_id)
+    except (TypeError, ValueError):
+        return False
+    try:
+        from data.telegram_ids import chat_id_variants
+        return any(int(v) in ids for v in chat_id_variants(cid))
+    except Exception:  # noqa: BLE001
+        return cid in ids
 
 
 async def _periodic_refresh(user_id=None):
@@ -1782,6 +1837,15 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None,
               "parse_mode": parse_mode}
     if voice_note:
         kwargs["voice_note"] = True
+        if (filename or "").lower().endswith(".ogg"):
+            kwargs["mime_type"] = "audio/ogg"
+        try:
+            from telethon.tl.types import DocumentAttributeAudio
+            kwargs["attributes"] = [
+                DocumentAttributeAudio(duration=0, voice=True)
+            ]
+        except Exception:  # noqa: BLE001
+            pass
     if silent:
         kwargs["silent"] = True
     if schedule:

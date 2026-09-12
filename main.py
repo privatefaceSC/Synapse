@@ -223,6 +223,15 @@ def _form_bool(value) -> bool:
     return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _archive_mode_from_request() -> bool:
+    return _form_bool(request.args.get('archived'))
+
+
+def _filter_archived_contacts(contacts, archive_mode: bool):
+    return [c for c in contacts
+            if bool(getattr(c, 'archived', False)) == bool(archive_mode)]
+
+
 def _reply_channel(handles):
     """Какой канал ответа доступен для этих хэндлов.
 
@@ -1665,6 +1674,7 @@ def register_routes(app: Flask) -> None:
         from data.contacts import Contact, consolidate_android_group_contacts
         db = get_db()
         user_id = session['user_id']
+        archive_mode = _archive_mode_from_request()
         _sync_direct_messages_to_contacts(db, user_id)
         consolidate_android_group_contacts(db, user_id)
         contacts = (
@@ -1673,9 +1683,11 @@ def register_routes(app: Flask) -> None:
             .all()
         )
         contacts = _filter_discussion_contacts(db, contacts)
+        contacts = _filter_archived_contacts(contacts, archive_mode)
         _enrich_with_last_message(db, contacts)
         return render_template('contacts.html', contacts=contacts,
-                               selected=None, selected_handles=[], messages=None)
+                               selected=None, selected_handles=[],
+                               messages=None, archive_mode=archive_mode)
 
     @app.route('/contacts.json')
     def contacts_index_json():
@@ -1684,6 +1696,7 @@ def register_routes(app: Flask) -> None:
         from data.contacts import Contact, consolidate_android_group_contacts
         db = get_db()
         user_id = session['user_id']
+        archive_mode = _archive_mode_from_request()
         _sync_direct_messages_to_contacts(db, user_id)
         consolidate_android_group_contacts(db, user_id)
         contacts = (
@@ -1692,6 +1705,7 @@ def register_routes(app: Flask) -> None:
             .all()
         )
         contacts = _filter_discussion_contacts(db, contacts)
+        contacts = _filter_archived_contacts(contacts, archive_mode)
         _enrich_with_last_message(db, contacts)
         return jsonify({'contacts': [
             {
@@ -1708,6 +1722,7 @@ def register_routes(app: Flask) -> None:
                 'unread_count': c.unread_count or 0,
                 'pinned': bool(c.pinned_at),
                 'muted': bool(c.muted),
+                'archived': bool(c.archived),
             }
             for c in contacts
         ]})
@@ -1731,18 +1746,28 @@ def register_routes(app: Flask) -> None:
             return jsonify({'contact_ids': [], 'matches': []})
         db = get_db()
         user_id = session['user_id']
+        archive_mode = _archive_mode_from_request()
         _sync_direct_messages_to_contacts(db, user_id)
 
         contacts = db.query(Contact).filter(Contact.user_id == user_id).all()
         contacts = _filter_discussion_contacts(db, contacts)
+        contacts = _filter_archived_contacts(contacts, archive_mode)
         contact_by_id = {c.id: c for c in contacts}
         matched_by_name = {c.id for c in contacts
                            if q in (c.display_name or '').lower()}
 
+        visible_contact_ids = set(contact_by_id)
+        if visible_contact_ids:
+            handle_rows = (db.query(MessengerHandle)
+                           .filter(MessengerHandle.user_id == user_id,
+                                   MessengerHandle.contact_id.in_(
+                                       visible_contact_ids))
+                           .all())
+        else:
+            handle_rows = []
         handle_to_meta = {
             h.id: (h.contact_id, h.messenger_name)
-            for h in db.query(MessengerHandle)
-            .filter(MessengerHandle.user_id == user_id).all()
+            for h in handle_rows
         }
         matches = []
         matched_in_msg = set()
@@ -1864,6 +1889,7 @@ def register_routes(app: Flask) -> None:
         from data.matching import display_author
         db = get_db()
         user_id = session['user_id']
+        archive_mode = _archive_mode_from_request()
         _sync_direct_messages_to_contacts(db, user_id)
         contact = (
             db.query(Contact)
@@ -1882,6 +1908,7 @@ def register_routes(app: Flask) -> None:
             .all()
         )
         contacts = _filter_discussion_contacts(db, contacts)
+        contacts = _filter_archived_contacts(contacts, archive_mode)
         _enrich_with_last_message(db, contacts)
         _avatar_for(contact)
 
@@ -1937,7 +1964,8 @@ def register_routes(app: Flask) -> None:
                                can_reply=can_reply, reply_via=reply_via,
                                is_group=is_group, chat_type=chat_type,
                                notifications_muted=bool(contact.muted),
-                               messengers=available, current_messenger=current_m)
+                               messengers=available, current_messenger=current_m,
+                               archive_mode=archive_mode)
 
     @app.route('/contacts/<int:contact_id>/messages.json')
     def contact_messages_json(contact_id):
@@ -2058,6 +2086,7 @@ def register_routes(app: Flask) -> None:
                 'chat_type': (tg_chat_handle.tg_chat_type
                               if tg_chat_handle is not None else None),
                 'notifications_muted': bool(contact.muted),
+                'archived': bool(contact.archived),
             },
             'topics': saved_topics,
             'has_older': has_older,
@@ -3030,6 +3059,28 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'muted': bool(contact.muted)})
 
+    @app.route('/contacts/<int:contact_id>/archive', methods=['POST'])
+    def contact_archive(contact_id):
+        """Переместить контакт в архив или вернуть его в общий список."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact
+        db = get_db()
+        contact = db.query(Contact).filter(
+            Contact.id == contact_id,
+            Contact.user_id == session['user_id']).first()
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        raw = request.form.get('archived')
+        if raw is None:
+            contact.archived = not bool(contact.archived)
+        else:
+            contact.archived = _form_bool(raw)
+        db.commit()
+        if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
+            return jsonify({'ok': True, 'archived': bool(contact.archived)})
+        return redirect('/contacts?archived=1' if contact.archived else '/contacts')
+
     @app.route('/contacts/<int:contact_id>/rename', methods=['POST'])
     def contact_rename(contact_id):
         if not session.get('user_id'):
@@ -3197,6 +3248,7 @@ def register_routes(app: Flask) -> None:
                                if contact.avatar_path else None),
                 'pinned': contact.pinned_at is not None,
                 'muted': bool(contact.muted),
+                'archived': bool(contact.archived),
                 'blocked': contact.blocked_at is not None,
                 'messages_count': int(msgs_count),
             },

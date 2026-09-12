@@ -22,6 +22,8 @@ class Contact(SqlAlchemyBase):
     # Беззвучный режим: True = не показывать браузерные уведомления и не пищать.
     # Бэйдж непрочитанного всё равно остаётся — это «выключить звук», не «не следить».
     muted = sqlalchemy.Column(sqlalchemy.Boolean, default=False, nullable=True)
+    # Архив: чат скрыт из общего списка и показывается в отдельном режиме.
+    archived = sqlalchemy.Column(sqlalchemy.Boolean, default=False, nullable=True)
     # Блокировка: NULL = не заблокирован. Иначе момент блокировки. Если стоит,
     # record_message() молча игнорирует новые входящие от этого контакта —
     # сообщение не сохраняется ни в БД, ни в Telegram оно само собой остаётся
@@ -355,7 +357,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     tg_topic_id=None,
                     tg_topic_title=None, tg_is_forum=None,
                     text_html=None, is_group=None, contact_avatar_path=None,
-                    author_avatar_path=None, notification_dedup_key=None):
+                    author_avatar_path=None, notification_dedup_key=None,
+                    archived=None):
     """Записывает сообщение.
 
     `sender_raw` — ключ личности (контакта): для лички это имя
@@ -380,6 +383,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
     if (contact is not None and contact_avatar_path
             and contact.avatar_path != contact_avatar_path):
         contact.avatar_path = contact_avatar_path
+    if contact is not None and archived is True and not bool(contact.archived):
+        contact.archived = True
     # Контакт заблокирован — молча игнорируем новые входящие. Свои
     # исходящие пропускаем (вдруг разблокировка и сами что-то ответили).
     if not outgoing:

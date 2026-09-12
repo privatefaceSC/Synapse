@@ -154,7 +154,7 @@
                            onchange="this.form.submit()"
                            {% if tg.skip_archived %}checked{% endif %}>
                     <label class="form-check-label" for="sw-archived">
-                        Не принимать из архивированных чатов
+                        Складывать архивированные чаты в раздел «Архив»
                     </label>
                 </form>
                 <form method="post" action="/telegram/settings"
@@ -232,12 +232,6 @@
                 </div>
             </form>
         {% endif %}
-
-        <div class="tg-warn">
-            ⚠️ Сессия Telegram = полный доступ к аккаунту. Это PoC для
-            локального запуска с личным аккаунтом. Файл сессии хранится
-            в <code>db/</code> (не попадает в репозиторий).
-        </div>
     </div>
 </div>
 {% endblock %}

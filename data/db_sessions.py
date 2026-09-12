@@ -62,6 +62,7 @@ def _apply_light_migrations(engine):
         "contacts": [("avatar_path", "VARCHAR"),
                      ("pinned_at", "DATETIME"),
                      ("muted", "BOOLEAN"),
+                     ("archived", "BOOLEAN"),
                      ("blocked_at", "DATETIME")],
         "users": [("username", "VARCHAR"),
                   ("preferred_lang", "VARCHAR")],

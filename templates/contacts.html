@@ -84,6 +84,27 @@
         box-shadow: 0 0 0 3px rgba(96,165,250,.16);
     }
     .contact-search { flex: 0 0 auto; margin-bottom: 8px; position: relative; }
+    .archive-head {
+        flex: 0 0 auto; display: flex; align-items: center; gap: 10px;
+        min-height: 42px; margin-bottom: 8px; padding-left: 58px;
+    }
+    .archive-back {
+        width: 30px; height: 30px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        color: #475569; text-decoration: none; font-size: 20px;
+        border: 1px solid #e2e8f0; background: #fff;
+    }
+    .archive-back:hover { background: #eef4ff; color: #2563eb; }
+    .archive-title { font-weight: 700; color: #1f2937; line-height: 1.1; }
+    .archive-sub { color: #64748b; font-size: 12px; margin-top: 2px; }
+    [data-bs-theme="dark"] .archive-back {
+        background: #1a1d24; border-color: #2a2f3a; color: #cbd5e1;
+    }
+    [data-bs-theme="dark"] .archive-back:hover {
+        background: #1c2c44; color: #93c5fd;
+    }
+    [data-bs-theme="dark"] .archive-title { color: #e5e7eb; }
+    [data-bs-theme="dark"] .archive-sub { color: #8d97a8; }
     /* «Папки» — горизонтальная панель кнопок-фильтров по мессенджерам.
      * Активная подсвечена синим. «Все» — спецзначение, показывает всех. */
     .messenger-folders {
@@ -1679,6 +1700,12 @@
     .composer .voice-btn.recording {
         background: #ef4444; color: #fff; border-color: #ef4444;
         animation: voice-rec-pulse 1s ease-in-out infinite;
+    }
+    .composer .voice-btn.video-note-mode {
+        background: #eef6ff; border-color: #93c5fd; color: #2563eb;
+    }
+    [data-bs-theme="dark"] .composer .voice-btn.video-note-mode {
+        background: #1c2c44; border-color: #315078; color: #93c5fd;
     }
     .composer.voice-active {
         flex-wrap: wrap;
@@ -3389,6 +3416,11 @@
     <hr>
     <a href="/profile"><span class="menu-ico">●</span>Профиль</a>
     <a href="/contacts/manage"><span class="menu-ico">↔</span>Связи</a>
+    {% if archive_mode %}
+    <a href="/contacts"><span class="menu-ico">←</span>Все чаты</a>
+    {% else %}
+    <a href="/contacts?archived=1"><span class="menu-ico">↙</span>Архив</a>
+    {% endif %}
     <a href="/devices"><span class="menu-ico">▣</span>Устройства</a>
     <a href="/telegram"><span class="menu-ico">✈</span>Telegram</a>
     <a href="/download"><span class="menu-ico">⇩</span>Клиент Android</a>
@@ -3511,6 +3543,15 @@
 <div class="container-fluid contacts-shell" id="contacts-shell">
     <div class="row g-3 h-100 contacts-layout">
         <div class="col-md-4 h-100 {% if selected %}d-none d-md-flex{% endif %}" id="col-list">
+            {% if archive_mode %}
+            <div class="archive-head">
+                <a href="/contacts" class="archive-back" aria-label="Все чаты">←</a>
+                <div>
+                    <div class="archive-title">Архив</div>
+                    <div class="archive-sub">Скрытые чаты</div>
+                </div>
+            </div>
+            {% endif %}
             <div class="contact-search has-new-chat">
                 <input type="search" id="contact-search-input" autocomplete="off"
                        placeholder="Поиск по контактам и сообщениям…">
@@ -3522,15 +3563,17 @@
             </div>
             <div class="messenger-folders" id="messenger-folders"></div>
             <div class="contact-list" id="contact-list"
-                 data-active-id="{{ selected.id if selected else '' }}">
+                 data-active-id="{{ selected.id if selected else '' }}"
+                 data-archive-mode="{{ '1' if archive_mode else '0' }}">
                 {% if contacts %}
                     {% for c in contacts %}
                     <div class="contact-row-wrap{% if c.pinned_at %} pinned{% endif %}"
                          data-contact-id="{{ c.id }}"
                          data-messengers="{{ c.messengers|join(',') }}"
                          data-pinned="{{ '1' if c.pinned_at else '0' }}"
-                         data-muted="{{ '1' if c.muted else '0' }}">
-                        <a href="/contacts/{{ c.id }}"
+                         data-muted="{{ '1' if c.muted else '0' }}"
+                         data-archived="{{ '1' if c.archived else '0' }}">
+                        <a href="/contacts/{{ c.id }}{% if archive_mode %}?archived=1{% endif %}"
                            class="contact-row {% if selected and selected.id == c.id %}active{% endif %}">
                             {% if c.avatar_url %}
                             <span class="avatar"><img src="{{ c.avatar_url }}" alt=""></span>
@@ -3566,7 +3609,11 @@
                     {% endfor %}
                 {% else %}
                     <div class="empty-state p-4">
-                        Контактов пока нет. Пришлите первое уведомление с устройства.
+                        {% if archive_mode %}
+                            В архиве пока пусто.
+                        {% else %}
+                            Контактов пока нет. Пришлите первое уведомление с устройства.
+                        {% endif %}
                     </div>
                 {% endif %}
             </div>
@@ -4647,6 +4694,7 @@
 (function() {
     const list = document.getElementById('contact-list');
     if (!list) return;
+    const archiveMode = list.dataset.archiveMode === '1';
     let lastSig = '';
     let notifBaseline = null;
     let audioCtx = null;
@@ -4753,11 +4801,20 @@
                 >${read ? '✓✓' : '✓'}</span>`;
     }
 
+    function contactsJsonUrl() {
+        return '/contacts.json' + (archiveMode ? '?archived=1' : '');
+    }
+
+    function contactUrl(id) {
+        return '/contacts/' + id + (archiveMode ? '?archived=1' : '');
+    }
+
     function render(contacts) {
         if (!contacts.length) {
             list.innerHTML =
                 '<div class="empty-state p-4">' +
-                'Контактов пока нет. Пришлите первое уведомление с устройства.' +
+                (archiveMode ? 'В архиве пока пусто.'
+                             : 'Контактов пока нет. Пришлите первое уведомление с устройства.') +
                 '</div>';
             return;
         }
@@ -4770,8 +4827,9 @@
                 data-contact-id="${c.id}"
                 data-messengers="${escapeHtml((c.messengers || []).join(','))}"
                 data-pinned="${c.pinned ? '1' : '0'}"
-                data-muted="${c.muted ? '1' : '0'}">
-                <a href="/contacts/${c.id}"
+                data-muted="${c.muted ? '1' : '0'}"
+                data-archived="${c.archived ? '1' : '0'}">
+                <a href="${contactUrl(c.id)}"
                    class="contact-row${isActive ? ' active' : ''}">
                     ${c.avatar_url
                         ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
@@ -4804,7 +4862,7 @@
         // иначе пользовательское взаимодействие сорвётся.
         if (window.__skillwoodMenuOpen) return;
         try {
-            const r = await fetch('/contacts.json', {credentials: 'same-origin'});
+            const r = await fetch(contactsJsonUrl(), {credentials: 'same-origin'});
             if (!r.ok) return;
             const data = await r.json();
             maybeNotify(data.contacts);
@@ -4813,7 +4871,8 @@
                       c.last_outgoing ? 1 : 0,
                       c.last_tg_read === null || c.last_tg_read === undefined
                           ? null : (c.last_tg_read ? 1 : 0),
-                      c.unread_count, c.pinned ? 1 : 0, c.muted ? 1 : 0]));
+                      c.unread_count, c.pinned ? 1 : 0, c.muted ? 1 : 0,
+                      c.archived ? 1 : 0]));
             if (sig !== lastSig) {
                 render(data.contacts);
                 lastSig = sig;
@@ -4832,6 +4891,13 @@
 
 // Kebab-меню для контактов: переименовать / удалить.
 (function() {
+    const list = document.getElementById('contact-list');
+    const archiveMode = list && list.dataset.archiveMode === '1';
+
+    function contactsHomeUrl() {
+        return archiveMode ? '/contacts?archived=1' : '/contacts';
+    }
+
     // ПКМ по строке контакта = тот же контекстный поповер, что и kebab.
     // На десктопе так удобнее, чем целиться в три точки.
     document.addEventListener('contextmenu', function(e) {
@@ -4875,6 +4941,7 @@
         menu.style.right = '6px';
         const isPinned = wrap.dataset.pinned === '1';
         const isMuted = wrap.dataset.muted === '1';
+        const isArchived = wrap.dataset.archived === '1';
         menu.innerHTML =
             '<button class="pin-btn" type="button">'
                 + '<span class="menu-ico">📌</span>'
@@ -4882,6 +4949,9 @@
             '<button class="mute-btn" type="button">'
                 + '<span class="menu-ico">' + (isMuted ? '🔔' : '🔇') + '</span>'
                 + (isMuted ? 'Включить звук' : 'Без звука') + '</button>' +
+            '<button class="archive-btn" type="button">'
+                + '<span class="menu-ico">' + (isArchived ? '↩' : '↙') + '</span>'
+                + (isArchived ? 'Вернуть из архива' : 'Архивировать') + '</button>' +
             '<div class="menu-divider"></div>' +
             '<button class="rename-btn" type="button">'
                 + '<span class="menu-ico">✏</span>Переименовать</button>' +
@@ -4898,6 +4968,10 @@
             e.stopPropagation();
             toggleMute(contactId, wrap);
         });
+        menu.querySelector('.archive-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleArchive(contactId, wrap);
+        });
         menu.querySelector('.rename-btn').addEventListener('click', (e) => {
             e.stopPropagation();
             startRename(menu, contactId);
@@ -4910,9 +4984,11 @@
 
     // Мгновенно обновляем визуальное состояние строки контакта
     // (значки 📌/🔇 + класс pinned), не дожидаясь полла /contacts.json.
-    function applyContactStatus(wrap, pinned, muted) {
+    function applyContactStatus(wrap, pinned, muted, archived) {
+        if (archived === undefined) archived = wrap.dataset.archived === '1';
         wrap.dataset.pinned = pinned ? '1' : '0';
         wrap.dataset.muted = muted ? '1' : '0';
+        wrap.dataset.archived = archived ? '1' : '0';
         wrap.classList.toggle('pinned', !!pinned);
         const marksEl = wrap.querySelector('.contact-row .status-marks');
         if (marksEl) {
@@ -4924,7 +5000,8 @@
         // Оптимистично, чтобы значок поменялся сразу под пальцем.
         const wasPinned = wrap.dataset.pinned === '1';
         const muted = wrap.dataset.muted === '1';
-        applyContactStatus(wrap, !wasPinned, muted);
+        const archived = wrap.dataset.archived === '1';
+        applyContactStatus(wrap, !wasPinned, muted, archived);
         closeOpenMenu();
         try {
             const r = await fetch('/contacts/' + contactId + '/pin', {
@@ -4933,24 +5010,25 @@
             });
             if (r.ok) {
                 const d = await r.json();
-                applyContactStatus(wrap, !!d.pinned, muted);
+                applyContactStatus(wrap, !!d.pinned, muted, archived);
                 // Перерисовать список сразу, чтобы pinned-контакт уехал вверх
                 // (порядок строится на сервере по pinned_at).
                 if (typeof refreshContactsNow === 'function') {
                     refreshContactsNow();
                 }
             } else {
-                applyContactStatus(wrap, wasPinned, muted);
+                applyContactStatus(wrap, wasPinned, muted, archived);
             }
         } catch (e) {
-            applyContactStatus(wrap, wasPinned, muted);
+            applyContactStatus(wrap, wasPinned, muted, archived);
         }
     }
 
     async function toggleMute(contactId, wrap) {
         const pinned = wrap.dataset.pinned === '1';
         const wasMuted = wrap.dataset.muted === '1';
-        applyContactStatus(wrap, pinned, !wasMuted);
+        const archived = wrap.dataset.archived === '1';
+        applyContactStatus(wrap, pinned, !wasMuted, archived);
         closeOpenMenu();
         try {
             const r = await fetch('/contacts/' + contactId + '/mute', {
@@ -4959,12 +5037,45 @@
             });
             if (r.ok) {
                 const d = await r.json();
-                applyContactStatus(wrap, pinned, !!d.muted);
+                applyContactStatus(wrap, pinned, !!d.muted, archived);
             } else {
-                applyContactStatus(wrap, pinned, wasMuted);
+                applyContactStatus(wrap, pinned, wasMuted, archived);
             }
         } catch (e) {
-            applyContactStatus(wrap, pinned, wasMuted);
+            applyContactStatus(wrap, pinned, wasMuted, archived);
+        }
+    }
+
+    async function toggleArchive(contactId, wrap) {
+        const pinned = wrap.dataset.pinned === '1';
+        const muted = wrap.dataset.muted === '1';
+        const wasArchived = wrap.dataset.archived === '1';
+        applyContactStatus(wrap, pinned, muted, !wasArchived);
+        closeOpenMenu();
+        try {
+            const r = await fetch('/contacts/' + contactId + '/archive', {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+            });
+            if (!r.ok) {
+                applyContactStatus(wrap, pinned, muted, wasArchived);
+                return;
+            }
+            const d = await r.json();
+            applyContactStatus(wrap, pinned, muted, !!d.archived);
+            if (!!d.archived !== archiveMode) {
+                wrap.remove();
+                const activeId = list ? list.dataset.activeId : '';
+                if (String(contactId) === String(activeId)) {
+                    window.location = contactsHomeUrl();
+                    return;
+                }
+            }
+            if (typeof refreshContactsNow === 'function') {
+                refreshContactsNow();
+            }
+        } catch (e) {
+            applyContactStatus(wrap, pinned, muted, wasArchived);
         }
     }
 
@@ -5755,6 +5866,7 @@
     const colFeed = document.getElementById('col-feed');
     if (!feed || !list) return;
 
+    const archiveMode = list.dataset.archiveMode === '1';
     let currentContactId = list.dataset.activeId || null;
     let currentMessenger = null;
     let lastSig = '';
@@ -6515,6 +6627,9 @@
                 + '<div id="messages-container">' + renderMessages(messages) + '</div>'
                 + renderComposer(contact);
         }
+        if (window.__skillwoodSyncVoiceMode) {
+            window.__skillwoodSyncVoiceMode(feed);
+        }
         // Дальнейшее «вкручивание» вниз делает scrollToBottomSticky из
         // openContact (он подписывается на image-load и подталкивает).
     }
@@ -6738,7 +6853,11 @@
             const r = await fetch('/contacts/' + id + '/messages.json' + qs,
                                   {credentials: 'same-origin'});
             if (token !== navToken) return;
-            if (!r.ok) { window.location = '/contacts/' + id; return; }
+            if (!r.ok) {
+                window.location = '/contacts/' + id
+                    + (archiveMode ? '?archived=1' : '');
+                return;
+            }
             const data = await r.json();
             if (token !== navToken) return;
             // Сервер мог выбрать мессенджер по умолчанию.
@@ -6803,6 +6922,7 @@
                 const hash = opts.scrollToMessageId
                     ? '#msg-' + opts.scrollToMessageId : '';
                 const urlParts = [];
+                if (archiveMode) urlParts.push('archived=1');
                 if (currentMessenger) urlParts.push('m=' + encodeURIComponent(currentMessenger));
                 if (currentTopicId) urlParts.push('topic_id=' + encodeURIComponent(currentTopicId));
                 const url = '/contacts/' + id
@@ -6815,7 +6935,8 @@
                     '', url);
             }
         } catch (e) {
-            window.location = '/contacts/' + id;
+            window.location = '/contacts/' + id
+                + (archiveMode ? '?archived=1' : '');
         }
     }
 
@@ -6836,7 +6957,8 @@
             'чтобы увидеть переписку.</div>';
         document.title = 'Контакты';
         if (opts.push !== false) {
-            history.pushState({contactId: null}, '', '/contacts');
+            history.pushState({contactId: null}, '',
+                '/contacts' + (archiveMode ? '?archived=1' : ''));
         }
     }
 
@@ -8829,31 +8951,36 @@
             inp.value = '';
         }
     });
-    // Ctrl+V в поле ввода — если в буфере картинка, прицепляем как файл
-    // (как в Telegram, чтобы не лезть в скрепку). Бьём в первый image/*
-    // элемент clipboard.items, делаем у него осмысленное имя и кладём в
-    // список вложений + превью. preventDefault, чтобы base64 не вставился
-    // в textarea как текст.
-    feed.addEventListener('paste', async function(e) {
-        const ta = e.target.closest('#composer-text');
-        if (!ta) return;
+    // Ctrl+V в поле ввода или подписи — если в буфере картинка, добавляем
+    // её в текущий черновик медиа. preventDefault нужен, чтобы браузер не
+    // вставил base64/служебный текст в textarea.
+    document.addEventListener('paste', async function(e) {
+        const target = e.target.closest('#composer-text,[data-media-caption]');
+        if (!target) return;
+        if (target.id === 'composer-text' && !feed.contains(target)) return;
+        if (target.hasAttribute('data-media-caption')
+                && (!mediaDraftModal || !mediaDraftModal.contains(target))) {
+            return;
+        }
         const items = (e.clipboardData && e.clipboardData.items) || [];
+        const files = [];
         for (let i = 0; i < items.length; i++) {
             const it = items[i];
             if (it.kind !== 'file') continue;
             if (!it.type || it.type.indexOf('image/') !== 0) continue;
             const raw = it.getAsFile();
             if (!raw) continue;
-            e.preventDefault();
             // Clipboard-файлы часто называются «image.png» без даты, или
             // вообще пустым именем — придаём уникальное имя, иначе
             // несколько скриншотов подряд получат одинаковый name.
             const ext = '.' + ((it.type.split('/')[1] || 'png').toLowerCase());
             const named = new File([raw],
-                'pasted-' + Date.now() + ext, {type: it.type});
-            await attachFile(named);
-            return;
+                'pasted-' + Date.now() + '-' + i + ext, {type: it.type});
+            files.push(named);
         }
+        if (!files.length) return;
+        e.preventDefault();
+        await attachFiles(files);
     });
     // Авторост поля ввода + toggle has-text для замены mic ↔ send.
     feed.addEventListener('input', function(e) {
@@ -8918,6 +9045,7 @@
     const newChatBtn = document.getElementById('new-synapse-chat');
     if (!input || !list) return;
 
+    const archiveMode = list.dataset.archiveMode === '1';
     let query = '';
     let serverIds = null;
     let token = 0;
@@ -9141,7 +9269,8 @@
         const my = ++token;
         try {
             const r = await fetch(
-                '/contacts/search.json?q=' + encodeURIComponent(q),
+                '/contacts/search.json?q=' + encodeURIComponent(q)
+                + (archiveMode ? '&archived=1' : ''),
                 {credentials: 'same-origin'});
             if (my !== token) return;
             if (r.ok) {
@@ -9661,9 +9790,68 @@
     let trimStart = 0;
     let trimEnd = 0;
     let trimDrag = null;
+    let pressTimer = null;
+    let pendingPress = null;
+    let captureMode = 'voice';
 
     const LOCK_Y = 56;
     const CANCEL_X = 92;
+    const HOLD_TO_RECORD_MS = 260;
+    const MIC_ICON =
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"'
+        + ' stroke="currentColor" stroke-width="2" stroke-linecap="round"'
+        + ' stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3'
+        + ' 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2'
+        + 'a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12"'
+        + ' y2="23"></line><line x1="8" y1="23" x2="16" y2="23">'
+        + '</line></svg>';
+    const VIDEO_NOTE_ICON =
+        '<svg width="20" height="20" viewBox="0 0 24 24" fill="none"'
+        + ' stroke="currentColor" stroke-width="2" stroke-linecap="round"'
+        + ' stroke-linejoin="round"><circle cx="12" cy="12" r="8"></circle>'
+        + '<circle cx="12" cy="12" r="3"></circle></svg>';
+
+    try {
+        captureMode = localStorage.getItem('skillwood:capture-mode') || 'voice';
+    } catch (_) {
+        captureMode = 'voice';
+    }
+    if (captureMode !== 'video') captureMode = 'voice';
+
+    function saveCaptureMode() {
+        try { localStorage.setItem('skillwood:capture-mode', captureMode); }
+        catch (_) {}
+    }
+
+    function syncVoiceButton(btn) {
+        if (!btn) return;
+        const isVideo = captureMode === 'video';
+        btn.innerHTML = isVideo ? VIDEO_NOTE_ICON : MIC_ICON;
+        btn.classList.toggle('video-note-mode', isVideo);
+        btn.dataset.captureMode = captureMode;
+        btn.title = isVideo
+            ? 'Кружок (запись скоро появится)' : 'Удерживайте для голосового';
+        btn.setAttribute('aria-label', btn.title);
+    }
+
+    function syncVoiceButtons(root) {
+        (root || document).querySelectorAll('#composer-voice')
+            .forEach(syncVoiceButton);
+    }
+
+    function toggleCaptureMode(btn) {
+        if (activeForm || recorder) return;
+        captureMode = captureMode === 'voice' ? 'video' : 'voice';
+        saveCaptureMode();
+        syncVoiceButtons(document);
+        if (btn) syncVoiceButton(btn);
+    }
+
+    function clearPendingPress() {
+        if (pressTimer) clearTimeout(pressTimer);
+        pressTimer = null;
+        pendingPress = null;
+    }
 
     function pickMime() {
         if (!window.MediaRecorder) return '';
@@ -9743,7 +9931,7 @@
         stopTimer();
         if (activeBtn) {
             activeBtn.classList.remove('recording');
-            activeBtn.title = 'Записать голосовое';
+            syncVoiceButton(activeBtn);
         }
         if (activeForm) {
             activeForm.classList.remove('voice-active');
@@ -10100,10 +10288,28 @@
         if (!btn) return;
         e.preventDefault();
         e.stopPropagation();
-        begin(btn, e);
+        if (activeForm || recorder) return;
+        syncVoiceButton(btn);
+        clearPendingPress();
+        const ev = {clientX: e.clientX, clientY: e.clientY,
+                    pointerId: e.pointerId};
+        pendingPress = {btn, event: ev, moved: false};
+        if (captureMode !== 'voice') return;
+        pressTimer = setTimeout(() => {
+            const info = pendingPress;
+            pendingPress = null;
+            pressTimer = null;
+            if (!info || captureMode !== 'voice') return;
+            begin(info.btn, info.event);
+        }, HOLD_TO_RECORD_MS);
     });
 
     document.addEventListener('pointermove', (e) => {
+        if (pendingPress && !activeForm) {
+            const dx0 = e.clientX - pendingPress.event.clientX;
+            const dy0 = e.clientY - pendingPress.event.clientY;
+            if (Math.hypot(dx0, dy0) > 14) pendingPress.moved = true;
+        }
         if (!activeForm || !pointerStart || locked) return;
         const dx = e.clientX - pointerStart.x;
         const dy = e.clientY - pointerStart.y;
@@ -10118,6 +10324,14 @@
     });
 
     document.addEventListener('pointerup', (e) => {
+        if (pendingPress && !activeForm) {
+            const info = pendingPress;
+            clearPendingPress();
+            e.preventDefault();
+            e.stopPropagation();
+            if (!info.moved) toggleCaptureMode(info.btn);
+            return;
+        }
         if (!activeForm) return;
         if (pointerStart && activeBtn && activeBtn.releasePointerCapture) {
             try { activeBtn.releasePointerCapture(pointerStart.id); } catch (_) {}
@@ -10172,11 +10386,14 @@
     });
 
     document.addEventListener('pointercancel', (e) => {
+        if (pendingPress && !activeForm) clearPendingPress();
         if (!trimDrag) return;
         trimDrag = null;
     });
 
     window.__skillwoodCancelVoiceDraft = cancel;
+    window.__skillwoodSyncVoiceMode = syncVoiceButtons;
+    syncVoiceButtons(document);
 })();
 </script>
 
@@ -10190,6 +10407,8 @@
     const backdrop = document.getElementById('profile-backdrop');
     const content = document.getElementById('profile-content');
     if (!panel || !backdrop || !content) return;
+    const contactList = document.getElementById('contact-list');
+    const archiveMode = contactList && contactList.dataset.archiveMode === '1';
 
     let currentContactId = null;
     let cachedProfile = null;   // последний загруженный профиль (для возврата)
@@ -10255,6 +10474,10 @@
                 content.innerHTML = '';
             }
         }, 280);
+    }
+
+    function contactsHomeUrl() {
+        return archiveMode ? '/contacts?archived=1' : '/contacts';
     }
 
     async function loadProfile(contactId) {
@@ -10491,6 +10714,11 @@
           +     (c.muted ? 'Включить звук' : 'Отключить звук') + '">'
           +     '<span class="ico">' + (c.muted ? '🔔' : '🔇') + '</span>'
           +     '<span>' + (c.muted ? 'Звук' : 'Без звука') + '</span></button>'
+          +   '<button type="button" class="profile-action"'
+          +     ' data-action="archive" title="'
+          +     (c.archived ? 'Вернуть из архива' : 'Архивировать') + '">'
+          +     '<span class="ico">' + (c.archived ? '↩' : '↙') + '</span>'
+          +     '<span>' + (c.archived ? 'Вернуть' : 'Архив') + '</span></button>'
           +   '<button type="button" class="profile-action"'
           +     ' data-action="rename" title="Переименовать">'
           +     '<span class="ico">✏</span><span>Имя</span></button>'
@@ -10768,6 +10996,25 @@
                 if (r.ok && d.ok && cachedProfile) {
                     cachedProfile.contact.muted = d.muted;
                     renderProfile(cachedProfile, cachedTgExtra);
+                }
+            } catch (err) {}
+        } else if (action === 'archive') {
+            try {
+                const r = await fetch('/contacts/' + currentContactId
+                                      + '/archive', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'X-Requested-With': 'XMLHttpRequest'},
+                });
+                const d = await r.json();
+                if (r.ok && d.ok && cachedProfile) {
+                    cachedProfile.contact.archived = d.archived;
+                    renderProfile(cachedProfile, cachedTgExtra);
+                    if (window.refreshContactsNow) window.refreshContactsNow();
+                    if (!!d.archived !== archiveMode) {
+                        close();
+                        location.href = contactsHomeUrl();
+                    }
                 }
             } catch (err) {}
         } else if (action === 'block') {
