@@ -3054,6 +3054,16 @@
     .contacts-app-menu-btn.chat-open {
         display: inline-flex;
     }
+    .contacts-app-menu-icon {
+        width: 18px; height: 15px;
+        display: inline-flex; flex-direction: column;
+        justify-content: space-between; align-items: stretch;
+        pointer-events: none;
+    }
+    .contacts-app-menu-icon span {
+        display: block; height: 2.5px; border-radius: 999px;
+        background: currentColor;
+    }
     .contacts-app-menu-panel {
         position: absolute; top: 56px; left: 12px; z-index: 90;
         width: 238px; padding: 6px; border-radius: 14px;
@@ -3185,6 +3195,13 @@
         .contacts-app-menu-btn.chat-open + .contacts-app-menu-panel {
             display: none !important;
         }
+        .contacts-app-menu-btn {
+            top: 8px; left: 10px;
+            width: 44px; height: 44px; border-radius: 16px;
+        }
+        .contacts-app-menu-panel {
+            top: 58px; left: 10px;
+        }
         body.contacts-locked > nav {
             display: none;
         }
@@ -3210,9 +3227,27 @@
         }
         .contact-search {
             margin: 0;
-            padding: 8px 10px 7px 58px;
+            padding: 9px 10px 8px 64px;
             background: #f5f6f8;
             z-index: 3;
+        }
+        .contact-search input,
+        .composer textarea,
+        .media-draft-caption textarea,
+        .fwd-search,
+        .forum-picker .fp-search,
+        .popover-menu .rename-input {
+            font-size: 16px;
+        }
+        .contact-search input {
+            min-height: 44px;
+            box-sizing: border-box;
+            border-radius: 16px;
+            padding-top: 8px;
+            padding-bottom: 8px;
+        }
+        .contact-search::before {
+            left: 77px;
         }
         .messenger-folders {
             margin: 0;
@@ -3341,25 +3376,29 @@
         .channel-notice {
             bottom: 0;
             margin: 0;
-            padding: 9px 10px calc(10px + env(safe-area-inset-bottom));
+            width: 100%;
+            box-sizing: border-box;
+            padding: 7px 8px calc(8px + env(safe-area-inset-bottom));
             border-radius: 0;
         }
         .composer {
-            gap: 7px;
+            gap: 6px;
         }
         .composer textarea {
             min-width: 0;
-            min-height: 40px;
-            font-size: 16px;
-            padding: 8px 11px;
+            min-height: 38px;
+            max-height: 104px;
+            padding: 7px 12px;
+            line-height: 1.3;
+            border-radius: 14px;
         }
         .composer .attach-btn,
         .composer .emoji-btn,
         .composer .voice-btn,
         .composer .send-btn {
-            width: 40px;
-            height: 40px;
-            min-width: 40px;
+            width: 38px;
+            height: 38px;
+            min-width: 38px;
             padding: 0;
             display: inline-flex;
             align-items: center;
@@ -3375,15 +3414,45 @@
         .composer.has-text .voice-btn {
             display: none;
         }
+        [data-bs-theme="dark"] .composer,
+        [data-bs-theme="dark"] .channel-notice {
+            bottom: 0;
+            margin: 0;
+            width: 100%;
+            box-sizing: border-box;
+            padding: 7px 8px calc(8px + env(safe-area-inset-bottom));
+            border-left: 0;
+            border-right: 0;
+            border-bottom: 0;
+            border-radius: 0;
+            box-shadow: none;
+        }
+        [data-bs-theme="dark"] .composer textarea {
+            min-height: 38px;
+            max-height: 104px;
+            font-size: 16px;
+            padding: 7px 12px;
+            line-height: 1.3;
+            border-radius: 14px;
+        }
+        [data-bs-theme="dark"] .composer .attach-btn,
+        [data-bs-theme="dark"] .composer .emoji-btn,
+        [data-bs-theme="dark"] .composer .voice-btn,
+        [data-bs-theme="dark"] .composer .send-btn {
+            width: 38px;
+            height: 38px;
+            min-width: 38px;
+            border-radius: 13px;
+        }
         .emoji-picker {
             left: 10px;
             right: 10px;
-            bottom: 58px;
+            bottom: 54px;
             grid-template-columns: repeat(8, 1fr);
         }
         .scroll-fab {
             right: 16px;
-            bottom: 82px;
+            bottom: 76px;
             width: 42px;
             height: 42px;
         }
@@ -3416,7 +3485,11 @@
 
 <button type="button" class="contacts-app-menu-btn{% if selected %} chat-open{% endif %}"
         data-contacts-menu-btn aria-label="Меню"
-        aria-haspopup="true" aria-expanded="false">☰</button>
+        aria-haspopup="true" aria-expanded="false">
+    <span class="contacts-app-menu-icon" aria-hidden="true">
+        <span></span><span></span><span></span>
+    </span>
+</button>
 <div class="contacts-app-menu-panel" data-contacts-menu-panel role="menu">
     <a href="/"><span class="menu-ico">⌂</span>Главная</a>
     <a href="/contacts"><span class="menu-ico">◉</span>Контакты</a>
