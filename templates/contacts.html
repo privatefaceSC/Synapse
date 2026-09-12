@@ -4767,6 +4767,7 @@
             }
             const body = JSON.stringify({
                 subscription: sub.toJSON ? sub.toJSON() : sub,
+                origin: window.location.origin,
             });
             const saveResp = await fetch('/api/webpush/subscribe', {
                 method: 'POST',
@@ -4791,6 +4792,10 @@
         return (window.matchMedia
                 && window.matchMedia('(display-mode: standalone)').matches)
             || window.navigator.standalone === true;
+    }
+
+    function isIOSDevice() {
+        return /iPhone|iPad|iPod/i.test(navigator.userAgent);
     }
 
     function webPushProblemText() {
@@ -4878,6 +4883,21 @@
             + statuses.join(', ') + '.' : '';
     }
 
+    function startPushTestCountdown(seconds) {
+        if (!pushTestBtn || !seconds) return () => {};
+        const started = Date.now();
+        pushTestBtn.title = 'Заблокируйте экран: тест отправится через '
+            + seconds + ' сек.';
+        function tick() {
+            const left = Math.max(0, seconds
+                - Math.floor((Date.now() - started) / 1000));
+            pushTestBtn.textContent = String(left);
+        }
+        tick();
+        const timer = window.setInterval(tick, 250);
+        return () => window.clearInterval(timer);
+    }
+
     const pushTestBtn = document.getElementById('push-test-btn');
     const notifBtn = document.getElementById('enable-notif-btn');
     function syncNotifBtn() {
@@ -4917,6 +4937,7 @@
             }
             pushTestBtn.disabled = true;
             pushTestBtn.textContent = '…';
+            let stopCountdown = null;
             try {
                 if (Notification.permission !== 'granted') {
                     await Notification.requestPermission();
@@ -4928,9 +4949,15 @@
                         + pushStatusLine(status));
                     return;
                 }
+                const delaySeconds = isIOSDevice() ? 8 : 0;
+                stopCountdown = startPushTestCountdown(delaySeconds);
                 const r = await fetch('/api/webpush/test', {
                     method: 'POST',
-                    headers: {'Accept': 'application/json'},
+                    headers: {
+                        'Accept': 'application/json',
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({delay_seconds: delaySeconds}),
                 });
                 const data = await r.json().catch(() => null);
                 const status = data && data.status ? data.status
@@ -4940,8 +4967,9 @@
                     pushTestBtn.classList.add('ok');
                     alert('Тестовое уведомление отправлено.'
                         + pushSuccessStatusLine(data)
-                        + '\nЕсли iPhone его не показал, закройте Synapse, '
-                        + 'заблокируйте экран и отправьте себе тест ещё раз.');
+                        + (delaySeconds
+                            ? '\nЕсли iPhone молчал даже на заблокированном экране, пришлите этот текст диагностики.'
+                            : '\nЕсли iPhone его не показал, закройте Synapse, заблокируйте экран и отправьте себе тест ещё раз.'));
                 } else {
                     pushTestBtn.classList.add('warn');
                     alert('Сервер не отправил push.\n'
@@ -4954,8 +4982,9 @@
                 const status = await refreshWebPushStatus();
                 alert('Не удалось проверить push.\n' + pushStatusLine(status));
             } finally {
+                if (stopCountdown) stopCountdown();
                 pushTestBtn.disabled = false;
-                if (pushTestBtn.textContent === '…') pushTestBtn.textContent = '✓';
+                if (pushTestBtn.textContent !== '✓') pushTestBtn.textContent = '✓';
             }
         });
     }

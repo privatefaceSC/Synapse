@@ -67,6 +67,7 @@ def _apply_light_migrations(engine):
         "users": [("username", "VARCHAR"),
                   ("preferred_lang", "VARCHAR")],
         "chat_topics": [("topic_id", "BIGINT")],
+        "web_push_subscriptions": [("origin", "VARCHAR")],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

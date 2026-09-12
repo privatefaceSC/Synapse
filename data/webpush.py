@@ -83,6 +83,16 @@ def _subscription_info(sub):
     }
 
 
+def _clean_origin(value: str | None) -> str | None:
+    value = (value or "").strip().rstrip("/")
+    if not value:
+        return None
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def save_subscription(db, user_id: int, payload: dict, user_agent=None):
     from data.webpush_subscriptions import WebPushSubscription
 
@@ -105,6 +115,8 @@ def save_subscription(db, user_id: int, payload: dict, user_agent=None):
     sub.user_id = user_id
     sub.p256dh = p256dh
     sub.auth = auth
+    sub.origin = (_clean_origin(payload.get("origin"))
+                  or _clean_origin(getattr(sub, "origin", None)))
     sub.user_agent = (user_agent or "")[:500] or None
     sub.enabled = True
     sub.updated_at = now
@@ -147,33 +159,45 @@ def _endpoint_label(endpoint: str) -> str:
     return host or "push-сервис"
 
 
-def _public_origin() -> str:
+def _first_header_value(value: str | None) -> str:
+    return (value or "").split(",", 1)[0].strip()
+
+
+def _public_origin(origin: str | None = None) -> str:
+    clean = _clean_origin(origin)
+    if clean:
+        return clean
     origin = (os.environ.get("WEB_PUSH_ORIGIN")
               or os.environ.get("SKILLWOOD_PUBLIC_ORIGIN")
               or "").strip().rstrip("/")
-    if origin:
-        return origin
+    clean = _clean_origin(origin)
+    if clean:
+        return clean
     try:
         from flask import has_request_context, request
         if has_request_context():
-            return request.url_root.rstrip("/")
+            proto = (_first_header_value(
+                request.headers.get("X-Forwarded-Proto")) or request.scheme)
+            host = (_first_header_value(
+                request.headers.get("X-Forwarded-Host")) or request.host)
+            return _clean_origin(f"{proto}://{host}") or request.url_root.rstrip("/")
     except Exception:  # noqa: BLE001
         return ""
     return ""
 
 
-def _absolute_notification_url(url: str | None) -> str:
+def _absolute_notification_url(url: str | None, origin: str | None = None) -> str:
     url = (url or "/contacts").strip() or "/contacts"
     parsed = urlparse(url)
     if parsed.scheme and parsed.netloc:
         return url
     if not url.startswith("/"):
         url = "/" + url
-    origin = _public_origin()
+    origin = _public_origin(origin)
     return f"{origin}{url}" if origin else url
 
 
-def _wire_payload(payload: dict) -> dict:
+def _wire_payload(payload: dict, origin: str | None = None) -> dict:
     """Payload одновременно для Declarative Web Push и старого SW-формата."""
     title = str(payload.get("title") or "Synapse").strip() or "Synapse"
     body = str(payload.get("body") or "Новое сообщение")
@@ -181,7 +205,7 @@ def _wire_payload(payload: dict) -> dict:
     notification = {
         "title": title,
         "body": body,
-        "navigate": _absolute_notification_url(url),
+        "navigate": _absolute_notification_url(url, origin=origin),
         "silent": False,
     }
     tag = payload.get("tag")
@@ -248,11 +272,13 @@ def _send_payload_to_user(db, user_id: int, payload: dict) -> dict:
     failed = 0
     disabled = 0
     changed = False
-    data = json.dumps(_wire_payload(payload), ensure_ascii=False)
     now = datetime.datetime.now()
     success_statuses = []
     for sub in subs:
         try:
+            data = json.dumps(
+                _wire_payload(payload, origin=getattr(sub, "origin", None)),
+                ensure_ascii=False)
             response = _send_subscription_payload(sub, data)
             sent += 1
             status = (getattr(response, "status_code", None)

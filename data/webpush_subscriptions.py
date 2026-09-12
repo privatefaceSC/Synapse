@@ -19,6 +19,7 @@ class WebPushSubscription(SqlAlchemyBase):
                                  unique=True)
     p256dh = sqlalchemy.Column(sqlalchemy.String, nullable=False)
     auth = sqlalchemy.Column(sqlalchemy.String, nullable=False)
+    origin = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     user_agent = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     enabled = sqlalchemy.Column(sqlalchemy.Boolean, default=True,
                                 nullable=True)

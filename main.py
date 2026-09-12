@@ -4327,10 +4327,19 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'unauthorized'}), 401
         from data import webpush
         db = get_db()
+        payload = request.get_json(silent=True) or {}
+        try:
+            delay_seconds = int(payload.get('delay_seconds') or 0)
+        except (TypeError, ValueError):
+            delay_seconds = 0
+        delay_seconds = max(0, min(delay_seconds, 15))
+        if delay_seconds:
+            time.sleep(delay_seconds)
         result = webpush.notify_test(db, session['user_id'])
         status = webpush.subscription_status(db, session['user_id'])
         return jsonify({
             'ok': result.get('sent', 0) > 0,
+            'delay_seconds': delay_seconds,
             **result,
             'status': status,
         })
