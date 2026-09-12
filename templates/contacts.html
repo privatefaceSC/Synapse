@@ -1332,12 +1332,15 @@
         flex: 1 1 auto;
         min-height: 0;
         overscroll-behavior: contain;
+        touch-action: pan-y;
     }
     .spm-item {
         width: 100%; height: 112px; min-height: 0;
         display: flex; align-items: center;
         justify-content: center; overflow: hidden; background: rgba(255,255,255,.03);
         border-radius: 10px; padding: 4px;
+        touch-action: pan-y;
+        -webkit-user-select: none; user-select: none;
     }
     .spm-item img, .spm-item video {
         display: block; width: 100%; height: 100%; object-fit: contain;
@@ -1954,11 +1957,16 @@
         display: grid; grid-template-columns: repeat(4, minmax(72px, 1fr));
         gap: 10px;
     }
+    .sticker-picker-grid,
+    .spm-grid {
+        touch-action: pan-y;
+    }
     .sticker-picker-item {
         border: 0; border-radius: 8px; background: #f8fafc;
         aspect-ratio: 1 / 1; padding: 5px; cursor: pointer;
         display: flex; align-items: center; justify-content: center;
-        touch-action: none;
+        touch-action: pan-y;
+        -webkit-user-select: none; user-select: none;
     }
     .sticker-picker-item:hover { background: #e2e8f0; }
     .sticker-picker-item img,
@@ -1994,6 +2002,13 @@
     }
     .sticker-peek-inner span {
         font-size: 92px; line-height: 1;
+    }
+    .sticker-peek.mobile {
+        align-items: flex-end; background: transparent;
+    }
+    .sticker-peek.mobile .sticker-peek-inner {
+        width: min(270px, 64vw); height: min(270px, 34vh);
+        margin-bottom: var(--sticker-peek-bottom, 300px);
     }
     [data-bs-theme="dark"] .emoji-picker {
         background: #1a1d24; border-color: #2a2f3a;
@@ -6393,6 +6408,8 @@
     let mediaDraftModal = null;
     let replyTarget = null;   // сообщение, на которое отвечаем (reply)
     let pendingForward = null; // сообщение, выбранное для пересылки через composer
+    const MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
+    const IMAGE_EDITOR_MAX_SIDE = 1900;
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -7931,6 +7948,53 @@
         }
     }
 
+    function formatUploadBytes(bytes) {
+        const value = Number(bytes) || 0;
+        if (value >= 1024 * 1024) {
+            return (value / 1024 / 1024).toFixed(1).replace('.0', '') + ' МБ';
+        }
+        if (value >= 1024) {
+            return Math.round(value / 1024) + ' КБ';
+        }
+        return value + ' Б';
+    }
+
+    function uploadFailureMessage(res, data, err, file) {
+        if (file && file.size > MAX_UPLOAD_BYTES) {
+            return 'Файл слишком большой: ' + formatUploadBytes(file.size)
+                + '. Максимум около ' + formatUploadBytes(MAX_UPLOAD_BYTES)
+                + '. Уменьшите фото или отправьте его отдельно.';
+        }
+        if (err && err.name === 'AbortError') {
+            return 'Сервер слишком долго отвечал. Попробуйте фото меньшего размера.';
+        }
+        if (data && (data.detail || data.error)) {
+            return data.detail || data.error;
+        }
+        if (res && res.status === 413) {
+            return 'Файл слишком большой для сервера. Уменьшите фото и попробуйте ещё раз.';
+        }
+        if (res && !res.ok) {
+            return 'HTTP ' + res.status;
+        }
+        if (err && err.message && !/failed to fetch/i.test(err.message)) {
+            return err.message;
+        }
+        return 'Проверьте соединение и попробуйте ещё раз.';
+    }
+
+    function fetchWithTimeout(url, options, timeoutMs) {
+        if (!window.AbortController) {
+            return fetch(url, options);
+        }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs || 120000);
+        const finalOptions = Object.assign({}, options || {}, {
+            signal: controller.signal,
+        });
+        return fetch(url, finalOptions).finally(() => clearTimeout(timer));
+    }
+
     // Отправка файла (фото/видео) в Telegram. Текст из поля — подпись.
     async function sendFile(form, file, captionOverride, opts) {
         opts = opts || {};
@@ -7938,6 +8002,11 @@
         const ta = form.querySelector('#composer-text');
         const btn = form.querySelector('#composer-send');
         const attach = form.querySelector('#composer-attach');
+        if (file && file.size > MAX_UPLOAD_BYTES) {
+            alert('Не удалось отправить файл: '
+                  + uploadFailureMessage(null, {}, null, file));
+            return false;
+        }
         if (!opts.controlsLocked) {
             if (btn) btn.disabled = true;
             if (attach) attach.disabled = true;
@@ -7961,12 +8030,12 @@
             fd.append('schedule_at', schedEl.value);
         }
         try {
-            const r = await fetch('/contacts/' + cid + '/send', {
+            const r = await fetchWithTimeout('/contacts/' + cid + '/send', {
                 method: 'POST',
                 credentials: 'same-origin',
                 headers: {'X-Requested-With': 'XMLHttpRequest'},
                 body: fd,
-            });
+            }, 120000);
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
                 if (data.scheduled) {
@@ -7997,14 +8066,15 @@
                 return true;
             } else {
                 alert('Не удалось отправить файл: '
-                      + (data.detail || data.error || ('HTTP ' + r.status)));
+                      + uploadFailureMessage(r, data, null, file));
                 if (window.__skillwoodResetSendFlags) {
                     window.__skillwoodResetSendFlags(form);
                 }
                 return false;
             }
         } catch (e) {
-            alert('Сеть недоступна — файл не отправлен.');
+            alert('Не удалось отправить файл: '
+                  + uploadFailureMessage(null, {}, e, file));
             if (window.__skillwoodResetSendFlags) {
                 window.__skillwoodResetSendFlags(form);
             }
@@ -8065,6 +8135,10 @@
     let stickerPeekPointer = null;
     let stickerPeekOpen = false;
     let stickerPeekKey = '';
+    let stickerPeekStart = null;
+    let stickerPeekScrollEl = null;
+    const STICKER_PEEK_DELAY_MS = 120;
+    const STICKER_PEEK_SCROLL_CANCEL_PX = 12;
     const stickerPeekMediaCache = new Map();
 
     function stickerPreviewInfo(item) {
@@ -8122,7 +8196,7 @@
     function warmStickerPreviews(root, limit) {
         if (!root) return;
         const items = Array.from(root.querySelectorAll(
-            '.sticker-picker-item, .spm-item')).slice(0, limit || 36);
+            '.sticker-picker-item, .spm-item')).slice(0, limit || 20);
         const run = () => items.forEach(preloadStickerPreview);
         if ('requestIdleCallback' in window) {
             window.requestIdleCallback(run, {timeout: 800});
@@ -8131,8 +8205,59 @@
         }
     }
 
+    function isCoarsePointer() {
+        return !!(window.matchMedia
+            && window.matchMedia('(pointer: coarse)').matches);
+    }
+
+    function clampNumber(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+    }
+
+    function stickerScrollContainer(item) {
+        return item && item.closest
+            ? item.closest('.emoji-picker-body, .spm-grid') : null;
+    }
+
+    function positionStickerPeek(item, pointerY) {
+        if (!stickerPeek || !item) return;
+        const mobile = isCoarsePointer() || window.innerWidth <= 640;
+        stickerPeek.classList.toggle('mobile', mobile);
+        stickerPeek.style.removeProperty('--sticker-peek-bottom');
+        if (!mobile) return;
+
+        const picker = item.closest('.emoji-picker');
+        const fromPicker = picker
+            ? window.innerHeight - picker.getBoundingClientRect().top + 12
+            : 0;
+        const fromFinger = pointerY != null
+            ? window.innerHeight - pointerY + 92
+            : 0;
+        const previewSize = Math.min(270, window.innerHeight * 0.34);
+        const maxBottom = Math.max(112, window.innerHeight - previewSize - 18);
+        const bottom = clampNumber(
+            Math.max(fromPicker, fromFinger, 120), 96, maxBottom);
+        stickerPeek.style.setProperty('--sticker-peek-bottom', bottom + 'px');
+    }
+
     function stickerPreviewNode(item, info) {
         if (!info) return null;
+        const live = item && item.querySelector
+            ? item.querySelector('img, video, span') : null;
+        if (live) {
+            const clone = live.cloneNode(true);
+            if (clone.tagName === 'IMG') {
+                clone.loading = 'eager';
+                clone.decoding = 'async';
+            } else if (clone.tagName === 'VIDEO') {
+                clone.autoplay = true;
+                clone.loop = true;
+                clone.muted = true;
+                clone.playsInline = true;
+                clone.preload = 'auto';
+            }
+            return clone;
+        }
         if (info.type === 'image') {
             const img = document.createElement('img');
             img.src = info.src;
@@ -8156,12 +8281,13 @@
         return span;
     }
 
-    function showStickerPeek(item) {
+    function showStickerPeek(item, pointerY) {
         if (!stickerPeek || !stickerPeekInner || !item) return;
         preloadStickerPreview(item);
         const info = stickerPreviewInfo(item);
         const key = stickerPreviewKey(info);
         if (!key) return;
+        positionStickerPeek(item, pointerY);
         if (stickerPeekOpen && stickerPeekKey === key) return;
         const node = stickerPreviewNode(item, info);
         if (!node) return;
@@ -8192,6 +8318,19 @@
             ? el.closest('.sticker-picker-item, .spm-item') : null;
     }
 
+    function autoScrollStickerContainer(clientY) {
+        if (!stickerPeekScrollEl) return;
+        const rect = stickerPeekScrollEl.getBoundingClientRect();
+        const edge = 56;
+        let delta = 0;
+        if (clientY < rect.top + edge) {
+            delta = -Math.round((rect.top + edge - clientY) / 3);
+        } else if (clientY > rect.bottom - edge) {
+            delta = Math.round((clientY - (rect.bottom - edge)) / 3);
+        }
+        if (delta) stickerPeekScrollEl.scrollTop += delta;
+    }
+
     function clearStickerPeekSuppressionSoon() {
         setTimeout(() => {
             window.__skillwoodStickerPeekSuppressClick = false;
@@ -8203,17 +8342,40 @@
             && e.target.closest('.sticker-picker-item, .spm-item');
         if (!item || (e.button != null && e.button !== 0)) return;
         stickerPeekPointer = e.pointerId;
+        stickerPeekStart = {
+            x: e.clientX,
+            y: e.clientY,
+            pointerType: e.pointerType || '',
+        };
+        stickerPeekScrollEl = stickerScrollContainer(item);
         preloadStickerPreview(item);
         clearTimeout(stickerPeekTimer);
         stickerPeekTimer = setTimeout(() => {
-            showStickerPeek(item);
-        }, 120);
+            showStickerPeek(item, e.clientY);
+        }, STICKER_PEEK_DELAY_MS);
     });
 
     document.addEventListener('pointermove', function(e) {
-        if (stickerPeekPointer !== e.pointerId || !stickerPeekOpen) return;
+        if (stickerPeekPointer !== e.pointerId) return;
+        if (!stickerPeekOpen && stickerPeekStart) {
+            const dx = e.clientX - stickerPeekStart.x;
+            const dy = e.clientY - stickerPeekStart.y;
+            const distanceSq = dx * dx + dy * dy;
+            if (!stickerPeekOpen && distanceSq >
+                STICKER_PEEK_SCROLL_CANCEL_PX * STICKER_PEEK_SCROLL_CANCEL_PX) {
+                clearTimeout(stickerPeekTimer);
+                stickerPeekTimer = null;
+                stickerPeekPointer = null;
+                stickerPeekStart = null;
+                stickerPeekScrollEl = null;
+            }
+            return;
+        }
+        if (!stickerPeekOpen) return;
+        e.preventDefault();
+        autoScrollStickerContainer(e.clientY);
         const item = stickerItemAtPoint(e.clientX, e.clientY);
-        if (item) showStickerPeek(item);
+        if (item) showStickerPeek(item, e.clientY);
     });
 
     function finishStickerPeek(e) {
@@ -8221,6 +8383,8 @@
         clearTimeout(stickerPeekTimer);
         stickerPeekTimer = null;
         stickerPeekPointer = null;
+        stickerPeekStart = null;
+        stickerPeekScrollEl = null;
         if (stickerPeekOpen) {
             e.preventDefault();
             hideStickerPeek();
@@ -8239,13 +8403,13 @@
         const alt = escapeHtml(item.alt || 'стикер');
         if (mime.indexOf('video/') === 0) {
             return '<div class="spm-item"><video src="' + src
-                + '" class="spm-video" loop muted playsinline preload="auto"></video></div>';
+                + '" class="spm-video" loop muted playsinline preload="metadata"></video></div>';
         }
         if (mime === 'application/x-tgsticker') {
             return '<div class="spm-item"><span>✦</span></div>';
         }
         return '<div class="spm-item"><img src="' + src + '" alt="' + alt
-            + '" decoding="async" loading="eager"></div>';
+            + '" decoding="async" loading="lazy"></div>';
     }
 
     function wireStickerPackVideos() {
@@ -8365,14 +8529,62 @@
         return !!(file && file.type && file.type.indexOf('image/') === 0);
     }
 
-    function imageEditorFileName(file) {
+    function imageEditorFileName(file, typeOverride) {
         const raw = (file && file.name) || 'image.png';
         const dot = raw.lastIndexOf('.');
         const base = dot > 0 ? raw.slice(0, dot) : raw;
-        const type = (file && file.type) || 'image/png';
+        const type = typeOverride || (file && file.type) || 'image/png';
         const ext = type.indexOf('jpeg') >= 0 ? '.jpg'
             : (type.indexOf('webp') >= 0 ? '.webp' : '.png');
         return base + '-edited' + ext;
+    }
+
+    function imageCanvasToBlob(canvas, type, quality, callback) {
+        if (type === 'image/jpeg') {
+            const solid = document.createElement('canvas');
+            solid.width = canvas.width;
+            solid.height = canvas.height;
+            const ctx = solid.getContext('2d');
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, solid.width, solid.height);
+            ctx.drawImage(canvas, 0, 0);
+            solid.toBlob(callback, type, quality);
+            return;
+        }
+        canvas.toBlob(callback, type, quality);
+    }
+
+    function exportImageEditorFile(canvas, file, done) {
+        const sourceType = ((file && file.type) || '').toLowerCase();
+        const sourceSize = (file && file.size) || 0;
+        const preferredType = sourceType === 'image/webp'
+            ? 'image/webp'
+            : (sourceType === 'image/png' && sourceSize <= 8 * 1024 * 1024
+                ? 'image/png' : 'image/jpeg');
+        const preferredQuality = preferredType === 'image/png' ? undefined : 0.88;
+        imageCanvasToBlob(canvas, preferredType, preferredQuality, (blob) => {
+            if (!blob) { done(file); return; }
+            if (blob.size > MAX_UPLOAD_BYTES && preferredType !== 'image/jpeg') {
+                imageCanvasToBlob(canvas, 'image/jpeg', 0.84, (jpegBlob) => {
+                    if (!jpegBlob) { done(file); return; }
+                    done(new File([jpegBlob],
+                        imageEditorFileName(file, 'image/jpeg'),
+                        {type: 'image/jpeg', lastModified: Date.now()}));
+                });
+                return;
+            }
+            if (blob.size > MAX_UPLOAD_BYTES && preferredType === 'image/jpeg') {
+                imageCanvasToBlob(canvas, 'image/jpeg', 0.72, (jpegBlob) => {
+                    const finalBlob = jpegBlob || blob;
+                    done(new File([finalBlob],
+                        imageEditorFileName(file, 'image/jpeg'),
+                        {type: 'image/jpeg', lastModified: Date.now()}));
+                });
+                return;
+            }
+            done(new File([blob], imageEditorFileName(file, preferredType),
+                {type: preferredType, lastModified: Date.now()}));
+        });
     }
 
     function ensureImageEditorModal() {
@@ -8764,20 +8976,14 @@
                     if (mode === 'crop' && crop) {
                         applyCrop();
                     }
-                    const outType = file.type === 'image/jpeg'
-                        || file.type === 'image/webp' ? file.type : 'image/png';
-                    base.toBlob((blob) => {
-                        if (!blob) { close(file); return; }
-                        close(new File([blob], imageEditorFileName(file),
-                            {type: outType, lastModified: Date.now()}));
-                    }, outType, 0.92);
+                    exportImageEditorFile(base, file, close);
                 }
             });
             modal.querySelector('[data-img-size]').addEventListener('input',
                 (ev) => { size = Number(ev.target.value) || 8; });
 
             img.onload = () => {
-                const maxSide = 2200;
+                const maxSide = IMAGE_EDITOR_MAX_SIDE;
                 const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
                 base.width = Math.max(1, Math.round(img.width * scale));
                 base.height = Math.max(1, Math.round(img.height * scale));
@@ -10472,19 +10678,24 @@
         return window.__skillwoodStickerCache;
     }
 
-    function stickerPreviewHtml(sticker) {
+    function stickerPreviewHtml(sticker, idx) {
         const mime = (sticker.mime || '').toLowerCase();
         const src = esc(sticker.url || '');
         const name = esc(sticker.name || 'стикер');
+        const eager = idx < 24;
         if (mime.indexOf('video/') === 0) {
             return '<video src="' + src
-                + '" autoplay loop muted playsinline preload="auto"></video>';
+                + '" loop muted playsinline preload="metadata"></video>';
         }
         if (mime === 'application/x-tgsticker') {
             return '<span aria-hidden="true">✦</span>';
         }
+        if (eager) {
+            return '<img src="' + src + '" alt="' + name
+                + '" decoding="async" loading="eager">';
+        }
         return '<img src="' + src + '" alt="' + name
-            + '" decoding="async" loading="eager">';
+            + '" decoding="async" loading="lazy">';
     }
 
     function renderStickers(picker, stickers) {
@@ -10499,15 +10710,15 @@
             return;
         }
         body.innerHTML = '<div class="sticker-picker-grid">'
-            + stickers.map(sticker =>
+            + stickers.map((sticker, idx) =>
                 '<button type="button" class="sticker-picker-item" '
                 + 'data-sticker-id="' + esc(sticker.id) + '" '
                 + 'title="' + esc(sticker.name || 'Стикер') + '">'
-                + stickerPreviewHtml(sticker)
+                + stickerPreviewHtml(sticker, idx)
                 + '</button>').join('')
             + '</div>';
         if (window.__skillwoodWarmStickerPreviews) {
-            window.__skillwoodWarmStickerPreviews(body, 36);
+            window.__skillwoodWarmStickerPreviews(body, 20);
         }
     }
 
