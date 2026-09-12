@@ -24,6 +24,40 @@ _AVATAR_PALETTE = [
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
 ]
 SYNAPSE_MESSENGER = "Synapse"
+CREATOR_USERNAMES = {"ivan"}
+CREATOR_BADGE = "Создатель"
+
+
+def _is_creator_user(user) -> bool:
+    username = (getattr(user, 'username', None) or '').strip().lower()
+    return username in CREATOR_USERNAMES
+
+
+def _creator_user_ids(db) -> set[int]:
+    if not CREATOR_USERNAMES:
+        return set()
+    from sqlalchemy import func
+
+    rows = (db.query(User.id)
+            .filter(func.lower(User.username).in_(sorted(CREATOR_USERNAMES)))
+            .all())
+    return {row[0] for row in rows}
+
+
+def _mark_contact_creator_from_handles(contact, handles, creator_ids):
+    contact.is_creator = any(
+        h.messenger_name == SYNAPSE_MESSENGER
+        and _synapse_partner_id(h) in creator_ids
+        for h in handles
+    )
+    contact.creator_title = CREATOR_BADGE if contact.is_creator else ''
+    return contact
+
+
+def _mark_profile_badges(user):
+    user.is_creator = _is_creator_user(user)
+    user.creator_title = CREATOR_BADGE if user.is_creator else ''
+    return user
 
 
 def _configure_timezone():
@@ -74,10 +108,12 @@ def _enrich_with_last_message(db, contacts):
     from data.contacts import MessengerHandle
     from sqlalchemy import func, or_
 
+    creator_ids = _creator_user_ids(db)
     for c in contacts:
         _avatar_for(c)
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == c.id).all()
+        _mark_contact_creator_from_handles(c, handles, creator_ids)
         handle_ids = [h.id for h in handles]
         # Уникальные мессенджеры контакта (для «папки» с выбором чата).
         msgrs = []
@@ -1110,6 +1146,7 @@ def _dm_user_card(user) -> dict:
     full = ((user.name or '') + ' ' + (user.surname or '')).strip()
     label = full or (user.username or '?')
     has_avatar = os.path.exists(_avatar_file(user.id))
+    is_creator = _is_creator_user(user)
     return {
         'id': user.id,
         'username': user.username or '',
@@ -1117,7 +1154,23 @@ def _dm_user_card(user) -> dict:
         'initial': label[:1].upper() if label else '?',
         'avatar_color': _AVATAR_PALETTE[user.id % len(_AVATAR_PALETTE)],
         'avatar_url': f'/messenger/avatar/{user.id}' if has_avatar else None,
+        'is_creator': is_creator,
+        'creator_title': CREATOR_BADGE if is_creator else '',
     }
+
+
+def _creator_cards(db, me_id: int) -> list[dict]:
+    if not CREATOR_USERNAMES:
+        return []
+    from sqlalchemy import func
+
+    users = (db.query(User)
+             .filter(func.lower(User.username).in_(
+                 sorted(CREATOR_USERNAMES)),
+                     User.id != me_id)
+             .order_by(User.id.asc())
+             .all())
+    return [_dm_user_card(user) for user in users]
 
 
 def _dm_attachments(db, msgs) -> dict:
@@ -1363,7 +1416,7 @@ def register_routes(app: Flask) -> None:
         device_connected = db.query(Device.id).filter(Device.user_id == user.id).first() is not None
         return render_template(
             'index.html',
-            user=user,
+            user=_mark_profile_badges(user),
             device_connected=device_connected,
             connect_code=user.connect_code,
             contacts_count=contacts_count,
@@ -1401,7 +1454,7 @@ def register_routes(app: Flask) -> None:
             return redirect('/login')
         db = get_db()
         me = db.query(User).filter(User.id == session['user_id']).first()
-        return render_template('profile.html', user=me)
+        return render_template('profile.html', user=_mark_profile_badges(me))
 
     @app.route('/profile/password', methods=['POST'])
     def profile_password():
@@ -1423,10 +1476,12 @@ def register_routes(app: Flask) -> None:
         elif new1 == old:
             error = "Новый пароль совпадает со старым"
         if error:
-            return render_template('profile.html', user=me, pw_error=error)
+            return render_template('profile.html',
+                                   user=_mark_profile_badges(me),
+                                   pw_error=error)
         me.hashed_password = generate_password_hash(new1)
         db.commit()
-        return render_template('profile.html', user=me,
+        return render_template('profile.html', user=_mark_profile_badges(me),
                                pw_success="Пароль обновлён")
 
     @app.route('/profile/update', methods=['POST'])
@@ -1460,13 +1515,15 @@ def register_routes(app: Flask) -> None:
                           User.id != me.id).first()):
                 error = "Этот User ID уже занят"
         if error:
-            return render_template('profile.html', user=me, info_error=error)
+            return render_template('profile.html',
+                                   user=_mark_profile_badges(me),
+                                   info_error=error)
         me.name = name
         me.surname = surname or None
         me.email = email
         me.username = username
         db.commit()
-        return render_template('profile.html', user=me,
+        return render_template('profile.html', user=_mark_profile_badges(me),
                                info_success="Данные сохранены")
 
     @app.route('/home/lang', methods=['POST'])
@@ -1998,6 +2055,7 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         user_id = session['user_id']
         archive_mode = _archive_mode_from_request()
+        creator_mode = request.args.get('creators') == '1'
         _sync_direct_messages_to_contacts(db, user_id)
         consolidate_android_group_contacts(db, user_id)
         contacts = (
@@ -2010,7 +2068,11 @@ def register_routes(app: Flask) -> None:
         _enrich_with_last_message(db, contacts)
         return render_template('contacts.html', contacts=contacts,
                                selected=None, selected_handles=[],
-                               messages=None, archive_mode=archive_mode)
+                               messages=None, archive_mode=archive_mode,
+                               creator_mode=creator_mode,
+                               creator_cards=(
+                                   _creator_cards(db, user_id)
+                                   if creator_mode else []))
 
     @app.route('/contacts.json')
     def contacts_index_json():
@@ -2046,6 +2108,8 @@ def register_routes(app: Flask) -> None:
                 'pinned': bool(c.pinned_at),
                 'muted': bool(c.muted),
                 'archived': bool(c.archived),
+                'is_creator': bool(getattr(c, 'is_creator', False)),
+                'creator_title': getattr(c, 'creator_title', ''),
             }
             for c in contacts
         ]})
@@ -2236,6 +2300,7 @@ def register_routes(app: Flask) -> None:
         _avatar_for(contact)
 
         handles = db.query(MessengerHandle).filter(MessengerHandle.contact_id == contact.id).all()
+        _mark_contact_creator_from_handles(contact, handles, _creator_user_ids(db))
         _mark_synapse_contact_read(db, user_id, handles)
         # Контакт — «папка»: чат на каждый мессенджер. Показываем один.
         available = []
@@ -2288,7 +2353,8 @@ def register_routes(app: Flask) -> None:
                                is_group=is_group, chat_type=chat_type,
                                notifications_muted=bool(contact.muted),
                                messengers=available, current_messenger=current_m,
-                               archive_mode=archive_mode)
+                               archive_mode=archive_mode,
+                               creator_mode=False, creator_cards=[])
 
     @app.route('/contacts/<int:contact_id>/messages.json')
     def contact_messages_json(contact_id):
@@ -2305,6 +2371,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'not_found'}), 404
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
+        _mark_contact_creator_from_handles(contact, handles, _creator_user_ids(db))
         _mark_synapse_contact_read(db, user_id, handles)
         available = []
         for h in handles:
@@ -2410,6 +2477,8 @@ def register_routes(app: Flask) -> None:
                               if tg_chat_handle is not None else None),
                 'notifications_muted': bool(contact.muted),
                 'archived': bool(contact.archived),
+                'is_creator': bool(getattr(contact, 'is_creator', False)),
+                'creator_title': getattr(contact, 'creator_title', ''),
             },
             'topics': saved_topics,
             'has_older': has_older,

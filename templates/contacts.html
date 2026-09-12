@@ -191,6 +191,47 @@
     .search-result .sr-snippet mark {
         background: #fef08a; padding: 0 2px; border-radius: 3px; color: inherit;
     }
+    .creator-inline {
+        display: inline-flex; align-items: center; gap: 4px;
+        margin-left: 6px; padding: 2px 7px; border-radius: 999px;
+        background: #fff2bd; border: 1px solid #f4cc5f;
+        color: #8a5a00; font-size: 10.5px; font-weight: 800;
+        line-height: 1.25; vertical-align: middle; white-space: nowrap;
+    }
+    .creator-suggestions {
+        margin: 10px; padding: 12px; border-radius: 14px;
+        border: 1px solid #f4cc5f;
+        background: linear-gradient(180deg, #fff8db 0%, #fffdf4 100%);
+        box-shadow: 0 6px 18px rgba(245, 158, 11, .11);
+    }
+    .creator-suggestions-title {
+        font-size: 12px; font-weight: 800; color: #8a5a00;
+        margin-bottom: 8px; text-transform: uppercase; letter-spacing: .04em;
+    }
+    .creator-suggestion-row {
+        display: flex; align-items: center; gap: 10px;
+        padding: 8px; border-radius: 11px; text-decoration: none;
+        color: inherit; transition: background .12s ease, transform .12s ease;
+    }
+    .creator-suggestion-row:hover {
+        background: rgba(245, 158, 11, .11); color: inherit;
+        transform: translateX(2px);
+    }
+    .creator-suggestion-row .avatar {
+        width: 40px; height: 40px; font-size: 15px;
+        border: 2px solid rgba(255,255,255,.68);
+        box-shadow: 0 2px 6px rgba(16,24,40,.18);
+    }
+    .creator-suggestion-name {
+        display: flex; align-items: center; gap: 4px;
+        font-weight: 700; color: #1a2230; font-size: 14px;
+    }
+    .creator-suggestion-meta {
+        color: #6b7280; font-size: 12px; margin-top: 1px;
+    }
+    .creator-suggestions-empty {
+        padding: 6px 2px; color: #8a6a24; font-size: 13px;
+    }
     .search-result.with-avatar {
         display: flex; align-items: center; gap: 12px;
         padding: 10px 12px;
@@ -230,6 +271,21 @@
         background: #92400e; color: #fde68a;
     }
     [data-bs-theme="dark"] .search-results .sr-empty { color: #6b7280; }
+    [data-bs-theme="dark"] .creator-inline {
+        background: #2b2412; border-color: #7a5a16; color: #facc6b;
+    }
+    [data-bs-theme="dark"] .creator-suggestions {
+        background: linear-gradient(180deg, #2a2110 0%, #1a1d24 100%);
+        border-color: #7a5a16;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, .25);
+    }
+    [data-bs-theme="dark"] .creator-suggestions-title { color: #facc6b; }
+    [data-bs-theme="dark"] .creator-suggestion-row:hover {
+        background: rgba(245, 158, 11, .13);
+    }
+    [data-bs-theme="dark"] .creator-suggestion-name { color: #f8fafc; }
+    [data-bs-theme="dark"] .creator-suggestion-meta { color: #9ca3af; }
+    [data-bs-theme="dark"] .creator-suggestions-empty { color: #d6b25a; }
     .contact-search input {
         width: 100%; border: 1px solid #e6e8ee; border-radius: 12px;
         padding: 10px 44px 10px 38px; font-size: 14px; background: #fff;
@@ -357,6 +413,7 @@
     /* Иконка-пометка статуса (📌 закреплено, 🔇 без звука) рядом с именем */
     .contact-row .status-marks { display: inline-flex; gap: 3px;
         margin-left: 4px; font-size: 11px; opacity: .75; flex: 0 0 auto; }
+    .contact-row .creator-inline { flex: 0 0 auto; }
     /* Закреплённые контакты — тонкий жёлтый штрих слева */
     .contact-row-wrap.pinned .contact-row { background: linear-gradient(
         90deg, rgba(250, 204, 21, .12) 0, rgba(250, 204, 21, 0) 24px); }
@@ -3652,7 +3709,41 @@
             <div class="messenger-folders" id="messenger-folders"></div>
             <div class="contact-list" id="contact-list"
                  data-active-id="{{ selected.id if selected else '' }}"
-                 data-archive-mode="{{ '1' if archive_mode else '0' }}">
+                 data-archive-mode="{{ '1' if archive_mode else '0' }}"
+                 data-creator-mode="{{ '1' if creator_mode else '0' }}">
+                {% if creator_mode %}
+                <div class="creator-suggestions" data-creator-suggestions>
+                    <div class="creator-suggestions-title">Создатели Synapse</div>
+                    {% if creator_cards %}
+                        {% for creator in creator_cards %}
+                        <a class="creator-suggestion-row"
+                           href="/messenger/{{ creator.id }}"
+                           data-user-id="{{ creator.id }}">
+                            {% if creator.avatar_url %}
+                            <span class="avatar"><img src="{{ creator.avatar_url }}" alt=""></span>
+                            {% else %}
+                            <span class="avatar" style="background: {{ creator.avatar_color }};">
+                                {{ creator.initial }}
+                            </span>
+                            {% endif %}
+                            <span class="flex-fill" style="min-width:0;">
+                                <span class="creator-suggestion-name">
+                                    {{ creator.display_name }}
+                                    <span class="creator-inline">★ {{ creator.creator_title }}</span>
+                                </span>
+                                <span class="creator-suggestion-meta">
+                                    @{{ creator.username }} · можно написать вопрос
+                                </span>
+                            </span>
+                        </a>
+                        {% endfor %}
+                    {% else %}
+                        <div class="creator-suggestions-empty">
+                            Создатели скоро появятся в списке.
+                        </div>
+                    {% endif %}
+                </div>
+                {% endif %}
                 {% if contacts %}
                     {% for c in contacts %}
                     <div class="contact-row-wrap{% if c.pinned_at %} pinned{% endif %}"
@@ -3672,7 +3763,8 @@
                             {% endif %}
                             <div class="contact-meta">
                                 <div class="d-flex justify-content-between">
-                                    <span class="name">{{ c.display_name }}<span
+                                    <span class="name">{{ c.display_name }}{% if c.is_creator %}<span
+                                        class="creator-inline">★ {{ c.creator_title }}</span>{% endif %}<span
                                         class="status-marks">{% if c.pinned_at %}📌{% endif %}{% if c.muted %}🔇{% endif %}</span></span>
                                     <span class="time">{{ c.last_time or '' }}</span>
                                 </div>
@@ -3742,7 +3834,8 @@
                             </span>
                             {% endif %}
                             <div class="flex-fill" style="min-width:0;">
-                                <div class="fw-semibold text-truncate">{{ selected.display_name }}</div>
+                                <div class="fw-semibold text-truncate">{{ selected.display_name }}{% if selected.is_creator %}<span
+                                    class="creator-inline">★ {{ selected.creator_title }}</span>{% endif %}</div>
                                 <div class="text-muted small text-truncate">
                                     {% if is_group %}
                                         Группа — нажмите, чтобы увидеть участников
@@ -3966,6 +4059,10 @@
         </div>
     </div>
 </div>
+
+<script type="application/json" id="synapse-creator-cards">
+{{ (creator_cards or [])|tojson }}
+</script>
 
 <div class="lightbox" id="lightbox">
     <span class="lb-close" id="lb-close">&times;</span>
@@ -4783,6 +4880,15 @@
     const list = document.getElementById('contact-list');
     if (!list) return;
     const archiveMode = list.dataset.archiveMode === '1';
+    const creatorMode = list.dataset.creatorMode === '1';
+    const creatorCardsEl = document.getElementById('synapse-creator-cards');
+    let creatorCards = [];
+    try {
+        creatorCards = creatorCardsEl
+            ? JSON.parse(creatorCardsEl.textContent || '[]') : [];
+    } catch (e) {
+        creatorCards = [];
+    }
     let lastSig = '';
     let notifBaseline = null;
     let audioCtx = null;
@@ -4974,6 +5080,48 @@
         }[c]));
     }
 
+    function creatorBadgeHtml(item) {
+        if (!item || !item.is_creator) return '';
+        return '<span class="creator-inline">★ '
+            + escapeHtml(item.creator_title || 'Создатель') + '</span>';
+    }
+
+    function avatarHtml(c) {
+        return c.avatar_url
+            ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
+            : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">`
+              + `${escapeHtml(c.initial)}</span>`;
+    }
+
+    function creatorSuggestionsHtml() {
+        if (!creatorMode) return '';
+        if (!creatorCards.length) {
+            return '<div class="creator-suggestions" data-creator-suggestions>'
+                + '<div class="creator-suggestions-title">Создатели Synapse</div>'
+                + '<div class="creator-suggestions-empty">'
+                + 'Создатели скоро появятся в списке.</div></div>';
+        }
+        return '<div class="creator-suggestions" data-creator-suggestions>'
+            + '<div class="creator-suggestions-title">Создатели Synapse</div>'
+            + creatorCards.map(c => {
+                const username = c.username ? '@' + c.username : 'Synapse';
+                return `<a class="creator-suggestion-row"
+                           href="/messenger/${c.id}" data-user-id="${c.id}">
+                    ${avatarHtml(c)}
+                    <span class="flex-fill" style="min-width:0;">
+                        <span class="creator-suggestion-name">
+                            ${escapeHtml(c.display_name)}
+                            ${creatorBadgeHtml(c)}
+                        </span>
+                        <span class="creator-suggestion-meta">
+                            ${escapeHtml(username)} · можно написать вопрос
+                        </span>
+                    </span>
+                </a>`;
+            }).join('')
+            + '</div>';
+    }
+
     function listTick(c) {
         if (!c.last_outgoing
                 || c.last_tg_read === null
@@ -4995,15 +5143,17 @@
     }
 
     function render(contacts) {
+        const creatorsHtml = creatorSuggestionsHtml();
         if (!contacts.length) {
             list.innerHTML =
+                creatorsHtml +
                 '<div class="empty-state p-4">' +
                 (archiveMode ? 'В архиве пока пусто.'
                              : 'Контактов пока нет. Пришлите первое уведомление с устройства.') +
                 '</div>';
             return;
         }
-        list.innerHTML = contacts.map(c => {
+        const rowsHtml = contacts.map(c => {
             const isActive = String(c.id) === String(list.dataset.activeId || '');
             const badge = (c.unread_count && c.unread_count > 0)
                 ? `<span class="badge-unread${c.muted ? ' muted' : ''}">${c.unread_count}</span>` : '';
@@ -5016,12 +5166,10 @@
                 data-archived="${c.archived ? '1' : '0'}">
                 <a href="${contactUrl(c.id)}"
                    class="contact-row${isActive ? ' active' : ''}">
-                    ${c.avatar_url
-                        ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
-                        : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">${escapeHtml(c.initial)}</span>`}
+                    ${avatarHtml(c)}
                     <div class="contact-meta">
                         <div class="d-flex justify-content-between">
-                            <span class="name">${escapeHtml(c.display_name)}<span class="status-marks">${marks}</span></span>
+                            <span class="name">${escapeHtml(c.display_name)}${creatorBadgeHtml(c)}<span class="status-marks">${marks}</span></span>
                             <span class="time">${escapeHtml(c.last_time || '')}</span>
                         </div>
                         <div class="d-flex justify-content-between align-items-center">
@@ -5037,6 +5185,7 @@
                         onclick="openContactMenu(this, ${c.id})">⋮</button>
             </div>`;
         }).join('');
+        list.innerHTML = creatorsHtml + rowsHtml;
         // После перерисовки списка — пересчитать счётчики папок и
         // применить активный фильтр.
         if (window._refreshFolders) window._refreshFolders();
@@ -5057,7 +5206,8 @@
                       c.last_tg_read === null || c.last_tg_read === undefined
                           ? null : (c.last_tg_read ? 1 : 0),
                       c.unread_count, c.pinned ? 1 : 0, c.muted ? 1 : 0,
-                      c.archived ? 1 : 0]));
+                      c.archived ? 1 : 0, c.is_creator ? 1 : 0,
+                      c.creator_title || '']));
             if (sig !== lastSig) {
                 render(data.contacts);
                 lastSig = sig;
@@ -6082,6 +6232,12 @@
         }[c]));
     }
 
+    function creatorBadgeHtml(item) {
+        if (!item || !item.is_creator) return '';
+        return '<span class="creator-inline">★ '
+            + escapeHtml(item.creator_title || 'Создатель') + '</span>';
+    }
+
     function authorInitials(name) {
         const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
         if (!parts.length) return '?';
@@ -6440,7 +6596,7 @@
                     ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
                     : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">${escapeHtml(c.initial)}</span>`}
                 <div class="flex-fill" style="min-width:0;">
-                    <div class="fw-semibold text-truncate">${escapeHtml(c.display_name)}</div>
+                    <div class="fw-semibold text-truncate">${escapeHtml(c.display_name)}${creatorBadgeHtml(c)}</div>
                     <div class="text-muted small text-truncate">${subline}</div>
                 </div>
                 <button type="button" class="topics-btn" data-topics-btn="1"
@@ -9361,10 +9517,15 @@
         }
         resultsBox.innerHTML = users.map(u => {
             const username = u.username ? '@' + u.username : 'Synapse';
+            const creator = u.is_creator
+                ? '<span class="creator-inline">★ '
+                  + escHtml(u.creator_title || 'Создатель') + '</span>'
+                : '';
             return '<div class="search-result synapse-user-result"'
                  + ' data-user-id="' + u.id + '">'
                  + '<div class="sr-head">'
-                 + '<span class="sr-name">' + escHtml(u.display_name) + '</span>'
+                 + '<span class="sr-name">' + escHtml(u.display_name)
+                 + creator + '</span>'
                  + '<span class="sr-meta">' + escHtml(username) + '</span>'
                  + '</div>'
                  + '<div class="sr-snippet">Новый чат Synapse</div>'

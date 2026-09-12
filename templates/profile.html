@@ -47,6 +47,20 @@
     .profile-shell .hint {
         font-size: 12px; color: #94a3b8; margin-top: 4px;
     }
+    .profile-title-row {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 10px; margin-bottom: 18px;
+    }
+    .profile-title-row h4 { margin-bottom: 0; }
+    .creator-badge {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 5px 10px; border-radius: 999px;
+        background: #fff4c2; color: #8a5a00;
+        border: 1px solid #f6cf62;
+        font-size: 12px; font-weight: 800;
+        box-shadow: 0 4px 14px rgba(245, 158, 11, .14);
+        white-space: nowrap;
+    }
 
     [data-bs-theme="dark"] .profile-shell .card-soft {
         background: #1a1d24; box-shadow: 0 2px 14px rgba(0,0,0,.4);
@@ -59,10 +73,20 @@
         background: #232831; border-color: #2f3540; color: #e5e7eb;
     }
     [data-bs-theme="dark"] .profile-shell .hint { color: #64748b; }
+    [data-bs-theme="dark"] .creator-badge {
+        background: #2b2412; color: #facc6b; border-color: #7a5a16;
+    }
 </style>
 <div class="profile-shell">
     <div class="card-soft">
-        <h4>Личные данные</h4>
+        <div class="profile-title-row">
+            <h4>Личные данные</h4>
+            {% if user.is_creator %}
+            <span class="creator-badge" title="Оригинальный аккаунт создателя Synapse">
+                ★ {{ user.creator_title or 'Создатель' }}
+            </span>
+            {% endif %}
+        </div>
         {% if info_error %}
         <div class="alert alert-error">{{ info_error }}</div>
         {% endif %}

@@ -152,6 +152,14 @@
     .btn-about:hover {
         background: #eef4ff; border-color: #93b7f5; color: #1d4ed8;
     }
+    .btn-creator {
+        border-radius: 14px; padding: 12px 14px; font-weight: 700;
+        border-color: #f4c95d; background: #fff7db; color: #8a5a00;
+        box-shadow: 0 5px 16px rgba(245, 158, 11, .14);
+    }
+    .btn-creator:hover {
+        background: #ffefba; border-color: #f1b434; color: #704500;
+    }
 
     /* Тёмная тема. */
     [data-bs-theme="dark"] .card-soft {
@@ -180,6 +188,13 @@
     }
     [data-bs-theme="dark"] .btn-about:hover {
         background: #1c2c44; border-color: #3b82f6; color: #bfdbfe;
+    }
+    [data-bs-theme="dark"] .btn-creator {
+        background: #2b2412; border-color: #7a5a16; color: #facc6b;
+        box-shadow: 0 5px 16px rgba(245, 158, 11, .12);
+    }
+    [data-bs-theme="dark"] .btn-creator:hover {
+        background: #3a2d12; border-color: #d69e2e; color: #fde68a;
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -292,6 +307,7 @@
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть портал мессенджеров</a>
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть контакты</a>
         <a href="/about" class="btn btn-about">Что вообще это за сайт?</a>
+        <a href="/messenger?creators=1" class="btn btn-creator">★ Задать вопрос создателям</a>
     </div>
 </div>
 
