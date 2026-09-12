@@ -1527,6 +1527,35 @@ def _message_tg_chat_id(db, msg):
     return handle.tg_chat_id if handle is not None else None
 
 
+def _message_contact_label(db, msg) -> str | None:
+    from data.contacts import Contact, MessengerHandle
+
+    handle = db.get(MessengerHandle, msg.handle_id) if msg.handle_id else None
+    if handle is None:
+        return None
+    contact = (db.get(Contact, handle.contact_id)
+               if handle.contact_id else None)
+    if contact is not None and contact.display_name:
+        return contact.display_name
+    return handle.sender_raw
+
+
+def _telegram_forward_label(owner_id: int, chat_id, fallback: str) -> str:
+    if chat_id is None:
+        return fallback
+    try:
+        from data import telegram_bridge
+        info = telegram_bridge.resolve_entity_info(int(chat_id),
+                                                   user_id=owner_id)
+    except Exception:  # noqa: BLE001
+        return fallback
+    username = (info.get('username') or '').strip()
+    if username:
+        return '@' + username.lstrip('@')
+    title = (info.get('display_name') or info.get('title') or '').strip()
+    return title or fallback
+
+
 def _message_synapse_user_id(db, owner_id: int, msg):
     """User.id автора Synapse-сообщения глазами владельца owner_id."""
     if msg.messenger_name != SYNAPSE_MESSENGER:
@@ -1574,11 +1603,15 @@ def _forward_source_meta(db, owner_id: int, msg) -> dict:
         'synapse_user_id': None,
     }
     if messenger == 'Telegram':
-        chat_id = None
-        if not msg.outgoing:
-            chat_id = (getattr(msg, 'author_tg_chat_id', None)
-                       or _message_tg_chat_id(db, msg))
+        author_chat_id = getattr(msg, 'author_tg_chat_id', None)
+        chat_id = (author_chat_id
+                   if author_chat_id and not msg.outgoing
+                   else _message_tg_chat_id(db, msg))
         meta['tg_chat_id'] = chat_id
+        fallback = meta['name']
+        if not (author_chat_id and not msg.outgoing):
+            fallback = _message_contact_label(db, msg) or fallback
+        meta['name'] = _telegram_forward_label(owner_id, chat_id, fallback)
     elif messenger == SYNAPSE_MESSENGER:
         meta['synapse_user_id'] = _message_synapse_user_id(
             db, owner_id, msg)
