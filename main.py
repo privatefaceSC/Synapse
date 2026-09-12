@@ -24,24 +24,88 @@ _AVATAR_PALETTE = [
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
 ]
 SYNAPSE_MESSENGER = "Synapse"
-CREATOR_USERNAMES = {"ivan", "dfyzkjcmrjd_cdby"}
+CREATOR_USER_IDS = {1}
+LEGACY_CREATOR_USERNAMES = {"ivan", "dfyzkjcmrjd_cdby"}
 CREATOR_BADGE = "Создатель"
 
 
+def _configured_creator_ids() -> set[int]:
+    raw = os.environ.get('SKILLWOOD_CREATOR_IDS')
+    if raw is None:
+        return set(CREATOR_USER_IDS)
+    ids = set()
+    for part in raw.split(','):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            ids.add(int(part))
+        except ValueError:
+            continue
+    return ids
+
+
 def _is_creator_user(user) -> bool:
+    if bool(getattr(user, 'is_creator', False)):
+        return True
+    try:
+        if int(getattr(user, 'id', 0) or 0) in _configured_creator_ids():
+            return True
+    except (TypeError, ValueError):
+        pass
+    return False
+
+
+def _is_legacy_creator_user(user) -> bool:
     username = (getattr(user, 'username', None) or '').strip().lower()
-    return username in CREATOR_USERNAMES
+    return username in LEGACY_CREATOR_USERNAMES
+
+
+def _username_reserved_for_creator(username: str) -> bool:
+    return (username or '').strip().lower() in LEGACY_CREATOR_USERNAMES
+
+
+def _seed_legacy_creator_flags(db) -> None:
+    """Одноразово переносим старую привязку creator-username в флаг БД.
+
+    После этого бейдж живёт от user.id/is_creator: если создатель сменит
+    username, статус не исчезнет.
+    """
+    if not LEGACY_CREATOR_USERNAMES:
+        return
+    from sqlalchemy import func
+
+    rows = (db.query(User)
+            .filter(func.lower(User.username).in_(
+                sorted(LEGACY_CREATOR_USERNAMES)))
+            .filter(User.is_creator.isnot(True))
+            .all())
+    if not rows:
+        return
+    for user in rows:
+        user.is_creator = True
+    db.commit()
 
 
 def _creator_user_ids(db) -> set[int]:
-    if not CREATOR_USERNAMES:
-        return set()
-    from sqlalchemy import func
+    from sqlalchemy import or_
 
-    rows = (db.query(User.id)
-            .filter(func.lower(User.username).in_(sorted(CREATOR_USERNAMES)))
-            .all())
-    return {row[0] for row in rows}
+    _seed_legacy_creator_flags(db)
+    configured_ids = _configured_creator_ids()
+    filters = [User.is_creator.is_(True)]
+    if configured_ids:
+        filters.append(User.id.in_(configured_ids))
+    rows = db.query(User).filter(or_(*filters)).all()
+    changed = False
+    ids = set()
+    for user in rows:
+        ids.add(user.id)
+        if not bool(getattr(user, 'is_creator', False)):
+            user.is_creator = True
+            changed = True
+    if changed:
+        db.flush()
+    return ids
 
 
 def _mark_contact_creator_from_handles(contact, handles, creator_ids):
@@ -718,6 +782,68 @@ def _media_root() -> str:
     return os.environ.get('SKILLWOOD_MEDIA_ROOT') or os.path.join(os.getcwd(), 'media')
 
 
+def _store_media_bytes(owner_id: int, data: bytes, subdir: str | None = None):
+    from data.crypto import encrypt_bytes
+
+    rel_dir = str(owner_id)
+    if subdir:
+        rel_dir = f"{rel_dir}/{subdir.strip('/')}"
+    os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)
+    stored_path = f"{rel_dir}/{uuid.uuid4().hex}.enc"
+    with open(os.path.join(_media_root(), stored_path), 'wb') as f:
+        f.write(encrypt_bytes(data))
+    return stored_path
+
+
+def _read_media_bytes(stored_path: str) -> bytes | None:
+    from data.crypto import decrypt_bytes
+
+    if not stored_path:
+        return None
+    full = os.path.join(_media_root(), stored_path)
+    if not os.path.exists(full):
+        return None
+    with open(full, 'rb') as f:
+        return decrypt_bytes(f.read())
+
+
+def _message_attachment_rows(db, message_id: int):
+    from data.attachments import Attachment
+
+    return (db.query(Attachment)
+            .filter(Attachment.message_id == message_id)
+            .order_by(Attachment.id.asc())
+            .all())
+
+
+def _attach_message_file(db, user_id: int, message_id: int, kind: str,
+                         mime: str | None, original_name: str | None,
+                         stored_path: str, size: int | None,
+                         dedup_key: str | None = None):
+    from data.attachments import Attachment
+
+    existing = (db.query(Attachment)
+                .filter(Attachment.user_id == user_id,
+                        Attachment.message_id == message_id,
+                        Attachment.stored_path == stored_path)
+                .first())
+    if existing is not None:
+        return existing
+    att = Attachment(
+        user_id=user_id,
+        message_id=message_id,
+        kind=kind,
+        mime=mime or None,
+        original_name=original_name or None,
+        stored_path=stored_path,
+        size=size,
+        dedup_key=dedup_key,
+    )
+    db.add(att)
+    db.flush()
+    return att
+
+
 _MAX_NOTIFICATION_AVATAR_BYTES = 512 * 1024
 
 
@@ -1050,7 +1176,8 @@ def _admin_user_summary(db, user) -> dict:
 _USERNAME_RE = re.compile(r'^[a-z0-9_]{3,32}$')
 
 _DM_PLACEHOLDER = {'image': '📷 Фото', 'video': '🎬 Видео',
-                   'audio': '🎵 Аудио', 'file': '📎 Файл'}
+                   'audio': '🎵 Аудио', 'voice': '🎤 Голосовое сообщение',
+                   'sticker': '🩷 Стикер', 'file': '📎 Файл'}
 
 
 def _normalize_username(raw: str) -> str:
@@ -1164,20 +1291,25 @@ def _dm_user_card(user) -> dict:
 
 
 def _creator_cards(db, me_id: int) -> list[dict]:
-    if not CREATOR_USERNAMES:
-        return []
-    from sqlalchemy import func
+    from sqlalchemy import or_
 
+    _seed_legacy_creator_flags(db)
+    configured_ids = _configured_creator_ids()
+    filters = [User.is_creator.is_(True)]
+    if configured_ids:
+        filters.append(User.id.in_(configured_ids))
     users = (db.query(User)
-             .filter(func.lower(User.username).in_(
-                 sorted(CREATOR_USERNAMES)))
+             .filter(or_(*filters))
              .order_by(User.id.asc())
              .all())
     cards = []
     for user in users:
+        if not bool(getattr(user, 'is_creator', False)):
+            user.is_creator = True
         card = _dm_user_card(user)
         card['is_self'] = user.id == me_id
         cards.append(card)
+    db.flush()
     return cards
 
 
@@ -1201,6 +1333,7 @@ def _dm_message_dict(m, me_id, atts) -> dict:
         'time': m.created_at.strftime('%H:%M') if m.created_at else '',
         'outgoing': m.sender_id == me_id,
         'attachments': [{'id': a.id, 'kind': a.kind,
+                         'mime': a.mime,
                          'name': a.original_name} for a in atts.get(m.id, [])],
     }
 
@@ -1264,6 +1397,7 @@ def _mirror_direct_message_for_owner(db, direct_msg, owner_id: int, users_by_id:
                         Messages.outgoing.is_(outgoing))
                 .first())
     if existing is not None:
+        _mirror_direct_attachments_to_message(db, direct_msg, owner_id, existing)
         return existing
     msg = Messages(
         sender='Вы' if outgoing else _dm_user_card(partner)['display_name'],
@@ -1277,7 +1411,201 @@ def _mirror_direct_message_for_owner(db, direct_msg, owner_id: int, users_by_id:
     )
     db.add(msg)
     db.flush()
+    _mirror_direct_attachments_to_message(db, direct_msg, owner_id, msg)
     return msg
+
+
+def _mirror_direct_attachments_to_message(db, direct_msg, owner_id: int,
+                                          mirror_msg):
+    from data.direct import DirectAttachment
+
+    atts = (db.query(DirectAttachment)
+            .filter(DirectAttachment.message_id == direct_msg.id)
+            .order_by(DirectAttachment.id.asc())
+            .all())
+    for att in atts:
+        _attach_message_file(
+            db, owner_id, mirror_msg.id, att.kind, att.mime,
+            att.original_name, att.stored_path, att.size)
+
+
+def _add_direct_attachment_ref(db, direct_message_id: int, kind: str,
+                               mime: str | None, original_name: str | None,
+                               stored_path: str, size: int | None):
+    from data.direct import DirectAttachment
+
+    att = DirectAttachment(
+        message_id=direct_message_id,
+        kind=kind,
+        mime=mime or None,
+        original_name=original_name or None,
+        stored_path=stored_path,
+        size=size,
+    )
+    db.add(att)
+    db.flush()
+    return att
+
+
+def _save_direct_upload(db, owner_id: int, direct_message_id: int, upload,
+                        voice_upload: bool = False):
+    data = upload.read()
+    if not data:
+        return None, None
+    upload_name = upload.filename or 'file'
+    upload_mime = (upload.mimetype or '').lower()
+    if voice_upload:
+        data, upload_name, upload_mime = _normalize_voice_upload(
+            data, upload_name or 'voice.webm', upload_mime)
+        kind = 'voice'
+    else:
+        kind = _kind_from_mime(upload_mime)
+    stored_path = _store_media_bytes(owner_id, data)
+    att = _add_direct_attachment_ref(
+        db, direct_message_id, kind, upload_mime, upload_name,
+        stored_path, len(data))
+    return att, data
+
+
+def _copy_message_attachments_to_direct(db, source_msg, direct_message_id: int):
+    copied = []
+    for att in _message_attachment_rows(db, source_msg.id):
+        copied.append(_add_direct_attachment_ref(
+            db, direct_message_id, att.kind, att.mime, att.original_name,
+            att.stored_path, att.size))
+    return copied
+
+
+def _forward_author_label(db, owner_id: int, msg) -> str:
+    from data.contacts import Contact, MessengerHandle
+    from data.matching import display_author
+
+    messenger = msg.messenger_name or ''
+    if messenger == SYNAPSE_MESSENGER:
+        source_user = None
+        if msg.outgoing:
+            source_user = db.get(User, owner_id)
+        else:
+            handle = db.get(MessengerHandle, msg.handle_id) if msg.handle_id else None
+            partner_id = _synapse_partner_id(handle) if handle is not None else None
+            if partner_id:
+                source_user = db.get(User, partner_id)
+        if source_user is not None:
+            username = (source_user.username or '').strip()
+            if username:
+                return '@' + username
+            return _dm_user_card(source_user)['display_name']
+
+    handle = db.get(MessengerHandle, msg.handle_id) if msg.handle_id else None
+    contact = (db.get(Contact, handle.contact_id)
+               if handle is not None and handle.contact_id else None)
+    if msg.outgoing:
+        me = db.get(User, owner_id)
+        if me is not None and (me.username or '').strip():
+            return '@' + me.username.strip()
+        return 'Вы'
+    if contact is not None:
+        return display_author(msg.sender or '', contact.display_name)
+    return msg.sender or 'Сообщение'
+
+
+def _forward_delivery_text(db, owner_id: int, msg) -> str:
+    messenger = msg.messenger_name or 'мессенджера'
+    author = _forward_author_label(db, owner_id, msg)
+    body = (msg.text or '').strip()
+    if not body:
+        atts = _message_attachment_rows(db, msg.id)
+        body = _DM_PLACEHOLDER.get(atts[0].kind, '📎 Вложение') if atts else 'Сообщение'
+    return f'Переслано из {messenger} "{author}"\n\n{body}'
+
+
+def _telegram_send_fallback_copy(db, user_id: int, tg_handle, source_msg,
+                                 text: str, reply_kw_tg: dict,
+                                 options: dict, local_reply_target=None):
+    from data import telegram_bridge
+
+    sent_text_id = telegram_bridge.send_message(
+        tg_handle.tg_chat_id, text, **reply_kw_tg, **options,
+        user_id=user_id)
+    now = datetime.now()
+    local_msg = Messages(
+        sender='Вы',
+        text=text,
+        messenger_name='Telegram',
+        time=now.strftime('%H:%M'),
+        user_id=user_id,
+        handle_id=tg_handle.id,
+        created_at=now,
+        outgoing=True,
+        tg_message_id=sent_text_id,
+        reply_to_message_id=(
+            local_reply_target.id if local_reply_target else None),
+    )
+    db.add(local_msg)
+    db.flush()
+
+    sent_media = []
+    for att in _message_attachment_rows(db, source_msg.id):
+        raw = _read_media_bytes(att.stored_path)
+        if raw is None:
+            continue
+        sent_id = telegram_bridge.send_file(
+            tg_handle.tg_chat_id, raw, att.original_name or 'sticker.webp',
+            '', **options, user_id=user_id,
+            voice_note=(att.kind == 'voice'))
+        media_msg = Messages(
+            sender='Вы',
+            text=_DM_PLACEHOLDER.get(att.kind, '📎 Файл'),
+            messenger_name='Telegram',
+            time=datetime.now().strftime('%H:%M'),
+            user_id=user_id,
+            handle_id=tg_handle.id,
+            created_at=datetime.now(),
+            outgoing=True,
+            tg_message_id=sent_id,
+        )
+        db.add(media_msg)
+        db.flush()
+        _attach_message_file(
+            db, user_id, media_msg.id, att.kind, att.mime,
+            att.original_name, att.stored_path, att.size)
+        sent_media.append(sent_id)
+    return local_msg, sent_media
+
+
+def _saved_sticker_dict(sticker) -> dict:
+    return {
+        'id': sticker.id,
+        'kind': sticker.kind,
+        'mime': sticker.mime,
+        'name': sticker.original_name,
+        'url': f'/stickers/{sticker.id}',
+        'created_at': (sticker.created_at.isoformat()
+                       if sticker.created_at else None),
+    }
+
+
+def _save_sticker_from_attachment(db, user_id: int, attachment):
+    from data.stickers import SavedSticker
+
+    existing = (db.query(SavedSticker)
+                .filter(SavedSticker.user_id == user_id,
+                        SavedSticker.stored_path == attachment.stored_path)
+                .first())
+    if existing is not None:
+        return existing
+    sticker = SavedSticker(
+        user_id=user_id,
+        source_attachment_id=attachment.id,
+        kind='sticker',
+        mime=attachment.mime,
+        original_name=attachment.original_name,
+        stored_path=attachment.stored_path,
+        size=attachment.size,
+    )
+    db.add(sticker)
+    db.flush()
+    return sticker
 
 
 def _sync_direct_messages_to_contacts(db, owner_id: int):
@@ -1424,6 +1752,7 @@ def register_routes(app: Flask) -> None:
         from data.contacts import Contact
         from data.devices import Device
         db = get_db()
+        _seed_legacy_creator_flags(db)
         user = db.query(User).filter(User.id == session['user_id']).first()
         contacts_count = db.query(Contact).filter(Contact.user_id == user.id).count()
         messages_count = db.query(Messages).filter(Messages.user_id == user.id).count()
@@ -1449,12 +1778,18 @@ def register_routes(app: Flask) -> None:
         is_xhr = request.headers.get('X-Requested-With') == 'XMLHttpRequest'
         new = _normalize_username(request.form.get('username'))
         error = _validate_username(new)
+        was_creator = _is_creator_user(me) or _is_legacy_creator_user(me)
+        if (not error and _username_reserved_for_creator(new)
+                and not was_creator):
+            error = "Этот User ID зарезервирован"
         if not error and db.query(User).filter(
                 User.username == new, User.id != me.id).first():
             error = "Этот User ID уже занят"
         if error:
             return (jsonify({'error': error}), 400) if is_xhr \
                 else redirect('/home')
+        if was_creator:
+            me.is_creator = True
         me.username = new
         db.commit()
         if is_xhr:
@@ -1467,6 +1802,7 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         db = get_db()
+        _seed_legacy_creator_flags(db)
         me = db.query(User).filter(User.id == session['user_id']).first()
         return render_template('profile.html', user=_mark_profile_badges(me))
 
@@ -1476,6 +1812,7 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return redirect('/login')
         db = get_db()
+        _seed_legacy_creator_flags(db)
         me = db.query(User).filter(User.id == session['user_id']).first()
         old = request.form.get('old_password') or ''
         new1 = request.form.get('new_password') or ''
@@ -1512,6 +1849,7 @@ def register_routes(app: Flask) -> None:
         surname = (request.form.get('surname') or '').strip()
         email = (request.form.get('email') or '').strip()
         username = _normalize_username(request.form.get('username'))
+        was_creator = _is_creator_user(me) or _is_legacy_creator_user(me)
         error = None
         if not name:
             error = "Имя не может быть пустым"
@@ -1524,6 +1862,9 @@ def register_routes(app: Flask) -> None:
             uname_err = _validate_username(username)
             if uname_err:
                 error = uname_err
+            elif (_username_reserved_for_creator(username)
+                  and not was_creator):
+                error = "Этот User ID зарезервирован"
             elif (db.query(User)
                   .filter(User.username == username,
                           User.id != me.id).first()):
@@ -1535,6 +1876,8 @@ def register_routes(app: Flask) -> None:
         me.name = name
         me.surname = surname or None
         me.email = email
+        if was_creator:
+            me.is_creator = True
         me.username = username
         db.commit()
         return render_template('profile.html', user=_mark_profile_badges(me),
@@ -1619,6 +1962,7 @@ def register_routes(app: Flask) -> None:
         if not q:
             return jsonify({'users': []})
         db = get_db()
+        _seed_legacy_creator_flags(db)
         me_id = session['user_id']
         users = db.query(User).filter(User.id != me_id).order_by(User.id.asc()).all()
         matched = []
@@ -1649,8 +1993,7 @@ def register_routes(app: Flask) -> None:
     def messenger_send(user_id):
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.crypto import encrypt_bytes
-        from data.direct import DirectAttachment, DirectMessage
+        from data.direct import DirectMessage
         db = get_db()
         me_id = session['user_id']
         if user_id == me_id:
@@ -1664,6 +2007,8 @@ def register_routes(app: Flask) -> None:
         has_file = upload is not None and bool(upload.filename)
         if not text and not has_file:
             return jsonify({'error': 'empty'}), 400
+        voice_upload = (request.form.get('voice') or '').lower() in (
+            '1', 'true', 'on')
 
         now = datetime.now()
         msg = DirectMessage(sender_id=me_id, recipient_id=user_id,
@@ -1673,24 +2018,16 @@ def register_routes(app: Flask) -> None:
 
         attachments = []
         if has_file:
-            data = upload.read()
-            if not data:
+            att, _data = _save_direct_upload(
+                db, me_id, msg.id, upload, voice_upload=voice_upload)
+            if att is None:
                 db.rollback()
                 return jsonify({'error': 'empty'}), 400
-            kind = _kind_from_mime(upload.mimetype)
-            os.makedirs(os.path.join(_media_root(), 'dm'), exist_ok=True)
-            stored_path = 'dm/' + uuid.uuid4().hex + '.enc'
-            with open(os.path.join(_media_root(), stored_path), 'wb') as f:
-                f.write(encrypt_bytes(data))
-            att = DirectAttachment(
-                message_id=msg.id, kind=kind, mime=upload.mimetype,
-                original_name=upload.filename or None,
-                stored_path=stored_path, size=len(data))
-            db.add(att)
             if not msg.text:
-                msg.text = _DM_PLACEHOLDER.get(kind, '📎 Файл')
+                msg.text = _DM_PLACEHOLDER.get(att.kind, '📎 Файл')
             db.flush()
             attachments = [{'id': att.id, 'kind': att.kind,
+                            'mime': att.mime,
                             'name': att.original_name}]
 
         sender = db.query(User).filter(User.id == me_id).first()
@@ -2008,6 +2345,8 @@ def register_routes(app: Flask) -> None:
             username_error = _validate_username(username)
             if username_error:
                 return fail(username_error)
+            if _username_reserved_for_creator(username):
+                return fail("Этот User ID зарезервирован")
 
             if db.query(User).filter(User.email == email).first():
                 return fail("Такой пользователь уже есть")
@@ -2219,6 +2558,7 @@ def register_routes(app: Flask) -> None:
         if not q:
             return jsonify({'users': []})
         db = get_db()
+        _seed_legacy_creator_flags(db)
         me_id = session['user_id']
         users = db.query(User).filter(User.id != me_id).order_by(User.id.asc()).all()
         matched = []
@@ -2559,8 +2899,6 @@ def register_routes(app: Flask) -> None:
                     Messages.user_id == user_id).first()
             if forward_source is None:
                 return jsonify({'error': 'forward_not_found'}), 404
-            if forward_source.tg_message_id is None:
-                return jsonify({'error': 'forward_not_telegram'}), 400
         if not text and upload is None and forward_source is None:
             return jsonify({'error': 'empty'}), 400
         voice_upload = False
@@ -2627,45 +2965,72 @@ def register_routes(app: Flask) -> None:
                 requested_messenger == SYNAPSE_MESSENGER
                 or not any(h.messenger_name != SYNAPSE_MESSENGER
                            for h in m_handles)):
-            if upload is not None:
-                return jsonify({'error': 'media_not_supported'}), 400
-            if forward_source is not None:
-                return jsonify({'error': 'target_not_telegram'}), 400
-            if not text:
-                return jsonify({'error': 'empty'}), 400
             partner_id = _synapse_partner_id(synapse_handle)
             if partner_id is None or partner_id == user_id:
                 return jsonify({'error': 'not_found'}), 404
 
             from data.direct import DirectMessage
             now = datetime.now()
+            direct_text = text
+            if forward_source is not None:
+                direct_text = _forward_delivery_text(db, user_id, forward_source)
+                if text:
+                    direct_text = direct_text + '\n\n' + text
+            if not direct_text and upload is None:
+                return jsonify({'error': 'empty'}), 400
+
             direct_msg = DirectMessage(
                 sender_id=user_id,
                 recipient_id=partner_id,
-                text=text,
+                text=direct_text or None,
                 created_at=now,
             )
             db.add(direct_msg)
             db.flush()
-            msg = Messages(
-                sender='Вы',
-                text=text,
-                messenger_name=SYNAPSE_MESSENGER,
-                time=now.strftime('%H:%M'),
-                user_id=user_id,
-                handle_id=synapse_handle.id,
-                created_at=now,
-                outgoing=True,
-            )
-            db.add(msg)
+
+            if upload is not None:
+                direct_att, _data = _save_direct_upload(
+                    db, user_id, direct_msg.id, upload,
+                    voice_upload=voice_upload)
+                if direct_att is None:
+                    db.rollback()
+                    return jsonify({'error': 'empty'}), 400
+                if not direct_msg.text:
+                    direct_msg.text = _DM_PLACEHOLDER.get(
+                        direct_att.kind, '📎 Файл')
+            if forward_source is not None:
+                copied = _copy_message_attachments_to_direct(
+                    db, forward_source, direct_msg.id)
+                if copied and not direct_msg.text:
+                    direct_msg.text = _DM_PLACEHOLDER.get(
+                        copied[0].kind, '📎 Файл')
             db.flush()
+
             me = db.query(User).filter(User.id == user_id).first()
             partner = db.query(User).filter(User.id == partner_id).first()
+            msg = None
             recipient_msg = None
             if me is not None and partner is not None:
                 users_by_id = {user_id: me, partner_id: partner}
+                msg = _mirror_direct_message_for_owner(
+                    db, direct_msg, user_id, users_by_id)
                 recipient_msg = _mirror_direct_message_for_owner(
                     db, direct_msg, partner_id, users_by_id)
+            if msg is None:
+                msg = Messages(
+                    sender='Вы',
+                    text=direct_msg.text,
+                    messenger_name=SYNAPSE_MESSENGER,
+                    time=now.strftime('%H:%M'),
+                    user_id=user_id,
+                    handle_id=synapse_handle.id,
+                    created_at=now,
+                    outgoing=True,
+                )
+                db.add(msg)
+                db.flush()
+                _mirror_direct_attachments_to_message(
+                    db, direct_msg, user_id, msg)
 
             reply_quote = None
             reply_raw = request.form.get('reply_to')
@@ -2693,11 +3058,18 @@ def register_routes(app: Flask) -> None:
             db.commit()
             if recipient_msg is not None:
                 _notify_webpush_message(recipient_msg.id)
+            local_atts = _message_attachment_rows(db, msg.id)
             return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
                             'text': msg.text, 'text_html': None,
+                            'date_label': _message_date_label(msg.created_at),
                             'messenger_name': SYNAPSE_MESSENGER,
                             'reply_to': reply_quote,
-                            'forwarded': False})
+                            'forwarded': forward_source is not None,
+                            'attachments': [
+                                {'id': a.id, 'kind': a.kind, 'mime': a.mime,
+                                 'name': a.original_name}
+                                for a in local_atts
+                            ]})
         tg_handle, notif_handle = _reply_channel(m_handles)
         if tg_handle is None and notif_handle is None and requested_messenger:
             # Запрошен мессенджер, в котором ответ невозможен — пробуем глобально.
@@ -2734,26 +3106,56 @@ def register_routes(app: Flask) -> None:
             forwarded_tg_id = None
             if forward_source is not None:
                 source_chat_id = _msg_tg_chat_id(db, forward_source)
-                if source_chat_id is None:
-                    return jsonify({'error': 'no_source_chat'}), 400
-                try:
-                    forwarded_tg_id = telegram_bridge.forward_message(
-                        source_chat_id, forward_source.tg_message_id,
-                        tg_handle.tg_chat_id, user_id=user_id)
-                except Exception as exc:  # noqa: BLE001
-                    return jsonify({'error': 'send_failed',
-                                    'detail': str(exc)}), 502
-                if forwarded_tg_id is not None:
-                    forwarded_local = db.query(Messages).filter(
-                        Messages.user_id == user_id,
-                        Messages.handle_id == tg_handle.id,
-                        Messages.tg_message_id == forwarded_tg_id).first()
-                    if forwarded_local is not None:
-                        reply_target = forwarded_local
-                    reply_kw_tg['reply_to'] = forwarded_tg_id
-                if not text and upload is None:
-                    return jsonify({'ok': True, 'forwarded': True,
-                                    'forward_tg_message_id': forwarded_tg_id})
+                if forward_source.tg_message_id is not None and source_chat_id is not None:
+                    try:
+                        forwarded_tg_id = telegram_bridge.forward_message(
+                            source_chat_id, forward_source.tg_message_id,
+                            tg_handle.tg_chat_id, user_id=user_id)
+                    except Exception as exc:  # noqa: BLE001
+                        return jsonify({'error': 'send_failed',
+                                        'detail': str(exc)}), 502
+                    if forwarded_tg_id is not None:
+                        forwarded_local = db.query(Messages).filter(
+                            Messages.user_id == user_id,
+                            Messages.handle_id == tg_handle.id,
+                            Messages.tg_message_id == forwarded_tg_id).first()
+                        if forwarded_local is not None:
+                            reply_target = forwarded_local
+                        reply_kw_tg['reply_to'] = forwarded_tg_id
+                    if not text and upload is None:
+                        return jsonify({'ok': True, 'forwarded': True,
+                                        'forward_tg_message_id': forwarded_tg_id})
+                else:
+                    forward_text = _forward_delivery_text(
+                        db, user_id, forward_source)
+                    if text:
+                        forward_text = forward_text + '\n\n' + text
+                    _opts_fw = {}
+                    if silent:
+                        _opts_fw['silent'] = True
+                    if schedule_at is not None:
+                        _opts_fw['schedule'] = schedule_at
+                    try:
+                        local_msg, sent_media = _telegram_send_fallback_copy(
+                            db, user_id, tg_handle, forward_source,
+                            forward_text, reply_kw_tg, _opts_fw,
+                            local_reply_target=reply_target)
+                    except Exception as exc:  # noqa: BLE001
+                        return jsonify({'error': 'send_failed',
+                                        'detail': str(exc)}), 502
+                    db.commit()
+                    return jsonify({
+                        'ok': True,
+                        'id': local_msg.id,
+                        'time': local_msg.time,
+                        'date_label': _message_date_label(
+                            local_msg.created_at),
+                        'text': local_msg.text,
+                        'text_html': None,
+                        'reply_to': None,
+                        'forwarded': True,
+                        'sent_media': sent_media,
+                    })
 
             if upload is not None:
                 data = upload.read()
@@ -2928,6 +3330,133 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'queued': True, 'pending_id': pr.id,
                         'via': 'notif'})
+
+    @app.route('/contacts/<int:contact_id>/send-sticker', methods=['POST'])
+    def contact_send_sticker(contact_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        from data.stickers import SavedSticker
+        from data import telegram_bridge
+
+        db = get_db()
+        user_id = session['user_id']
+        try:
+            sticker_id = int(request.form.get('sticker_id') or 0)
+        except ValueError:
+            sticker_id = 0
+        sticker = (db.query(SavedSticker)
+                   .filter(SavedSticker.id == sticker_id,
+                           SavedSticker.user_id == user_id)
+                   .first())
+        if sticker is None:
+            return jsonify({'error': 'sticker_not_found'}), 404
+        raw = _read_media_bytes(sticker.stored_path)
+        if raw is None:
+            return jsonify({'error': 'sticker_file_missing'}), 404
+
+        contact = (db.query(Contact)
+                   .filter(Contact.id == contact_id,
+                           Contact.user_id == user_id)
+                   .first())
+        if not contact:
+            return jsonify({'error': 'not_found'}), 404
+        handles = db.query(MessengerHandle).filter(
+            MessengerHandle.contact_id == contact.id).all()
+        requested_messenger = (
+            request.form.get('messenger') or '').strip() or None
+        m_handles = ([h for h in handles
+                      if h.messenger_name == requested_messenger]
+                     if requested_messenger else handles)
+        synapse_handle = next((h for h in m_handles
+                               if h.messenger_name == SYNAPSE_MESSENGER), None)
+        if synapse_handle is not None and (
+                requested_messenger == SYNAPSE_MESSENGER
+                or not any(h.messenger_name != SYNAPSE_MESSENGER
+                           for h in m_handles)):
+            partner_id = _synapse_partner_id(synapse_handle)
+            if partner_id is None or partner_id == user_id:
+                return jsonify({'error': 'not_found'}), 404
+            from data.direct import DirectMessage
+
+            now = datetime.now()
+            direct_msg = DirectMessage(
+                sender_id=user_id, recipient_id=partner_id,
+                text=_DM_PLACEHOLDER['sticker'], created_at=now)
+            db.add(direct_msg)
+            db.flush()
+            _add_direct_attachment_ref(
+                db, direct_msg.id, 'sticker', sticker.mime,
+                sticker.original_name, sticker.stored_path, sticker.size)
+            me = db.get(User, user_id)
+            partner = db.get(User, partner_id)
+            users_by_id = {user_id: me, partner_id: partner}
+            msg = _mirror_direct_message_for_owner(
+                db, direct_msg, user_id, users_by_id)
+            recipient_msg = _mirror_direct_message_for_owner(
+                db, direct_msg, partner_id, users_by_id)
+            sticker.last_used_at = now
+            db.commit()
+            if recipient_msg is not None:
+                _notify_webpush_message(recipient_msg.id)
+            local_atts = _message_attachment_rows(db, msg.id)
+            return jsonify({
+                'ok': True,
+                'id': msg.id,
+                'time': msg.time,
+                'date_label': _message_date_label(msg.created_at),
+                'text': '',
+                'text_html': None,
+                'messenger_name': SYNAPSE_MESSENGER,
+                'attachments': [
+                    {'id': a.id, 'kind': a.kind, 'mime': a.mime,
+                     'name': a.original_name}
+                    for a in local_atts
+                ],
+            })
+
+        tg_handle, notif_handle = _reply_channel(m_handles)
+        if tg_handle is None and notif_handle is None and requested_messenger:
+            tg_handle, notif_handle = _reply_channel(handles)
+        if tg_handle is None:
+            return jsonify({'error': 'target_not_telegram'}), 400
+        try:
+            sent_id = telegram_bridge.send_file(
+                tg_handle.tg_chat_id, raw,
+                sticker.original_name or 'sticker.webp', '',
+                user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            return jsonify({'error': 'send_failed', 'detail': str(exc)}), 502
+        now = datetime.now()
+        msg = Messages(
+            sender='Вы',
+            text=_DM_PLACEHOLDER['sticker'],
+            messenger_name='Telegram',
+            time=now.strftime('%H:%M'),
+            user_id=user_id,
+            handle_id=tg_handle.id,
+            created_at=now,
+            outgoing=True,
+            tg_message_id=sent_id,
+        )
+        db.add(msg)
+        db.flush()
+        att = _attach_message_file(
+            db, user_id, msg.id, 'sticker', sticker.mime,
+            sticker.original_name, sticker.stored_path, sticker.size)
+        sticker.last_used_at = now
+        db.commit()
+        return jsonify({
+            'ok': True,
+            'id': msg.id,
+            'time': msg.time,
+            'date_label': _message_date_label(msg.created_at),
+            'text': '',
+            'text_html': None,
+            'messenger_name': 'Telegram',
+            'attachments': [{'id': att.id, 'kind': att.kind,
+                             'mime': att.mime, 'name': att.original_name}],
+        })
 
     @app.route('/contacts/<int:contact_id>/avatars.json')
     def contact_avatars(contact_id):
@@ -4132,6 +4661,49 @@ def register_routes(app: Flask) -> None:
         out.sort(key=lambda x: (x['display_name'] or '').lower())
         return jsonify({'contacts': out})
 
+    @app.route('/contacts/forward-targets.json')
+    def contacts_forward_targets_json():
+        """Контакты, куда одиночную пересылку можно доставить из composer.
+
+        Telegram-цели используют нативный forward, когда источник тоже
+        Telegram, или текстовый fallback для MAX/Synapse. Synapse-цели
+        принимают текст и сохранённые вложения напрямую.
+        """
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+
+        db = get_db()
+        user_id = session['user_id']
+        contacts = db.query(Contact).filter(Contact.user_id == user_id).all()
+        contacts = _filter_discussion_contacts(db, contacts)
+        ids = [c.id for c in contacts]
+        handles_by_contact = {}
+        if ids:
+            for h in (db.query(MessengerHandle)
+                      .filter(MessengerHandle.contact_id.in_(ids)).all()):
+                handles_by_contact.setdefault(h.contact_id, []).append(h)
+        out = []
+        for c in contacts:
+            handles = handles_by_contact.get(c.id, [])
+            tg = _telegram_reply_handle(handles)
+            synapse = next((h for h in handles
+                            if h.messenger_name == SYNAPSE_MESSENGER), None)
+            if tg is None and synapse is None:
+                continue
+            messenger = 'Telegram' if tg is not None else SYNAPSE_MESSENGER
+            _avatar_for(c)
+            out.append({
+                'id': c.id,
+                'display_name': c.display_name,
+                'initial': c.initial,
+                'avatar_color': c.avatar_color,
+                'avatar_url': c.avatar_url,
+                'messenger': messenger,
+            })
+        out.sort(key=lambda x: (x['display_name'] or '').lower())
+        return jsonify({'contacts': out})
+
     @app.route('/messages/<int:message_id>/react', methods=['POST'])
     def message_react(message_id):
         """Toggle реакции на Telegram-сообщении. Параметр `emoji` — какая.
@@ -4934,6 +5506,60 @@ def register_routes(app: Flask) -> None:
             return 'OK Duplicate', 200
         _notify_webpush_message(msg.id)
         return 'OK', 200
+
+    @app.route('/attachments/<int:attachment_id>/save-sticker',
+               methods=['POST'])
+    def attachment_save_local_sticker(attachment_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.attachments import Attachment
+
+        db = get_db()
+        user_id = session['user_id']
+        att = (db.query(Attachment)
+               .filter(Attachment.id == attachment_id,
+                       Attachment.user_id == user_id).first())
+        if att is None:
+            return jsonify({'error': 'not_found'}), 404
+        if att.kind != 'sticker':
+            return jsonify({'error': 'not_sticker'}), 400
+        sticker = _save_sticker_from_attachment(db, user_id, att)
+        db.commit()
+        return jsonify({'ok': True, 'sticker': _saved_sticker_dict(sticker)})
+
+    @app.route('/stickers.json')
+    def stickers_json():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.stickers import SavedSticker
+
+        db = get_db()
+        stickers = (db.query(SavedSticker)
+                    .filter(SavedSticker.user_id == session['user_id'])
+                    .order_by(SavedSticker.last_used_at.desc().nullslast(),
+                              SavedSticker.created_at.desc(),
+                              SavedSticker.id.desc())
+                    .all())
+        return jsonify({'ok': True,
+                        'stickers': [_saved_sticker_dict(s) for s in stickers]})
+
+    @app.route('/stickers/<int:sticker_id>')
+    def sticker_get(sticker_id):
+        if not session.get('user_id'):
+            return 'Unauthorized', 401
+        from data.stickers import SavedSticker
+
+        db = get_db()
+        sticker = (db.query(SavedSticker)
+                   .filter(SavedSticker.id == sticker_id,
+                           SavedSticker.user_id == session['user_id'])
+                   .first())
+        if sticker is None:
+            return 'Not Found', 404
+        raw = _read_media_bytes(sticker.stored_path)
+        if raw is None:
+            return 'Not Found', 404
+        return Response(raw, mimetype=sticker.mime or 'application/octet-stream')
 
     @app.route('/attachments/<int:attachment_id>')
     def attachment_get(attachment_id):

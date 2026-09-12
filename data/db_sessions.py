@@ -67,7 +67,8 @@ def _apply_light_migrations(engine):
         "users": [("username", "VARCHAR"),
                   ("created_at", "DATETIME"),
                   ("preferred_lang", "VARCHAR"),
-                  ("about_seen_at", "DATETIME")],
+                  ("about_seen_at", "DATETIME"),
+                  ("is_creator", "BOOLEAN")],
         "chat_topics": [("topic_id", "BIGINT")],
         "web_push_subscriptions": [("origin", "VARCHAR")],
     }

@@ -1562,9 +1562,14 @@
         object-fit: cover; }
     .fwd-row .name {
         flex: 1 1 auto; min-width: 0; font-size: 14px; color: #1a2230;
+        display: flex; flex-direction: column; gap: 2px;
         white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+    .fwd-row .name small {
+        color: #64748b; font-size: 12px; line-height: 1.1;
+    }
     [data-bs-theme="dark"] .fwd-row .name { color: #e5e7eb; }
+    [data-bs-theme="dark"] .fwd-row .name small { color: #94a3b8; }
     .fwd-empty {
         padding: 18px 6px; text-align: center; color: #9ca3af;
         font-size: 13px; font-style: italic;
@@ -1897,27 +1902,71 @@
        и Enter'ом, но иконка нужна как сигнал «сообщение готово». */
     .composer.has-text .send-btn { display: inline-flex; }
     .composer.has-text .voice-btn { display: none; }
-    /* Поповер emoji-picker — выезжает над composer'ом. */
+    /* Поповер emoji/sticker-picker — выезжает над composer'ом. */
     .emoji-picker {
         position: absolute; bottom: 56px; right: 12px;
+        width: min(360px, calc(100vw - 24px));
         background: #fff; border: 1px solid #e2e8f0; border-radius: 12px;
         box-shadow: 0 12px 32px rgba(15,23,42,.18);
-        padding: 8px;
-        display: grid; grid-template-columns: repeat(8, 28px);
-        gap: 4px; z-index: 30;
-        max-height: 240px; overflow-y: auto;
+        padding: 10px; z-index: 30;
+        max-height: min(430px, 70vh); overflow: hidden;
     }
     .emoji-picker[hidden] { display: none; }
-    .emoji-picker button {
+    .emoji-picker-tabs {
+        display: grid; grid-template-columns: repeat(3, 1fr);
+        gap: 4px; margin-bottom: 8px; border-bottom: 1px solid #e2e8f0;
+    }
+    .emoji-picker-tab {
+        background: transparent; border: 0; color: #64748b;
+        padding: 8px 4px; font-weight: 700; cursor: pointer;
+        border-bottom: 2px solid transparent;
+    }
+    .emoji-picker-tab.active {
+        color: #2563eb; border-bottom-color: #3b82f6;
+    }
+    .emoji-picker-tab:disabled { opacity: .45; cursor: default; }
+    .emoji-picker-body {
+        max-height: min(340px, 58vh); overflow-y: auto;
+    }
+    .emoji-grid {
+        display: grid; grid-template-columns: repeat(8, 34px);
+        gap: 4px;
+    }
+    .emoji-grid button {
         background: transparent; border: none; cursor: pointer;
-        font-size: 20px; line-height: 1; padding: 2px;
+        font-size: 22px; line-height: 1; padding: 5px 2px;
         border-radius: 6px;
     }
-    .emoji-picker button:hover { background: #f1f5f9; }
+    .emoji-grid button:hover { background: #f1f5f9; }
+    .sticker-picker-grid {
+        display: grid; grid-template-columns: repeat(5, minmax(46px, 1fr));
+        gap: 8px;
+    }
+    .sticker-picker-item {
+        border: 0; border-radius: 8px; background: #f8fafc;
+        aspect-ratio: 1 / 1; padding: 4px; cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .sticker-picker-item:hover { background: #e2e8f0; }
+    .sticker-picker-item img,
+    .sticker-picker-item video {
+        max-width: 100%; max-height: 100%; object-fit: contain;
+        border-radius: 6px;
+    }
+    .sticker-picker-empty {
+        color: #64748b; font-size: 13px; line-height: 1.35;
+        padding: 16px 8px; text-align: center;
+    }
     [data-bs-theme="dark"] .emoji-picker {
         background: #1a1d24; border-color: #2a2f3a;
     }
-    [data-bs-theme="dark"] .emoji-picker button:hover { background: #232831; }
+    [data-bs-theme="dark"] .emoji-picker-tabs { border-bottom-color: #2a2f3a; }
+    [data-bs-theme="dark"] .emoji-picker-tab { color: #94a3b8; }
+    [data-bs-theme="dark"] .emoji-picker-tab.active { color: #60a5fa; }
+    [data-bs-theme="dark"] .emoji-grid button:hover { background: #232831; }
+    [data-bs-theme="dark"] .sticker-picker-item { background: #111827; }
+    [data-bs-theme="dark"] .sticker-picker-item:hover { background: #232831; }
+    [data-bs-theme="dark"] .sticker-picker-empty { color: #94a3b8; }
     [data-bs-theme="dark"] .composer {
         background: rgba(19,21,25,.94); border-top-color: #242832;
     }
@@ -3927,15 +3976,18 @@
                                         {% if a.kind == 'sticker' %}
                                         {% if a.mime and a.mime.startswith('video/') %}
                                         <video class="sticker-video" src="/attachments/{{ a.id }}"
+                                               data-sticker-attachment-id="{{ a.id }}"
                                                {% if m.messenger_name == 'Telegram' %}data-sticker-pack-id="{{ a.id }}"{% endif %}
                                                autoplay loop muted playsinline preload="metadata"></video>
                                         {% elif a.mime == 'application/x-tgsticker' %}
                                         <button class="sticker-tgs" type="button"
+                                                data-sticker-attachment-id="{{ a.id }}"
                                                 {% if m.messenger_name == 'Telegram' %}data-sticker-pack-id="{{ a.id }}"{% endif %}>
                                             <span>✦</span><span>Анимированный стикер</span>
                                         </button>
                                         {% else %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
+                                             data-sticker-attachment-id="{{ a.id }}"
                                              {% if m.messenger_name == 'Telegram' %}data-sticker-pack-id="{{ a.id }}"{% endif %}
                                              loading="lazy" alt="стикер">
                                         {% endif %}
@@ -4022,17 +4074,16 @@
                         <div class="composer-forward" id="composer-forward" hidden></div>
                         <div class="composer-reply" id="composer-reply" hidden></div>
                         <div class="composer-preview" id="composer-preview" hidden></div>
-                        {% if reply_via == 'telegram' %}
+                        {% if reply_via in ['telegram', 'synapse'] %}
                         <button type="button" class="attach-btn" id="composer-attach"
-                                title="Прикрепить фото или видео">📎</button>
-                        <input type="file" id="composer-file"
-                               accept="image/*,video/*" multiple hidden>
+                                title="Прикрепить файл">📎</button>
+                        <input type="file" id="composer-file" multiple hidden>
                         {% endif %}
                         <textarea id="composer-text" rows="1"
                                   placeholder="Сообщение…"></textarea>
                         <button type="button" class="emoji-btn" id="composer-emoji"
                                 title="Смайлики"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><path d="M8 14s1.5 2 4 2 4-2 4-2"></path><line x1="9" y1="9" x2="9.01" y2="9"></line><line x1="15" y1="9" x2="15.01" y2="9"></line></svg></button>
-                        {% if reply_via == 'telegram' %}
+                        {% if reply_via in ['telegram', 'synapse'] %}
                         <button type="button" class="voice-btn" id="composer-voice"
                                 title="Записать голосовое"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></button>
                         {% endif %}
@@ -4109,7 +4160,7 @@
 
 <div class="msgr-picker" id="forward-modal">
     <div class="msgr-picker-box" style="min-width:340px;max-width:420px;">
-        <div class="msgr-picker-title">Переслать в Telegram-чат</div>
+        <div class="msgr-picker-title" id="forward-title">Переслать</div>
         <input type="search" class="fwd-search" id="forward-search"
                autocomplete="off" placeholder="Найти контакт…">
         <div class="fwd-list" id="forward-list"></div>
@@ -5550,6 +5601,9 @@
         // оригинала уже нет. Локальную копию сохраняем; в меню — только
         // «Копировать» и плашка-предупреждение.
         const isDeleted = !!(bubble && bubble.classList.contains('deleted'));
+        const stickerEl = row && row.querySelector('[data-sticker-attachment-id]');
+        const stickerAttachmentId = stickerEl
+            ? stickerEl.dataset.stickerAttachmentId : '';
         // Подсветим эмодзи, которая уже стоит от меня (одна за раз — TG-правило).
         const mineEmoji = isTelegram && !isDeleted
             ? (row.querySelector('.reaction-chip.mine')
@@ -5581,9 +5635,13 @@
                 items.push('<button class="reply-msg-btn" type="button">'
                     + '<span class="menu-ico">↩</span>Ответить</button>');
             }
+            items.push('<button class="forward-msg-btn" type="button">'
+                + '<span class="menu-ico">↪</span>Переслать…</button>');
+            if (stickerAttachmentId) {
+                items.push('<button class="save-sticker-btn" type="button">'
+                    + '<span class="menu-ico">⭐</span>Сохранить стикер</button>');
+            }
             if (isTelegram) {
-                items.push('<button class="forward-msg-btn" type="button">'
-                    + '<span class="menu-ico">↪</span>Переслать…</button>');
                 items.push('<button class="select-msg-btn" type="button">'
                     + '<span class="menu-ico">☑</span>Выбрать сообщения</button>');
             }
@@ -5707,6 +5765,32 @@
                 e.stopPropagation();
                 closeMenu();
                 openForwardModal(messageId, {author: author, text: text});
+            });
+        }
+        const saveStickerBtn = menu.querySelector('.save-sticker-btn');
+        if (saveStickerBtn) {
+            saveStickerBtn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                saveStickerBtn.disabled = true;
+                try {
+                    const r = await fetch('/attachments/' + stickerAttachmentId
+                        + '/save-sticker', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: {'X-Requested-With': 'XMLHttpRequest'},
+                        });
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok || !d.ok) {
+                        alert('Не удалось сохранить стикер: '
+                              + (d.detail || d.error || 'HTTP ' + r.status));
+                        return;
+                    }
+                    window.__skillwoodStickerCache = null;
+                } catch (err) {
+                    alert('Сеть недоступна — стикер не сохранён.');
+                } finally {
+                    closeMenu();
+                }
             });
         }
         const selBtn = menu.querySelector('.select-msg-btn');
@@ -5968,6 +6052,7 @@
 
     // --- Пересылка сообщения: модалка выбора Telegram-контакта ---
     const fwdModal = document.getElementById('forward-modal');
+    const fwdTitle = document.getElementById('forward-title');
     const fwdSearch = document.getElementById('forward-search');
     const fwdList = document.getElementById('forward-list');
     let fwdAllContacts = [];
@@ -6002,9 +6087,12 @@
                 : '<span class="avatar" style="background: '
                   + escapeHtml(c.avatar_color) + '">'
                   + escapeHtml(c.initial) + '</span>';
-            return '<div class="fwd-row" data-cid="' + c.id + '">'
+            return '<div class="fwd-row" data-cid="' + c.id + '"'
+                + ' data-messenger="' + escapeHtml(c.messenger || '') + '">'
                 + avatar + '<span class="name">'
-                + escapeHtml(c.display_name) + '</span></div>';
+                + escapeHtml(c.display_name)
+                + (c.messenger ? '<small>' + escapeHtml(c.messenger) + '</small>' : '')
+                + '</span></div>';
         }).join('');
     }
 
@@ -6015,13 +6103,20 @@
         fwdMessageIds = Array.isArray(messageIdOrIds)
             ? messageIdOrIds.slice()
             : [messageIdOrIds];
+        const isBulk = fwdMessageIds.length > 1;
         fwdPreview = preview || null;
         fwdSearch.value = '';
         fwdList.innerHTML = '<div class="fwd-empty">Загрузка…</div>';
+        if (fwdTitle) {
+            fwdTitle.textContent = isBulk
+                ? 'Переслать в Telegram-чат' : 'Переслать';
+        }
         fwdModal.classList.add('open');
         setTimeout(() => fwdSearch.focus(), 30);
         try {
-            const r = await fetch('/contacts/telegram.json',
+            const endpoint = isBulk
+                ? '/contacts/telegram.json' : '/contacts/forward-targets.json';
+            const r = await fetch(endpoint,
                                   {credentials: 'same-origin'});
             const d = await r.json();
             fwdAllContacts = d.contacts || [];
@@ -6044,6 +6139,7 @@
             const isBulk = fwdMessageIds.length > 1;
             if (!isBulk) {
                 const msgId = fwdMessageIds[0];
+                const messenger = row.dataset.messenger || null;
                 const preview = fwdPreview
                     ? {author: fwdPreview.author, text: fwdPreview.text}
                     : null;
@@ -6052,7 +6148,8 @@
                     window.__skillwoodExitSelection();
                 }
                 if (window.__skillwoodPrepareForward) {
-                    await window.__skillwoodPrepareForward(msgId, preview, cid);
+                    await window.__skillwoodPrepareForward(
+                        msgId, preview, cid, messenger);
                 } else {
                     alert('Не удалось открыть чат для пересылки.');
                     row.style.opacity = '';
@@ -6741,14 +6838,15 @@
             const mime = (a.mime || '').toLowerCase();
             const packAttr = m.messenger_name === 'Telegram'
                 ? ` data-sticker-pack-id="${a.id}"` : '';
+            const saveAttr = ` data-sticker-attachment-id="${a.id}"`;
             if (mime.indexOf('video/') === 0) {
-                return `<video class="sticker-video" src="/attachments/${a.id}"${packAttr} autoplay loop muted playsinline preload="metadata"></video>`;
+                return `<video class="sticker-video" src="/attachments/${a.id}"${saveAttr}${packAttr} autoplay loop muted playsinline preload="metadata"></video>`;
             }
             if (mime === 'application/x-tgsticker') {
-                return `<button class="sticker-tgs" type="button"${packAttr}>`
+                return `<button class="sticker-tgs" type="button"${saveAttr}${packAttr}>`
                     + `<span>✦</span><span>Анимированный стикер</span></button>`;
             }
-            return `<img class="sticker-img" src="/attachments/${a.id}"${packAttr} loading="lazy" alt="стикер">`;
+            return `<img class="sticker-img" src="/attachments/${a.id}"${saveAttr}${packAttr} loading="lazy" alt="стикер">`;
         }
         let prevKey = '';
         return messages.map(m => {
@@ -6930,18 +7028,18 @@
                 ? renderChannelNotice(contact) : '';
         }
         const messenger = contact.messenger || 'Telegram';
-        const isTg = (contact.reply_via || 'telegram') === 'telegram';
+        const replyVia = contact.reply_via || 'telegram';
+        const hasRichComposer = replyVia === 'telegram' || replyVia === 'synapse';
         // Один и тот же placeholder во всех мессенджерах — компактно
         // и не отвлекает. Markdown по-прежнему работает (Telethon его
         // разберёт), просто без подсказки в UI.
         const placeholder = 'Сообщение…';
-        const attach = isTg
+        const attach = hasRichComposer
             ? `<button type="button" class="attach-btn" id="composer-attach"
-                       title="Прикрепить фото или видео">📎</button>
-               <input type="file" id="composer-file" accept="image/*,video/*"
-                      multiple hidden>`
+                       title="Прикрепить файл">📎</button>
+               <input type="file" id="composer-file" multiple hidden>`
             : '';
-        const voice = isTg
+        const voice = hasRichComposer
             ? `<button type="button" class="voice-btn" id="composer-voice"
                        title="Записать голосовое"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg></button>`
             : '';
@@ -7139,6 +7237,7 @@
             }
         } catch (e) { /* network blip */ }
     }
+    window.__skillwoodPollMessages = pollMessages;
 
     async function loadOlderMessages() {
         if (!hasOlderMessages || loadingOlderMessages || currentContactId == null) {
@@ -8008,20 +8107,22 @@
         const oldText = stickerPackSave.textContent;
         stickerPackSave.textContent = 'Сохраняем...';
         try {
-            const fd = new FormData();
-            fd.append('mode', 'pack');
             const r = await fetch('/attachments/' + stickerPackAttachmentId
-                + '/telegram-sticker', {method: 'POST', body: fd});
+                + '/save-sticker', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                });
             const data = await r.json().catch(() => ({}));
             if (!r.ok || !data.ok) {
-                alert('Не удалось сохранить стикерпак: '
+                alert('Не удалось сохранить стикер: '
                     + (data.detail || data.error || ('HTTP ' + r.status)));
                 return;
             }
+            window.__skillwoodStickerCache = null;
             stickerPackSave.textContent = 'Сохранено';
             setTimeout(closeStickerPackModal, 700);
         } catch (err) {
-            alert('Сеть недоступна — стикерпак не сохранён.');
+            alert('Сеть недоступна — стикер не сохранён.');
         } finally {
             stickerPackSave.disabled = false;
             setTimeout(() => { stickerPackSave.textContent = oldText; }, 900);
@@ -8646,13 +8747,15 @@
     }
 
     window.__skillwoodPrepareForward = async function(messageId, preview,
-                                                      targetContactId) {
+                                                      targetContactId,
+                                                      targetMessenger) {
         pendingForward = {
             id: messageId,
             author: (preview && preview.author) || 'Сообщение',
             text: (preview && preview.text) || '📎 Вложение',
         };
-        await openContact(targetContactId, null, {keepPendingForward: true});
+        await openContact(targetContactId, targetMessenger || null,
+                          {keepPendingForward: true});
         renderForwardBanner();
         const ta = feed.querySelector('#composer-text');
         if (ta) ta.focus();
@@ -10058,9 +10161,8 @@
 </script>
 
 <script>
-// --- Emoji-picker для composer'а: кнопка 😀 справа от textarea.
-//     При клике выезжает поповер со смайликами; клик по смайлу вставляет
-//     его в textarea на текущей позиции курсора. ---
+// --- Emoji/sticker-picker для composer'а. Эмодзи вставляются в textarea,
+//     сохранённые стикеры отправляются в текущий Telegram/Synapse-чат. ---
 (function() {
     const EMOJIS = [
         '😀','😁','😂','🤣','😃','😄','😅','😆',
@@ -10082,15 +10184,121 @@
         '🎉','🎊','🎁','🎂','🍰','☕','🍕','🍔',
     ];
 
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     function getPicker(form) {
-        let picker = form.querySelector('#emoji-picker');
+        const picker = form && form.querySelector('#emoji-picker');
         if (!picker) return null;
-        if (!picker.childElementCount) {
-            picker.innerHTML = EMOJIS.map(e =>
-                '<button type="button" data-emoji="' + e + '">'
-                + e + '</button>').join('');
+        if (!picker.dataset.ready) {
+            picker.dataset.ready = '1';
+            picker.innerHTML =
+                '<div class="emoji-picker-tabs" role="tablist">'
+                + '<button type="button" class="emoji-picker-tab active" '
+                + 'data-tab="emoji">Эмодзи</button>'
+                + '<button type="button" class="emoji-picker-tab" '
+                + 'data-tab="stickers">Стикеры</button>'
+                + '<button type="button" class="emoji-picker-tab" '
+                + 'data-tab="gif" disabled>GIF</button>'
+                + '</div>'
+                + '<div class="emoji-picker-body" data-picker-body></div>';
+            renderPickerTab(picker, 'emoji');
         }
         return picker;
+    }
+
+    function renderEmojiTab(picker) {
+        const body = picker.querySelector('[data-picker-body]');
+        if (!body) return;
+        body.innerHTML = '<div class="emoji-grid">'
+            + EMOJIS.map(e => '<button type="button" data-emoji="' + e
+                + '">' + e + '</button>').join('')
+            + '</div>';
+    }
+
+    async function loadStickers() {
+        if (Array.isArray(window.__skillwoodStickerCache)) {
+            return window.__skillwoodStickerCache;
+        }
+        const r = await fetch('/stickers.json', {credentials: 'same-origin'});
+        const data = await r.json().catch(() => ({}));
+        if (!r.ok || !data.ok) {
+            throw new Error(data.detail || data.error || ('HTTP ' + r.status));
+        }
+        window.__skillwoodStickerCache = data.stickers || [];
+        return window.__skillwoodStickerCache;
+    }
+
+    function stickerPreviewHtml(sticker) {
+        const mime = (sticker.mime || '').toLowerCase();
+        const src = esc(sticker.url || '');
+        const name = esc(sticker.name || 'стикер');
+        if (mime.indexOf('video/') === 0) {
+            return '<video src="' + src
+                + '" autoplay loop muted playsinline preload="metadata"></video>';
+        }
+        if (mime === 'application/x-tgsticker') {
+            return '<span aria-hidden="true">✦</span>';
+        }
+        return '<img src="' + src + '" alt="' + name + '" loading="lazy">';
+    }
+
+    function renderStickers(picker, stickers) {
+        const body = picker.querySelector('[data-picker-body]');
+        if (!body) return;
+        if (!stickers.length) {
+            body.innerHTML =
+                '<div class="sticker-picker-empty">'
+                + 'Сохранённых стикеров пока нет. Откройте меню у '
+                + 'Telegram-стикера и нажмите «Сохранить стикер».'
+                + '</div>';
+            return;
+        }
+        body.innerHTML = '<div class="sticker-picker-grid">'
+            + stickers.map(sticker =>
+                '<button type="button" class="sticker-picker-item" '
+                + 'data-sticker-id="' + esc(sticker.id) + '" '
+                + 'title="' + esc(sticker.name || 'Стикер') + '">'
+                + stickerPreviewHtml(sticker)
+                + '</button>').join('')
+            + '</div>';
+    }
+
+    async function renderPickerTab(picker, tab) {
+        picker.dataset.activeTab = tab;
+        picker.querySelectorAll('.emoji-picker-tab').forEach(btn => {
+            btn.classList.toggle('active', btn.dataset.tab === tab);
+        });
+        if (tab === 'emoji') {
+            renderEmojiTab(picker);
+            return;
+        }
+        if (tab === 'stickers') {
+            const body = picker.querySelector('[data-picker-body]');
+            if (body) {
+                body.innerHTML =
+                    '<div class="sticker-picker-empty">Загружаем...</div>';
+            }
+            try {
+                const stickers = await loadStickers();
+                if (picker.dataset.activeTab === 'stickers') {
+                    renderStickers(picker, stickers);
+                }
+            } catch (err) {
+                if (body) {
+                    body.innerHTML =
+                        '<div class="sticker-picker-empty">'
+                        + 'Не удалось загрузить стикеры.'
+                        + '</div>';
+                }
+            }
+        }
     }
 
     function insertAtCursor(ta, text) {
@@ -10106,7 +10314,37 @@
         ta.dispatchEvent(new Event('input', {bubbles: true}));
     }
 
-    document.addEventListener('click', (e) => {
+    async function sendSticker(form, stickerId, button) {
+        if (!form || !stickerId) return;
+        const contactId = form.dataset.contactId;
+        if (!contactId) return;
+        const fd = new FormData();
+        fd.append('sticker_id', stickerId);
+        const messenger = form.dataset.messenger || '';
+        if (messenger) fd.append('messenger', messenger);
+        if (button) button.disabled = true;
+        try {
+            const r = await fetch('/contacts/' + contactId + '/send-sticker',
+                {method: 'POST', body: fd, credentials: 'same-origin'});
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok || !data.ok) {
+                alert('Не удалось отправить стикер: '
+                    + (data.detail || data.error || ('HTTP ' + r.status)));
+                return;
+            }
+            const picker = form.querySelector('#emoji-picker');
+            if (picker) picker.hidden = true;
+            if (window.__skillwoodPollMessages) {
+                window.__skillwoodPollMessages();
+            }
+        } catch (err) {
+            alert('Сеть недоступна — стикер не отправлен.');
+        } finally {
+            if (button) button.disabled = false;
+        }
+    }
+
+    document.addEventListener('click', async (e) => {
         const btn = e.target.closest('#composer-emoji');
         if (btn) {
             e.preventDefault();
@@ -10117,6 +10355,13 @@
             picker.hidden = !picker.hidden;
             return;
         }
+        const tabBtn = e.target.closest('.emoji-picker-tab[data-tab]');
+        if (tabBtn && !tabBtn.disabled) {
+            e.preventDefault();
+            const picker = tabBtn.closest('.emoji-picker');
+            if (picker) await renderPickerTab(picker, tabBtn.dataset.tab);
+            return;
+        }
         const emoji = e.target.closest('.emoji-picker button[data-emoji]');
         if (emoji) {
             e.preventDefault();
@@ -10125,6 +10370,13 @@
             if (ta) insertAtCursor(ta, emoji.dataset.emoji);
             const picker = emoji.closest('.emoji-picker');
             if (picker) picker.hidden = true;
+            return;
+        }
+        const sticker = e.target.closest('.emoji-picker [data-sticker-id]');
+        if (sticker) {
+            e.preventDefault();
+            const form = sticker.closest('#composer');
+            await sendSticker(form, sticker.dataset.stickerId, sticker);
             return;
         }
         // Клик где-то снаружи — закрываем все открытые picker'ы.
