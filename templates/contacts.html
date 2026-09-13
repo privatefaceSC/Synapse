@@ -1273,8 +1273,10 @@
             rgba(30,58,138,.35) 0%, rgba(30,58,138,.15) 100%);
     }
     .bubble .media-img {
-        display: block; margin-top: 8px; max-width: 260px; max-height: 340px;
-        border-radius: 14px; cursor: zoom-in; object-fit: cover;
+        display: block; margin-top: 8px; width: min(260px, 70vw);
+        max-width: 100%; max-height: 340px; aspect-ratio: 4 / 5;
+        border-radius: 14px; cursor: zoom-in; object-fit: contain;
+        background: rgba(15,23,42,.06);
         transition: transform 0.18s ease, box-shadow 0.18s ease;
     }
     .bubble .media-img:hover {
@@ -3515,6 +3517,7 @@
             white-space: nowrap;
         }
         .bubble .media-img {
+            width: min(292px, 78vw);
             max-width: min(292px, 78vw);
             max-height: 360px;
         }
@@ -6545,6 +6548,56 @@
         el.scrollTop = el.scrollHeight;
     }
 
+    function cssEscapeValue(value) {
+        if (window.CSS && typeof window.CSS.escape === 'function') {
+            return window.CSS.escape(String(value));
+        }
+        return String(value).replace(/["\\]/g, '\\$&');
+    }
+
+    function captureScrollAnchor(container) {
+        if (!container || container.id !== 'messages-container') return null;
+        const rows = Array.from(
+            container.querySelectorAll('.bubble-row[data-message-id]'));
+        if (!rows.length) return {top: container.scrollTop};
+        const topLine = container.scrollTop + 16;
+        let anchor = rows[0];
+        for (const row of rows) {
+            anchor = row;
+            if (row.offsetTop + row.offsetHeight >= topLine) break;
+        }
+        return {
+            id: anchor.dataset.messageId,
+            offset: topLine - anchor.offsetTop,
+        };
+    }
+
+    function restoreScrollAnchor(container, anchor) {
+        if (!container || !anchor) return;
+        if (anchor.id) {
+            const row = container.querySelector(
+                '.bubble-row[data-message-id="'
+                + cssEscapeValue(anchor.id) + '"]');
+            if (row) {
+                container.scrollTop = Math.max(
+                    0, row.offsetTop + (anchor.offset || 0) - 16);
+                return;
+            }
+        }
+        if (typeof anchor.top === 'number') {
+            container.scrollTop = Math.max(0, anchor.top);
+        }
+    }
+
+    function restoreScrollAnchorSoon(container, anchor) {
+        if (!container || !anchor) return;
+        restoreScrollAnchor(container, anchor);
+        requestAnimationFrame(() => restoreScrollAnchor(container, anchor));
+        [90, 260, 650].forEach(t => {
+            setTimeout(() => restoreScrollAnchor(container, anchor), t);
+        });
+    }
+
     function ensureScrollDatePill(container) {
         if (!container || container.id !== 'messages-container') return null;
         let pill = container.querySelector('.scroll-date-pill');
@@ -6607,6 +6660,7 @@
 
         let forcePeriod = true;
         let active = true;
+        let userLockedScroll = false;
         let mo = null;
         let ro = null;
 
@@ -6616,10 +6670,13 @@
             if (ro) try { ro.disconnect(); } catch (e) {}
             c.removeEventListener('scroll', cancelOnUserScroll);
             c.removeEventListener('wheel', cancelOnUserIntent);
+            c.removeEventListener('pointerdown', cancelOnUserIntent);
             c.removeEventListener('touchstart', cancelOnUserIntent);
+            c.removeEventListener('touchmove', cancelOnUserIntent);
         };
 
         const cancelOnUserIntent = () => {
+            userLockedScroll = true;
             forcePeriod = false;
         };
 
@@ -6629,14 +6686,16 @@
         };
 
         const forceBump = () => {
-            if (!active) return;
+            if (!active || userLockedScroll) return;
             if (forcePeriod) scrollToBottom();
             else if (isNearBottom()) scrollToBottom();
         };
 
         c.addEventListener('scroll', cancelOnUserScroll, {passive: true});
         c.addEventListener('wheel', cancelOnUserIntent, {passive: true});
+        c.addEventListener('pointerdown', cancelOnUserIntent, {passive: true});
         c.addEventListener('touchstart', cancelOnUserIntent, {passive: true});
+        c.addEventListener('touchmove', cancelOnUserIntent, {passive: true});
 
         // 1) MutationObserver — на любые изменения DOM в контейнере
         //    (картинки получили src, добавились новые ноды и т.п.).
@@ -7273,6 +7332,7 @@
                 const added = data.messages.filter(
                     m => !prevIds.has(m.id || (m.time + m.text))).length;
                 const c = document.getElementById('messages-container');
+                const scrollAnchor = stick || !c ? null : captureScrollAnchor(c);
                 if (c) {
                     currentMessages = data.messages || [];
                     c.innerHTML = renderMessages(combinedMessages());
@@ -7291,7 +7351,10 @@
                 }
                 lastSig = sig;
                 if (stick) scrollToBottom();
-                else if (added > 0) noteNewMessages(added);
+                else {
+                    restoreScrollAnchorSoon(c, scrollAnchor);
+                    if (added > 0) noteNewMessages(added);
+                }
                 updateScrollFab();
             }
         } catch (e) { /* network blip */ }
@@ -7307,8 +7370,7 @@
         const c = document.getElementById('messages-container');
         if (!c) return;
         loadingOlderMessages = true;
-        const oldHeight = c.scrollHeight;
-        const oldTop = c.scrollTop;
+        const scrollAnchor = captureScrollAnchor(c);
         try {
             const sep = messengerQuery() ? '&' : '?';
             const url = '/contacts/' + currentContactId + '/messages.json'
@@ -7325,7 +7387,7 @@
                 olderMessages = incoming.concat(olderMessages);
                 hasOlderMessages = !!data.has_older;
                 c.innerHTML = renderMessages(combinedMessages());
-                c.scrollTop = c.scrollHeight - oldHeight + oldTop;
+                restoreScrollAnchorSoon(c, scrollAnchor);
                 reapplyTopicHighlight();
             } else {
                 hasOlderMessages = false;

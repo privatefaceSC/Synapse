@@ -384,8 +384,8 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
     if (contact is not None and contact_avatar_path
             and contact.avatar_path != contact_avatar_path):
         contact.avatar_path = contact_avatar_path
-    if contact is not None and archived is True and not bool(contact.archived):
-        contact.archived = True
+    if contact is not None and archived is not None:
+        contact.archived = bool(archived)
     if contact is not None and muted is not None:
         contact.muted = bool(muted)
     # Контакт заблокирован — молча игнорируем новые входящие. Свои
