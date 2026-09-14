@@ -840,6 +840,36 @@ def _message_attachment_rows(db, message_id: int):
             .all())
 
 
+def _client_send_key(raw_value: str | None) -> str | None:
+    key = (raw_value or '').strip()
+    if not key:
+        return None
+    return key[:160]
+
+
+def _manual_send_duplicate_payload(db, msg, user_id: int) -> dict:
+    _attach_media(db, [msg])
+    _attach_forwards(db, [msg], user_id)
+    return {
+        'ok': True,
+        'duplicate': True,
+        'id': msg.id,
+        'time': msg.time,
+        'date_label': _message_date_label(msg.created_at),
+        'text': getattr(msg, 'visible_text', msg.text or ''),
+        'text_html': getattr(msg, 'visible_text_html', None),
+        'messenger_name': msg.messenger_name,
+        'media': bool(getattr(msg, 'media', [])),
+        'fwd_from': getattr(msg, 'fwd_quote', None),
+        'attachments': [
+            {'id': a.id, 'kind': a.kind, 'mime': a.mime,
+             'name': a.original_name,
+             'has_sticker_pack': bool(a.sticker_pack_key)}
+            for a in getattr(msg, 'media', [])
+        ],
+    }
+
+
 def _attach_message_file(db, user_id: int, message_id: int, kind: str,
                          mime: str | None, original_name: str | None,
                          stored_path: str, size: int | None,
@@ -3249,7 +3279,8 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'unauthorized'}), 401
         from data.contacts import Contact, MessengerHandle
         from data import telegram_bridge
-        from data.pending_replies import PendingReply, STATUS_PENDING
+        from data.pending_replies import (PendingReply, STATUS_PENDING,
+                                          STATUS_PICKED)
         db = get_db()
         user_id = session['user_id']
         contact = (db.query(Contact)
@@ -3258,6 +3289,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'not_found'}), 404
         text = (request.form.get('text') or '').strip()
         upload = request.files.get('file')
+        client_send_key = _client_send_key(request.form.get('client_send_key'))
         forward_raw = (request.form.get('forward_message_id') or '').strip()
         forward_source = None
         forward_meta = None
@@ -3275,6 +3307,16 @@ def register_routes(app: Flask) -> None:
             forward_meta = _forward_source_meta(db, user_id, forward_source)
         if not text and upload is None and forward_source is None:
             return jsonify({'error': 'empty'}), 400
+        if client_send_key:
+            existing = (db.query(Messages)
+                        .filter(Messages.user_id == user_id,
+                                Messages.notification_dedup_key
+                                == client_send_key)
+                        .order_by(Messages.id.desc())
+                        .first())
+            if existing is not None:
+                return jsonify(_manual_send_duplicate_payload(
+                    db, existing, user_id))
         voice_upload = False
         if upload is not None:
             voice_upload = (
@@ -3394,6 +3436,8 @@ def register_routes(app: Flask) -> None:
             if forward_meta is not None:
                 _apply_forward_meta(msg, forward_meta)
                 _apply_forward_meta(recipient_msg, forward_meta)
+            if msg is not None and client_send_key:
+                msg.notification_dedup_key = client_send_key
             if msg is None:
                 msg = Messages(
                     sender='Вы',
@@ -3404,6 +3448,7 @@ def register_routes(app: Flask) -> None:
                     handle_id=synapse_handle.id,
                     created_at=now,
                     outgoing=True,
+                    notification_dedup_key=client_send_key,
                 )
                 db.add(msg)
                 db.flush()
@@ -3529,6 +3574,8 @@ def register_routes(app: Flask) -> None:
                     except Exception as exc:  # noqa: BLE001
                         return jsonify({'error': 'send_failed',
                                         'detail': str(exc)}), 502
+                    if local_msg is not None and client_send_key:
+                        local_msg.notification_dedup_key = client_send_key
                     db.commit()
                     _attach_media(db, [local_msg])
                     _attach_forwards(db, [local_msg], user_id)
@@ -3614,6 +3661,7 @@ def register_routes(app: Flask) -> None:
                     tg_message_id=sent_id,
                     reply_to_message_id=(
                         reply_target.id if reply_target else None),
+                    notification_dedup_key=client_send_key,
                 )
                 db.add(msg)
                 db.flush()  # нужно msg.id для Attachment
@@ -3677,6 +3725,7 @@ def register_routes(app: Flask) -> None:
                 outgoing=True,
                 tg_message_id=sent_id,
                 reply_to_message_id=reply_target.id if reply_target else None,
+                notification_dedup_key=client_send_key,
             )
             db.add(msg)
             db.commit()
@@ -3706,6 +3755,23 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'media_not_supported'}), 400
         if not text:
             return jsonify({'error': 'empty'}), 400
+        if client_send_key:
+            existing_pr = (db.query(PendingReply)
+                           .filter(PendingReply.user_id == user_id,
+                                   PendingReply.client_send_key
+                                   == client_send_key,
+                                   PendingReply.status.in_(
+                                       [STATUS_PENDING, STATUS_PICKED]))
+                           .order_by(PendingReply.id.desc())
+                           .first())
+            if existing_pr is not None:
+                return jsonify({
+                    'ok': True,
+                    'duplicate': True,
+                    'queued': True,
+                    'pending_id': existing_pr.id,
+                    'via': 'notif',
+                })
         pr = PendingReply(
             user_id=user_id,
             handle_id=notif_handle.id,
@@ -3714,6 +3780,7 @@ def register_routes(app: Flask) -> None:
             sender_label=notif_handle.sender_raw,
             status=STATUS_PENDING,
             reply_to_message_id=reply_target.id if reply_target else None,
+            client_send_key=client_send_key,
         )
         db.add(pr)
         db.commit()
@@ -5613,6 +5680,7 @@ def register_routes(app: Flask) -> None:
                 created_at=now,
                 outgoing=True,
                 reply_to_message_id=pr.reply_to_message_id,
+                notification_dedup_key=pr.client_send_key,
             )
             db.add(msg)
             pr.status = STATUS_SENT

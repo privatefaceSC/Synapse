@@ -1707,6 +1707,13 @@
         font-weight: 700; cursor: pointer; padding: 8px 6px;
     }
     .media-draft-footer .media-draft-textbtn:hover { color: #93c5fd; }
+    .media-draft-modal.sending .media-draft-shell { cursor: progress; }
+    .media-draft-modal.sending [data-media-action],
+    .media-draft-modal.sending [data-media-thumb],
+    .media-draft-modal.sending [data-media-caption] {
+        opacity: .55;
+        pointer-events: none;
+    }
     @media (max-width: 640px) {
         .media-draft-modal { align-items: flex-end; padding: 10px; }
         .media-draft-shell { width: 100%; }
@@ -1912,6 +1919,12 @@
     .composer .send-btn:hover { background: #2563eb; }
     .composer .send-btn:active { transform: scale(.97); }
     .composer .send-btn:disabled { opacity: .5; cursor: default; }
+    .composer.is-sending {
+        cursor: progress;
+    }
+    .composer.is-sending textarea {
+        opacity: .72;
+    }
     /* Toggle «микрофон ↔ отправка»: когда текст пуст — виден мик (если
        чат поддерживает голосовые), как только что-то напечатано —
        мик исчезает, появляется стрелка отправки. Класс has-text
@@ -5207,6 +5220,66 @@
         }[c]));
     }
 
+    let clientSendSeq = 0;
+
+    function makeClientSendKey(kind) {
+        const token = (window.crypto && window.crypto.randomUUID)
+            ? window.crypto.randomUUID()
+            : (Date.now().toString(36) + '-'
+               + (++clientSendSeq).toString(36));
+        return 'web:' + (kind || 'message') + ':' + token;
+    }
+
+    function ensureClientSendKey(form, kind, fingerprint) {
+        if (!form) return makeClientSendKey(kind);
+        const fp = fingerprint || kind || 'message';
+        if (!form.dataset.sendKey || form.dataset.sendFingerprint !== fp) {
+            form.dataset.sendKey = makeClientSendKey(kind);
+            form.dataset.sendFingerprint = fp;
+        }
+        return form.dataset.sendKey;
+    }
+
+    function clearClientSendKey(form) {
+        if (!form) return;
+        delete form.dataset.sendKey;
+        delete form.dataset.sendFingerprint;
+    }
+
+    function setComposerBusy(form, busy) {
+        if (!form) return;
+        form.classList.toggle('is-sending', !!busy);
+        form.setAttribute('aria-busy', busy ? 'true' : 'false');
+        form.querySelectorAll(
+            '#composer-send, #composer-attach, #composer-emoji, '
+            + '#composer-voice, #composer-file, #composer-text'
+        ).forEach(el => { el.disabled = !!busy; });
+        if (mediaDraftModal) {
+            mediaDraftModal.classList.toggle('sending', !!busy);
+            mediaDraftModal.querySelectorAll(
+                '[data-media-action], [data-media-thumb], '
+                + '[data-media-caption]'
+            ).forEach(el => { el.disabled = !!busy; });
+        }
+    }
+
+    function startComposerSend(form) {
+        if (!form || form.dataset.sending === '1') return false;
+        form.dataset.sending = '1';
+        setComposerBusy(form, true);
+        return true;
+    }
+
+    function finishComposerSend(form) {
+        if (!form) return;
+        delete form.dataset.sending;
+        setComposerBusy(form, false);
+    }
+
+    window.__skillwoodMakeClientSendKey = makeClientSendKey;
+    window.__skillwoodStartComposerSend = startComposerSend;
+    window.__skillwoodFinishComposerSend = finishComposerSend;
+
     function creatorBadgeHtml(item) {
         if (!item || !item.is_creator) return '';
         return '<span class="creator-inline">★ '
@@ -7828,6 +7901,7 @@
 
     // --- Отправка ответа в Telegram из ленты чата ---
     async function sendMessage(form) {
+        if (!form || form.dataset.sending === '1') return;
         // Есть прикреплённый файл — отправляем его (текст пойдёт подписью).
         if (pendingFiles.length) { await sendFiles(form); return; }
         const ta = form.querySelector('#composer-text');
@@ -7836,9 +7910,14 @@
         const text = ta.value.trim();
         if (!text && !pendingForward) return;
         const cid = form.dataset.contactId;
-        btn.disabled = true;
+        const sendKey = ensureClientSendKey(form, 'text', JSON.stringify([
+            cid, form.dataset.messenger || '', text,
+            replyTarget && replyTarget.id,
+            pendingForward && pendingForward.id,
+        ]));
+        if (!startComposerSend(form)) return;
         try {
-            const params = {text: text};
+            const params = {text: text, client_send_key: sendKey};
             const m = form.dataset.messenger;
             if (m) params.messenger = m;
             if (replyTarget) params.reply_to = replyTarget.id;
@@ -7875,6 +7954,7 @@
                     form.classList.remove('has-text');
                     clearReply();
                     clearForward();
+                    clearClientSendKey(form);
                     const whenText = data.when
                         ? new Date(data.when).toLocaleString('ru-RU')
                         : '';
@@ -7889,9 +7969,12 @@
                     }
                     return;
                 }
+                if (data.duplicate) {
+                    pollMessages();
+                }
                 // queued (notif-путь) — реальное сообщение прилетит поллингом
                 // как только Android отчитается; не дорисовываем оптимистично.
-                if (!data.queued && data.id
+                if (!data.queued && !data.duplicate && data.id
                         && String(cid) === String(currentContactId)) {
                     const c = document.getElementById('messages-container');
                     if (c) {
@@ -7928,6 +8011,7 @@
                 if (window.__skillwoodResetSendFlags) {
                     window.__skillwoodResetSendFlags(form);
                 }
+                clearClientSendKey(form);
                 clearReply();
                 if (data.forwarded) {
                     clearForward();
@@ -7949,8 +8033,8 @@
                 window.__skillwoodResetSendFlags(form);
             }
         } finally {
-            btn.disabled = false;
-            ta.focus();
+            finishComposerSend(form);
+            if (document.body.contains(ta)) ta.focus();
         }
     }
 
@@ -8046,21 +8130,27 @@
     // Отправка файла (фото/видео) в Telegram. Текст из поля — подпись.
     async function sendFile(form, file, captionOverride, opts) {
         opts = opts || {};
+        const item = file && file.file ? file : {file: file};
+        file = item.file;
+        if (!form || !file) return false;
         const cid = form.dataset.contactId;
         const ta = form.querySelector('#composer-text');
-        const btn = form.querySelector('#composer-send');
-        const attach = form.querySelector('#composer-attach');
         if (file && file.size > MAX_UPLOAD_BYTES) {
             alert('Не удалось отправить файл: '
                   + uploadFailureMessage(null, {}, null, file));
             return false;
         }
+        let lockedHere = false;
         if (!opts.controlsLocked) {
-            if (btn) btn.disabled = true;
-            if (attach) attach.disabled = true;
+            if (!startComposerSend(form)) return false;
+            lockedHere = true;
         }
+        const sendKey = opts.clientSendKey || item.sendKey
+            || makeClientSendKey('file');
+        item.sendKey = sendKey;
         const fd = new FormData();
         fd.append('file', file);
+        fd.append('client_send_key', sendKey);
         const caption = captionOverride != null
             ? captionOverride
             : (ta ? ta.value.trim() : '');
@@ -8097,6 +8187,9 @@
                         });
                     }
                 }
+                if (data.duplicate) {
+                    pollMessages();
+                }
                 // Медиа-сообщение появится в ленте в течение ~5 c (поллинг).
                 if (!opts.deferClear) {
                     if (ta) { ta.value = ''; ta.style.height = ''; }
@@ -8105,6 +8198,7 @@
                         window.__skillwoodResetSendFlags(form);
                     }
                     clearPreview();
+                    clearClientSendKey(form);
                     clearReply();
                     if (data.forwarded) {
                         clearForward();
@@ -8128,10 +8222,7 @@
             }
             return false;
         } finally {
-            if (!opts.controlsLocked) {
-                if (btn) btn.disabled = false;
-                if (attach) attach.disabled = false;
-            }
+            if (lockedHere) finishComposerSend(form);
         }
     }
 
@@ -8139,16 +8230,18 @@
         const items = pendingFiles.slice();
         if (!items.length) return;
         const ta = form.querySelector('#composer-text');
-        const btn = form.querySelector('#composer-send');
-        const attach = form.querySelector('#composer-attach');
         const caption = ta ? ta.value.trim() : '';
-        if (btn) btn.disabled = true;
-        if (attach) attach.disabled = true;
+        if (!startComposerSend(form)) return;
         try {
             for (let i = 0; i < items.length; i++) {
-                const ok = await sendFile(form, items[i].file,
+                const ok = await sendFile(form, items[i],
                     i === 0 ? caption : '',
-                    {deferClear: true, controlsLocked: true});
+                    {
+                        deferClear: true,
+                        controlsLocked: true,
+                        clientSendKey: items[i].sendKey
+                            || makeClientSendKey('file'),
+                    });
                 if (!ok) return;
             }
             if (ta) { ta.value = ''; ta.style.height = ''; }
@@ -8157,14 +8250,14 @@
                 window.__skillwoodResetSendFlags(form);
             }
             clearPreview();
+            clearClientSendKey(form);
             clearReply();
             if (pendingForward) {
                 clearForward();
                 pollMessages();
             }
         } finally {
-            if (btn) btn.disabled = false;
-            if (attach) attach.disabled = false;
+            finishComposerSend(form);
         }
     }
 
@@ -9095,6 +9188,9 @@
         }
         modal.classList.add('open');
         refreshComposerSendState(form);
+        if (form && form.dataset.sending === '1') {
+            setComposerBusy(form, true);
+        }
     }
 
     function closeMediaDraft() {
@@ -9115,6 +9211,7 @@
         pendingFiles[mediaDraftIndex] = {
             file: edited,
             url: URL.createObjectURL(edited),
+            sendKey: item.sendKey,
         };
         showMediaDraft();
         showPreview();
@@ -9124,7 +9221,11 @@
         const usable = Array.from(files || []).filter(Boolean);
         if (!usable.length) return;
         usable.forEach(file => {
-            pendingFiles.push({file, url: URL.createObjectURL(file)});
+            pendingFiles.push({
+                file,
+                url: URL.createObjectURL(file),
+                sendKey: makeClientSendKey('file'),
+            });
         });
         mediaDraftIndex = pendingFiles.length - usable.length;
         showMediaDraft();
@@ -9171,6 +9272,7 @@
         closeMediaDraft();
         const box = feed.querySelector('#composer-preview');
         if (box) { box.hidden = true; box.innerHTML = ''; }
+        clearClientSendKey(feed.querySelector('#composer'));
         refreshComposerSendState();
     }
 
@@ -9259,6 +9361,11 @@
 
     document.addEventListener('click', async function(e) {
         if (!mediaDraftModal || !mediaDraftModal.contains(e.target)) return;
+        if (mediaDraftModal.classList.contains('sending')) {
+            e.preventDefault();
+            e.stopPropagation();
+            return;
+        }
         const thumb = e.target.closest('[data-media-thumb]');
         if (thumb) {
             mediaDraftIndex = Number(thumb.dataset.mediaThumb) || 0;
@@ -9326,6 +9433,7 @@
             ta.value = caption.value;
             ta.style.height = 'auto';
             ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+            clearClientSendKey(form);
         }
         caption.style.height = 'auto';
         caption.style.height = Math.min(caption.scrollHeight, 104) + 'px';
@@ -9335,6 +9443,8 @@
     // Кнопка «прикрепить» открывает выбор файла; «×» убирает выбранное.
     feed.addEventListener('click', function(e) {
         if (e.target.closest('#composer-attach')) {
+            const form = e.target.closest('#composer');
+            if (form && form.dataset.sending === '1') return;
             const inp = feed.querySelector('#composer-file');
             if (inp) inp.click();
         } else if (e.target.closest('.cp-remove')) {
@@ -9883,6 +9993,11 @@
     feed.addEventListener('change', async function(e) {
         const inp = e.target.closest('#composer-file');
         if (inp && inp.files && inp.files[0]) {
+            const form = inp.closest('#composer');
+            if (form && form.dataset.sending === '1') {
+                inp.value = '';
+                return;
+            }
             await attachFiles(Array.from(inp.files));
             inp.value = '';
         }
@@ -9896,6 +10011,11 @@
         if (target.id === 'composer-text' && !feed.contains(target)) return;
         if (target.hasAttribute('data-media-caption')
                 && (!mediaDraftModal || !mediaDraftModal.contains(target))) {
+            return;
+        }
+        const form = feed.querySelector('#composer');
+        if (form && form.dataset.sending === '1') {
+            e.preventDefault();
             return;
         }
         const items = (e.clipboardData && e.clipboardData.items) || [];
@@ -9925,6 +10045,7 @@
         ta.style.height = 'auto';
         ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
         const form = ta.closest('#composer');
+        clearClientSendKey(form);
         refreshComposerSendState(form);
     });
     // Enter — отправить, Shift+Enter — перенос строки.
@@ -10795,8 +10916,10 @@
         if (!form || !stickerId) return;
         const contactId = form.dataset.contactId;
         if (!contactId) return;
+        if (!startComposerSend(form)) return;
         const fd = new FormData();
         fd.append('sticker_id', stickerId);
+        fd.append('client_send_key', makeClientSendKey('sticker'));
         const messenger = form.dataset.messenger || '';
         if (messenger) fd.append('messenger', messenger);
         if (button) button.disabled = true;
@@ -10818,6 +10941,7 @@
             alert('Сеть недоступна — стикер не отправлен.');
         } finally {
             if (button) button.disabled = false;
+            finishComposerSend(form);
         }
     }
 
@@ -10896,6 +11020,7 @@
     let pressTimer = null;
     let pendingPress = null;
     let captureMode = 'voice';
+    let voiceSending = false;
 
     const LOCK_Y = 56;
     const CANCEL_X = 92;
@@ -11348,18 +11473,32 @@
     }
 
     async function sendCurrent() {
+        if (voiceSending) return;
         const form = activeForm;
         if (!form) return;
+        const startSend = window.__skillwoodStartComposerSend
+            || function() { return true; };
+        const finishSend = window.__skillwoodFinishComposerSend
+            || function() {};
+        const makeSendKey = window.__skillwoodMakeClientSendKey
+            || function(kind) { return 'web:' + kind + ':' + Date.now(); };
+        if (!startSend(form)) return;
+        voiceSending = true;
         const panel = form.querySelector('.voice-rec-panel');
         if (panel) {
             panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
         }
-        const blob = await blobForSend();
-        if (blob) await sendVoice(form, blob);
-        cleanupUi();
+        try {
+            const blob = await blobForSend();
+            if (blob) await sendVoice(form, blob, makeSendKey('voice'));
+        } finally {
+            finishSend(form);
+            voiceSending = false;
+            cleanupUi();
+        }
     }
 
-    async function sendVoice(form, blob) {
+    async function sendVoice(form, blob, sendKey) {
         if (!form) return;
         const contactId = form.dataset.contactId;
         if (!contactId) return;
@@ -11368,6 +11507,7 @@
                      : (blob.type.includes('wav') ? 'wav' : 'webm'));
         fd.append('file', blob, 'voice.' + ext);
         fd.append('voice', '1');
+        if (sendKey) fd.append('client_send_key', sendKey);
         const m = form.dataset.messenger || '';
         if (m) fd.append('messenger', m);
         try {

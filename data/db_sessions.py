@@ -82,6 +82,7 @@ def _apply_light_migrations(engine):
         "saved_stickers": [("pack_key", "VARCHAR"),
                            ("pack_title", "VARCHAR"),
                            ("item_key", "VARCHAR")],
+        "pending_replies": [("client_send_key", "VARCHAR")],
     }
     with engine.begin() as conn:
         for table, cols in wanted.items():

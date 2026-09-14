@@ -44,6 +44,9 @@ class PendingReply(SqlAlchemyBase):
                                    default=datetime.datetime.now, nullable=False)
     picked_up_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
     sent_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    # Уникальный ключ ручной отправки из браузера: защищает от двойного тапа
+    # и повторного POST, пока Android ещё не успел отработать очередь.
+    client_send_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     # Какое устройство отработало задачу (для диагностики).
     device_id = sqlalchemy.Column(sqlalchemy.Integer,
                                   sqlalchemy.ForeignKey("devices.id"), nullable=True)
