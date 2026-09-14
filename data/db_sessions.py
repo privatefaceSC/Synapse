@@ -44,6 +44,7 @@ def _apply_light_migrations(engine):
                               ("tg_chat_type", "VARCHAR"),
                               ("package_name", "VARCHAR"),
                               ("tg_is_forum", "BOOLEAN"),
+                              ("tg_forum_checked_at", "DATETIME"),
                               ("is_group", "BOOLEAN")],
         "messages": [("outgoing", "BOOLEAN"), ("tg_message_id", "BIGINT"),
                      ("reply_to_message_id", "INTEGER"),

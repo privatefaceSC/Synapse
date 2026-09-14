@@ -177,61 +177,103 @@ def _cached_tg_avatar_photo_id(contact):
 
 
 def _enrich_with_last_message(db, contacts):
-    from data.contacts import MessengerHandle
+    from data.contacts import Contact, MessengerHandle
     from sqlalchemy import func, or_
 
     creator_ids = _creator_user_ids(db)
+    if not contacts:
+        return contacts
+
+    contact_ids = [c.id for c in contacts]
+    contacts_by_id = {c.id: c for c in contacts}
+    handles_by_contact = {c.id: [] for c in contacts}
+    handles = (
+        db.query(MessengerHandle)
+        .filter(MessengerHandle.contact_id.in_(contact_ids))
+        .order_by(MessengerHandle.id.asc())
+        .all()
+    )
+    for handle in handles:
+        handles_by_contact.setdefault(handle.contact_id, []).append(handle)
+
     for c in contacts:
         _avatar_for(c)
-        handles = db.query(MessengerHandle).filter(
-            MessengerHandle.contact_id == c.id).all()
-        _mark_contact_creator_from_handles(c, handles, creator_ids)
-        handle_ids = [h.id for h in handles]
+        contact_handles = handles_by_contact.get(c.id, [])
+        _mark_contact_creator_from_handles(c, contact_handles, creator_ids)
         # Уникальные мессенджеры контакта (для «папки» с выбором чата).
         msgrs = []
-        for h in handles:
+        for h in contact_handles:
             if h.messenger_name not in msgrs:
                 msgrs.append(h.messenger_name)
         c.messengers = msgrs
-        if not handle_ids:
-            c.last_preview = None
-            c.last_time = None
-            c.last_at = None
-            c.last_outgoing = False
-            c.last_tg_read = None
-            c.unread_count = 0
-            continue
+        c.last_preview = None
+        c.last_time = None
+        c.last_at = None
+        c.last_outgoing = False
+        c.last_tg_read = None
+        c.unread_count = 0
 
-        last = (
-            db.query(Messages)
-            .filter(Messages.handle_id.in_(handle_ids))
-            .order_by(Messages.created_at.desc().nullslast(), Messages.id.desc())
-            .first()
+    if contact_ids:
+        ranked = (
+            db.query(
+                MessengerHandle.contact_id.label('contact_id'),
+                Messages.id.label('message_id'),
+                func.row_number().over(
+                    partition_by=MessengerHandle.contact_id,
+                    order_by=(
+                        Messages.created_at.desc().nullslast(),
+                        Messages.id.desc(),
+                    ),
+                ).label('rn'),
+            )
+            .join(Messages, Messages.handle_id == MessengerHandle.id)
+            .filter(MessengerHandle.contact_id.in_(contact_ids))
+            .subquery()
         )
-        if last:
-            c.last_preview = last.text
-            c.last_time = last.time
-            c.last_at = last.created_at
-            c.last_outgoing = bool(last.outgoing)
-            c.last_tg_read = (bool(last.tg_read_at)
-                              if last.tg_message_id else None)
-        else:
-            c.last_preview = None
-            c.last_time = None
-            c.last_at = None
-            c.last_outgoing = False
-            c.last_tg_read = None
+        last_rows = (
+            db.query(ranked.c.contact_id, ranked.c.message_id)
+            .filter(ranked.c.rn == 1)
+            .all()
+        )
+        last_ids = [row.message_id for row in last_rows]
+        if last_ids:
+            messages_by_id = {
+                m.id: m for m in
+                db.query(Messages).filter(Messages.id.in_(last_ids)).all()
+            }
+            for row in last_rows:
+                contact = contacts_by_id.get(row.contact_id)
+                last = messages_by_id.get(row.message_id)
+                if contact is None or last is None:
+                    continue
+                contact.last_preview = last.text
+                contact.last_time = last.time
+                contact.last_at = last.created_at
+                contact.last_outgoing = bool(last.outgoing)
+                contact.last_tg_read = (
+                    bool(last.tg_read_at) if last.tg_message_id else None
+                )
 
         # Свои исходящие в «непрочитанные» не считаем — иначе после отправки
         # сообщения собственный чат подсвечивается красным «1». В Telegram,
         # очевидно, тоже не подсвечивает то, что ты сам только что написал.
-        unread_q = (db.query(func.count(Messages.id))
-                    .filter(Messages.handle_id.in_(handle_ids))
-                    .filter(or_(Messages.outgoing.is_(None),
-                                Messages.outgoing.is_(False))))
-        if c.last_read_at is not None:
-            unread_q = unread_q.filter(Messages.created_at > c.last_read_at)
-        c.unread_count = unread_q.scalar() or 0
+        unread_rows = (
+            db.query(MessengerHandle.contact_id, func.count(Messages.id))
+            .join(Messages, Messages.handle_id == MessengerHandle.id)
+            .join(Contact, Contact.id == MessengerHandle.contact_id)
+            .filter(MessengerHandle.contact_id.in_(contact_ids))
+            .filter(or_(Messages.outgoing.is_(None),
+                        Messages.outgoing.is_(False)))
+            .filter(or_(Contact.last_read_at.is_(None),
+                        Messages.created_at > Contact.last_read_at))
+            .group_by(MessengerHandle.contact_id)
+            .all()
+        )
+        for contact_id, count in unread_rows:
+            contact = contacts_by_id.get(contact_id)
+            if contact is not None:
+                contact.unread_count = int(count or 0)
+
     # Сортировка: сначала pinned (по времени закрепления, новые pin'ы выше),
     # потом обычные по времени последнего сообщения.
     contacts.sort(
@@ -3147,19 +3189,26 @@ def register_routes(app: Flask) -> None:
                      else ('synapse' if synapse_handle is not None
                            else ('notif' if _notif_handle is not None else None)))
         is_group = any(_is_group_handle(h) for h in m_handles)
-        is_forum = bool(tg_chat_handle is not None and tg_chat_handle.tg_is_forum)
-        # Lazy-определение форума: для tg-группы/канала, где tg_is_forum
-        # ещё не выставлен (handle создан до фичи или это новый чат),
-        # один раз дёргаем MTProto. Кэш `_forum_topics_cache` на 60 сек
-        # защищает от повторных вызовов — последующие открытия мгновенные.
-        if (not is_forum and tg_chat_handle is not None
+        is_forum = bool(tg_chat_handle is not None
+                        and tg_chat_handle.tg_is_forum)
+        # Lazy-определение форума: проверяем Telegram-группу через MTProto
+        # только один раз. Если Telegram вернул пустой список тем, кэшируем
+        # сам факт проверки, чтобы каждый polling /messages.json не висел
+        # на повторной live-проверке обычной группы.
+        if (tg_chat_handle is not None
+                and tg_chat_handle.tg_forum_checked_at is None
                 and tg_chat_handle.tg_chat_type in ('group', 'channel')):
             from data import telegram_bridge as _tg
-            live = _tg.fetch_forum_topics(tg_chat_handle.tg_chat_id)
-            if live:
-                tg_chat_handle.tg_is_forum = True
+            try:
+                live = _tg.fetch_forum_topics(tg_chat_handle.tg_chat_id,
+                                              user_id=user_id)
+            except Exception:  # noqa: BLE001
+                live = None
+            if live is not None:
+                tg_chat_handle.tg_is_forum = bool(live)
+                tg_chat_handle.tg_forum_checked_at = datetime.now()
                 db.commit()
-                is_forum = True
+                is_forum = bool(live)
         _avatar_for(contact)
         # Фильтр по теме (для форум-чатов): если ?topic_id=N — отдаём
         # только сообщения из этой темы. Если не задан — все сообщения

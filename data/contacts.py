@@ -54,6 +54,9 @@ class MessengerHandle(SqlAlchemyBase):
     # открывается список тем, и только после клика — лента темы.
     tg_is_forum = sqlalchemy.Column(sqlalchemy.Boolean, nullable=True,
                                     default=False)
+    # Когда мы уже проверяли этот Telegram-чат на наличие форум-тем.
+    # Нужно, чтобы не ходить в MTProto на каждом polling обычной группы.
+    tg_forum_checked_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
     # Android-пакет мессенджера (ru.oneme.app, com.whatsapp и т.п.) — нужен,
     # чтобы Android-клиент мог найти соответствующее уведомление в шторке
     # и ответить через RemoteInput. У Telegram-личностей не используется.

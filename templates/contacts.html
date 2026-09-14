@@ -5033,6 +5033,9 @@
     let notifBaseline = null;
     let audioCtx = null;
     let webPushReady = false;
+    let contactsPollTimer = null;
+    let contactsPollInFlight = false;
+    let contactsPollFailures = 0;
 
     function urlBase64ToUint8Array(base64String) {
         const padding = '='.repeat((4 - base64String.length % 4) % 4);
@@ -5351,6 +5354,38 @@
         return '/contacts.json' + (archiveMode ? '?archived=1' : '');
     }
 
+    function pollingIntervalMs(baseMs, failures) {
+        let ms = baseMs;
+        const conn = navigator.connection || navigator.mozConnection
+            || navigator.webkitConnection;
+        if (document.hidden) {
+            ms = Math.max(ms, 15000);
+        }
+        if (navigator.onLine === false) {
+            ms = Math.max(ms, 20000);
+        }
+        if (conn && (conn.saveData
+                || /^(slow-2g|2g)$/i.test(conn.effectiveType || ''))) {
+            ms = Math.max(ms, 10000);
+        }
+        if (failures) {
+            ms = Math.max(ms, Math.min(30000,
+                baseMs * Math.pow(2, Math.min(failures, 3))));
+        }
+        return ms;
+    }
+
+    window.__skillwoodPollingIntervalMs = pollingIntervalMs;
+
+    function scheduleContactsPoll(delayMs) {
+        if (contactsPollTimer) clearTimeout(contactsPollTimer);
+        contactsPollTimer = setTimeout(
+            poll,
+            delayMs == null
+                ? pollingIntervalMs(5000, contactsPollFailures)
+                : delayMs);
+    }
+
     function contactUrl(id) {
         return '/contacts/' + id + (archiveMode ? '?archived=1' : '');
     }
@@ -5407,11 +5442,25 @@
     async function poll() {
         // Если открыто kebab-меню или идёт переименование — не перерисовываем,
         // иначе пользовательское взаимодействие сорвётся.
-        if (window.__skillwoodMenuOpen) return;
+        if (contactsPollInFlight) return;
+        if (window.__skillwoodMenuOpen) {
+            scheduleContactsPoll(1200);
+            return;
+        }
+        if (navigator.onLine === false) {
+            contactsPollFailures += 1;
+            scheduleContactsPoll();
+            return;
+        }
+        contactsPollInFlight = true;
         try {
             const r = await fetch(contactsJsonUrl(), {credentials: 'same-origin'});
-            if (!r.ok) return;
+            if (!r.ok) {
+                contactsPollFailures += 1;
+                return;
+            }
             const data = await r.json();
+            contactsPollFailures = 0;
             maybeNotify(data.contacts);
             const sig = JSON.stringify(data.contacts.map(
                 c => [c.id, c.display_name, c.last_time, c.last_preview,
@@ -5425,16 +5474,27 @@
                 render(data.contacts);
                 lastSig = sig;
             }
-        } catch (e) { /* network blip */ }
+        } catch (e) {
+            contactsPollFailures += 1;
+        } finally {
+            contactsPollInFlight = false;
+            scheduleContactsPoll();
+        }
     }
 
     // Доступ из меню pin/mute — чтобы порядок и значки обновились сразу,
     // не дожидаясь 5-секундного тика.
-    window.refreshContactsNow = poll;
+    window.refreshContactsNow = function() {
+        contactsPollFailures = 0;
+        scheduleContactsPoll(0);
+    };
 
     // Первый прогон сразу — чтобы lastSig инициализировался текущим состоянием.
     poll();
-    setInterval(poll, 5000);
+    window.addEventListener('online', () => scheduleContactsPoll(0));
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) scheduleContactsPoll(0);
+    });
 })();
 
 // Kebab-меню для контактов: переименовать / удалить.
@@ -6454,6 +6514,10 @@
     let pollTimer = null;
     let typingTimer = null;
     let scrollDateTimer = null;
+    let messagesPollInFlight = false;
+    let typingPollInFlight = false;
+    let messagePollFailures = 0;
+    let typingPollFailures = 0;
     let currentMessages = [];
     let olderMessages = [];
     let currentContactIsGroup = !!(
@@ -7324,14 +7388,46 @@
     }
 
     function stopPolling() {
-        if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
-        if (typingTimer) { clearInterval(typingTimer); typingTimer = null; }
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        if (typingTimer) { clearTimeout(typingTimer); typingTimer = null; }
     }
+
+    function pollDelay(baseMs, failures) {
+        if (typeof window.__skillwoodPollingIntervalMs === 'function') {
+            return window.__skillwoodPollingIntervalMs(baseMs, failures);
+        }
+        if (navigator.onLine === false || document.hidden) {
+            return Math.max(baseMs, 15000);
+        }
+        if (failures) {
+            return Math.max(baseMs, Math.min(30000,
+                baseMs * Math.pow(2, Math.min(failures, 3))));
+        }
+        return baseMs;
+    }
+
+    function scheduleMessagePoll(delayMs) {
+        if (pollTimer) clearTimeout(pollTimer);
+        if (currentContactId == null) return;
+        pollTimer = setTimeout(
+            pollMessages,
+            delayMs == null ? pollDelay(5000, messagePollFailures) : delayMs);
+    }
+
+    function scheduleTypingPoll(delayMs) {
+        if (typingTimer) clearTimeout(typingTimer);
+        if (currentContactId == null) return;
+        typingTimer = setTimeout(
+            pollTyping,
+            delayMs == null ? pollDelay(1800, typingPollFailures) : delayMs);
+    }
+
     function startPolling() {
         stopPolling();
-        pollTimer = setInterval(pollMessages, 5000);
-        pollTyping();
-        typingTimer = setInterval(pollTyping, 800);
+        messagePollFailures = 0;
+        typingPollFailures = 0;
+        pollMessages();
+        scheduleTypingPoll(0);
     }
 
     function setTyping(on, text) {
@@ -7350,15 +7446,37 @@
 
     async function pollTyping() {
         if (currentContactId == null) return;
+        if (typingPollInFlight) {
+            scheduleTypingPoll(1200);
+            return;
+        }
+        if (navigator.onLine === false || document.hidden) {
+            setTyping(false);
+            typingPollFailures += 1;
+            scheduleTypingPoll();
+            return;
+        }
         const idAtStart = currentContactId;
+        typingPollInFlight = true;
         try {
             const r = await fetch('/contacts/' + idAtStart + '/typing.json',
                                   {credentials: 'same-origin'});
-            if (!r.ok) return;
+            if (!r.ok) {
+                typingPollFailures += 1;
+                return;
+            }
             const data = await r.json();
             if (String(idAtStart) !== String(currentContactId)) return;
+            typingPollFailures = 0;
             setTyping(!!data.typing, data.text || '');
-        } catch (e) { /* network blip */ }
+        } catch (e) {
+            typingPollFailures += 1;
+        } finally {
+            typingPollInFlight = false;
+            if (String(idAtStart) === String(currentContactId)) {
+                scheduleTypingPoll();
+            }
+        }
     }
 
     function messengerQuery() {
@@ -7370,14 +7488,28 @@
 
     async function pollMessages() {
         if (currentContactId == null) return;
+        if (messagesPollInFlight) {
+            scheduleMessagePoll(1200);
+            return;
+        }
+        if (navigator.onLine === false) {
+            messagePollFailures += 1;
+            scheduleMessagePoll();
+            return;
+        }
         const idAtStart = currentContactId;
+        messagesPollInFlight = true;
         try {
             const r = await fetch('/contacts/' + idAtStart + '/messages.json'
                                   + messengerQuery(),
                                   {credentials: 'same-origin'});
-            if (!r.ok) return;
+            if (!r.ok) {
+                messagePollFailures += 1;
+                return;
+            }
             const data = await r.json();
             if (String(idAtStart) !== String(currentContactId)) return;
+            messagePollFailures = 0;
             // В сигнатуру кладём не только id/text/time, но и tg_read,
             // deleted, reactions — иначе перерисовки не будет когда
             // собеседник прочитал (✓→✓✓), удалил или поставил реакцию.
@@ -7430,9 +7562,31 @@
                 }
                 updateScrollFab();
             }
-        } catch (e) { /* network blip */ }
+        } catch (e) {
+            messagePollFailures += 1;
+        } finally {
+            messagesPollInFlight = false;
+            if (String(idAtStart) === String(currentContactId)) {
+                scheduleMessagePoll();
+            }
+        }
     }
     window.__skillwoodPollMessages = pollMessages;
+
+    window.addEventListener('online', () => {
+        if (currentContactId == null) return;
+        messagePollFailures = 0;
+        typingPollFailures = 0;
+        scheduleMessagePoll(0);
+        scheduleTypingPoll(0);
+    });
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden || currentContactId == null) return;
+        messagePollFailures = 0;
+        typingPollFailures = 0;
+        scheduleMessagePoll(0);
+        scheduleTypingPoll(0);
+    });
 
     async function loadOlderMessages() {
         if (!hasOlderMessages || loadingOlderMessages || currentContactId == null) {
