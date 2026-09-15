@@ -354,6 +354,24 @@ def _notify_webpush_message(message_id):
         print(f"Web Push: message={message_id} error={exc}")
 
 
+def _commit_best_effort(db, context: str) -> bool:
+    """Пробуем записать неключевое состояние, но не ломаем чтение чата.
+
+    Например, при переполненной квоте SQLite может отказать на journal-файле:
+    открыть переписку всё равно полезнее, чем вернуть пользователю 500.
+    """
+    try:
+        db.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        print(f"Не удалось сохранить служебное состояние ({context}): {exc}")
+        return False
+
+
 def _message_author_avatar_url(msg):
     if (getattr(msg, 'author_avatar_path', None)
             and not getattr(msg, 'outgoing', False)):
@@ -3081,7 +3099,7 @@ def register_routes(app: Flask) -> None:
             return 'Not Found', 404
 
         contact.last_read_at = datetime.now()
-        db.commit()
+        _commit_best_effort(db, 'contact_detail.last_read_at')
 
         contacts = (
             db.query(Contact)
@@ -3207,7 +3225,7 @@ def register_routes(app: Flask) -> None:
             if live is not None:
                 tg_chat_handle.tg_is_forum = bool(live)
                 tg_chat_handle.tg_forum_checked_at = datetime.now()
-                db.commit()
+                _commit_best_effort(db, 'messages_json.tg_forum_checked_at')
                 is_forum = bool(live)
         _avatar_for(contact)
         # Фильтр по теме (для форум-чатов): если ?topic_id=N — отдаём
@@ -3243,7 +3261,7 @@ def register_routes(app: Flask) -> None:
             mark_topic_read(db, tg_chat_handle.id, topic_id_int)
         else:
             contact.last_read_at = datetime.now()
-        db.commit()
+        _commit_best_effort(db, 'messages_json.last_read_at')
         _attach_media(db, msgs)
         _attach_replies(db, msgs, contact)
         _attach_reactions(db, msgs)
