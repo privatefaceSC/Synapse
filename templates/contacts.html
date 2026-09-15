@@ -7657,13 +7657,16 @@
         }
         setActiveRow(id);
         setMobileView('feed');
+        feed.innerHTML = '<div class="empty-state">Открываем чат…</div>';
         const qsParts = [];
         if (currentMessenger) qsParts.push('m=' + encodeURIComponent(currentMessenger));
         if (currentTopicId) qsParts.push('topic_id=' + encodeURIComponent(currentTopicId));
         const qs = qsParts.length ? '?' + qsParts.join('&') : '';
         try {
-            const r = await fetch('/contacts/' + id + '/messages.json' + qs,
-                                  {credentials: 'same-origin'});
+            const r = await fetchWithTimeout(
+                '/contacts/' + id + '/messages.json' + qs,
+                {credentials: 'same-origin'},
+                12000);
             if (token !== navToken) return;
             if (!r.ok) {
                 window.location = '/contacts/' + id
@@ -7977,6 +7980,23 @@
         draggedFolder = null;
     });
 
+    function handleContactRowClick(e) {
+        if (!e.target.closest) return false;
+        const row = e.target.closest('a.contact-row');
+        if (!(row && list.contains(row))) return false;
+        e.preventDefault();
+        e.stopPropagation();
+        const wrap = row.closest('.contact-row-wrap');
+        const id = wrap && wrap.dataset.contactId;
+        if (!id) return true;
+        // Мессенджер определяет активная папка (или первый доступный
+        // если папка не выбрана). Picker'а больше нет.
+        openContact(id, pickMessengerFor(wrap));
+        return true;
+    }
+
+    list.addEventListener('click', handleContactRowClick, true);
+
     document.addEventListener('click', function(e) {
         if (!e.target.closest) return;
         // Спойлер в сообщении — клик раскрывает (как в Telegram).
@@ -8004,16 +8024,7 @@
         // Клик по шапке чата теперь обрабатывает правая выезжающая
         // панель «Профиль контакта» (см. скрипт в конце шаблона):
         // там и список личностей, и счётчики медиа, и действия.
-        const row = e.target.closest('a.contact-row');
-        if (row && list.contains(row)) {
-            e.preventDefault();
-            const wrap = row.closest('.contact-row-wrap');
-            const id = wrap && wrap.dataset.contactId;
-            if (!id) return;
-            // Мессенджер определяет активная папка (или первый доступный
-            // если папка не выбрана). Picker'а больше нет.
-            openContact(id, pickMessengerFor(wrap));
-        }
+        if (handleContactRowClick(e)) return;
     });
 
     function messengerFromUrl() {
