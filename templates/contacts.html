@@ -761,6 +761,7 @@
     .bubble.deleted .media-img,
     .bubble.deleted .media-video,
     .bubble.deleted .media-video-note,
+    .bubble.deleted .media-video-load,
     .bubble.deleted .media-audio,
     .bubble.deleted .media-file,
     .bubble.deleted .sticker-img { opacity: .72; }
@@ -1420,6 +1421,44 @@
     .bubble .media-video-wrap:hover::after {
         transform: translate(-50%, -50%) scale(1.06);
     }
+    .bubble .media-video-wrap.deferred {
+        min-height: 180px;
+        display: flex; align-items: center; justify-content: center;
+    }
+    .bubble .media-video-wrap.deferred::after,
+    .bubble .media-video-wrap.load-error::after {
+        content: none;
+    }
+    .bubble .media-video-wrap.deferred .media-video-ui {
+        display: none;
+    }
+    .bubble .media-video-load {
+        position: relative; z-index: 4;
+        width: calc(100% - 24px); max-width: 230px; min-height: 92px;
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 7px; padding: 14px;
+        border: 1px solid rgba(255,255,255,.16);
+        border-radius: 16px;
+        background: rgba(15,23,42,.72);
+        color: #e5efff; text-align: center; cursor: pointer;
+        box-shadow: 0 12px 34px rgba(0,0,0,.26);
+    }
+    .bubble .media-video-load:hover {
+        background: rgba(30,41,59,.84);
+    }
+    .bubble .media-video-load-ico {
+        width: 42px; height: 42px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #3c94ff, #246ce0);
+        color: #fff; font-size: 18px; line-height: 1;
+        box-shadow: 0 10px 24px rgba(36,108,224,.35);
+    }
+    .bubble .media-video-load strong {
+        font-size: 13px; line-height: 1.2;
+    }
+    .bubble .media-video-load small {
+        color: #b8c7d9; font-size: 11px; line-height: 1.25;
+    }
     .bubble .media-video-ui {
         position: absolute; left: 10px; right: 10px; bottom: 9px; z-index: 3;
         display: flex; align-items: center; gap: 8px;
@@ -1476,6 +1515,21 @@
     .bubble .media-vnote-wrap {
         position: relative; display: inline-block;
         width: 200px; height: 200px; cursor: pointer;
+    }
+    .bubble .media-vnote-wrap.deferred {
+        display: inline-flex; align-items: center; justify-content: center;
+        border-radius: 50%; overflow: hidden;
+        background:
+            radial-gradient(circle at 42% 34%, rgba(255,255,255,.16), transparent 44%),
+            #05070b;
+        box-shadow:
+            0 12px 30px rgba(15,23,42,.24),
+            inset 0 0 0 1px rgba(255,255,255,.10);
+    }
+    .bubble .media-vnote-wrap.deferred .media-video-load {
+        width: 100%; height: 100%; max-width: none; min-height: 0;
+        border: 0; border-radius: 50%; background: transparent;
+        box-shadow: none; padding: 22px;
     }
     .bubble .media-video-note {
         display: block; width: 200px; height: 200px;
@@ -4073,14 +4127,26 @@
                                              loading="lazy" alt="стикер">
                                         {% endif %}
                                         {% elif a.kind == 'video_note' %}
-                                        <span class="media-vnote-wrap">
-                                            <video class="media-video-note" src="/attachments/{{ a.id }}"
-                                                   loop playsinline preload="metadata"></video>
+                                        <span class="media-vnote-wrap deferred"
+                                              data-video-src="/attachments/{{ a.id }}"
+                                              data-video-kind="video_note">
+                                            <button type="button" class="media-video-load"
+                                                    title="Загрузить видеосообщение">
+                                                <span class="media-video-load-ico">▶</span>
+                                                <strong>Видеосообщение</strong>
+                                                <small>Нажмите, чтобы загрузить</small>
+                                            </button>
                                         </span>
                                         {% elif a.kind == 'video' %}
-                                        <span class="media-video-wrap">
-                                            <video class="media-video" src="/attachments/{{ a.id }}"
-                                                   playsinline preload="metadata"></video>
+                                        <span class="media-video-wrap deferred"
+                                              data-video-src="/attachments/{{ a.id }}"
+                                              data-video-kind="video">
+                                            <button type="button" class="media-video-load"
+                                                    title="Загрузить видео">
+                                                <span class="media-video-load-ico">▶</span>
+                                                <strong>Видео</strong>
+                                                <small>Нажмите, чтобы загрузить</small>
+                                            </button>
                                             <span class="media-video-ui" aria-hidden="true">
                                                 <span class="video-mini-btn"></span>
                                                 <span class="video-progress"><span class="video-progress-fill"></span></span>
@@ -4870,6 +4936,47 @@
     });
 })();
 
+// Видео могут занимать десятки мегабайт, поэтому не ставим src до клика по
+// конкретному ролику. Так список чатов и длинные переписки не тянут всё сразу.
+window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
+    if (!wrap) return null;
+    let v = wrap.querySelector('video.media-video, video.media-video-note');
+    if (v) return v;
+    const src = wrap.dataset.videoSrc || '';
+    if (!src) return null;
+    const isNote = wrap.dataset.videoKind === 'video_note'
+        || wrap.classList.contains('media-vnote-wrap');
+    const placeholder = wrap.querySelector('.media-video-load');
+    if (placeholder) placeholder.remove();
+    v = document.createElement('video');
+    v.className = isNote ? 'media-video-note' : 'media-video';
+    v.playsInline = true;
+    v.preload = 'metadata';
+    if (isNote) v.loop = true;
+    v.addEventListener('loadedmetadata', function() {
+        wrap.classList.remove('loading');
+    }, {once: true});
+    v.addEventListener('error', function() {
+        wrap.classList.remove('loading');
+        wrap.classList.add('deferred', 'load-error');
+        wrap.innerHTML =
+            '<button type="button" class="media-video-load" disabled>'
+            + '<span class="media-video-load-ico">!</span>'
+            + '<strong>Файл удалён</strong>'
+            + '<small>Видео уже очищено с сервера.</small>'
+            + '</button>';
+    }, {once: true});
+    wrap.classList.remove('deferred', 'load-error');
+    wrap.classList.add('loading');
+    wrap.prepend(v);
+    v.src = src;
+    if (autoplay) {
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+    }
+    return v;
+};
+
 // Видеосообщения-«кружочки»: круглый плеер без нативной панели — клик по
 // кружку играет/паузит. Делегирование на document, чтобы работало и для
 // сообщений, дорисованных поллингом.
@@ -4878,7 +4985,11 @@
         const wrap = e.target.closest && e.target.closest('.media-vnote-wrap');
         if (!wrap) return;
         const v = wrap.querySelector('video.media-video-note');
-        if (!v) return;
+        if (!v) {
+            e.preventDefault();
+            window.loadDeferredVideo(wrap, true);
+            return;
+        }
         e.preventDefault();
         if (v.paused) { v.play(); } else { v.pause(); }
     });
@@ -4959,7 +5070,11 @@
         const wrap = e.target.closest && e.target.closest('.media-video-wrap');
         if (!wrap) return;
         const v = wrap.querySelector('video.media-video');
-        if (!v) return;
+        if (!v) {
+            e.preventDefault();
+            window.loadDeferredVideo(wrap, true);
+            return;
+        }
         e.preventDefault();
         v.pause();
         wrap.classList.remove('playing');
@@ -7110,11 +7225,25 @@
                 .map(a => {
                     if (a.kind === 'sticker') return renderSticker(a, m);
                     if (a.kind === 'video_note')
-                        return `<span class="media-vnote-wrap">`
-                            + `<video class="media-video-note" src="/attachments/${a.id}" loop playsinline preload="metadata"></video></span>`;
+                        return `<span class="media-vnote-wrap deferred" `
+                            + `data-video-src="/attachments/${a.id}" `
+                            + `data-video-kind="video_note">`
+                            + `<button type="button" class="media-video-load" `
+                            + `title="Загрузить видеосообщение">`
+                            + `<span class="media-video-load-ico">▶</span>`
+                            + `<strong>Видеосообщение</strong>`
+                            + `<small>Нажмите, чтобы загрузить</small>`
+                            + `</button></span>`;
                     if (a.kind === 'video')
-                        return `<span class="media-video-wrap">`
-                            + `<video class="media-video" src="/attachments/${a.id}" playsinline preload="metadata"></video>`
+                        return `<span class="media-video-wrap deferred" `
+                            + `data-video-src="/attachments/${a.id}" `
+                            + `data-video-kind="video">`
+                            + `<button type="button" class="media-video-load" `
+                            + `title="Загрузить видео">`
+                            + `<span class="media-video-load-ico">▶</span>`
+                            + `<strong>Видео</strong>`
+                            + `<small>Нажмите, чтобы загрузить</small>`
+                            + `</button>`
                             + `<span class="media-video-ui" aria-hidden="true">`
                             + `<span class="video-mini-btn"></span>`
                             + `<span class="video-progress"><span class="video-progress-fill"></span></span>`

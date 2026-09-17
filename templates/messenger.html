@@ -144,6 +144,32 @@
         display: block; margin-top: 8px; max-width: 280px; max-height: 360px;
         border-radius: 14px; background: #000;
     }
+    .bubble .media-video-wrap {
+        position: relative; display: block; margin-top: 8px;
+        width: min(280px, 72vw); min-height: 150px;
+        border-radius: 14px; overflow: hidden; background: #05070b;
+    }
+    .bubble .media-video-wrap .media-video {
+        width: 100%; max-width: none; max-height: 360px; margin-top: 0;
+    }
+    .bubble .media-video-wrap.deferred {
+        display: flex; align-items: center; justify-content: center;
+        background:
+            radial-gradient(circle at 50% 36%, rgba(255,255,255,.12), transparent 44%),
+            #05070b;
+    }
+    .bubble .media-video-load {
+        width: calc(100% - 24px); min-height: 86px;
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 7px; padding: 13px;
+        border: 1px solid rgba(255,255,255,.16);
+        border-radius: 14px; background: rgba(15,23,42,.72);
+        color: #e5efff; text-align: center; cursor: pointer;
+    }
+    .bubble .media-video-load strong { font-size: 13px; line-height: 1.2; }
+    .bubble .media-video-load small {
+        color: #b8c7d9; font-size: 11px; line-height: 1.25;
+    }
     .bubble .media-audio { display: block; margin-top: 8px; max-width: 280px; height: 40px; }
     .bubble .media-file {
         display: inline-flex; align-items: center; gap: 9px; margin-top: 8px;
@@ -374,6 +400,44 @@
 <script>
 // Внутренний мессенджер: список переписок, поиск пользователей по User ID,
 // открытие диалога без перезагрузки, отправка текста и файлов, поллинг.
+function loadDeferredVideo(wrap, autoplay) {
+    if (!wrap) return null;
+    let v = wrap.querySelector('video.media-video');
+    if (v) return v;
+    const src = wrap.dataset.videoSrc || '';
+    if (!src) return null;
+    const placeholder = wrap.querySelector('.media-video-load');
+    if (placeholder) placeholder.remove();
+    v = document.createElement('video');
+    v.className = 'media-video';
+    v.controls = true;
+    v.playsInline = true;
+    v.preload = 'metadata';
+    v.addEventListener('error', function() {
+        wrap.classList.add('deferred', 'load-error');
+        wrap.innerHTML =
+            '<button type="button" class="media-video-load" disabled>'
+            + '<strong>Файл удалён</strong>'
+            + '<small>Видео уже очищено с сервера.</small>'
+            + '</button>';
+    }, {once: true});
+    wrap.classList.remove('deferred', 'load-error');
+    wrap.prepend(v);
+    v.src = src;
+    if (autoplay) {
+        const p = v.play();
+        if (p && p.catch) p.catch(() => {});
+    }
+    return v;
+}
+
+document.addEventListener('click', function(e) {
+    const wrap = e.target.closest && e.target.closest('.media-video-wrap');
+    if (!wrap || wrap.querySelector('video.media-video')) return;
+    e.preventDefault();
+    loadDeferredVideo(wrap, true);
+});
+
 (function() {
     const feed = document.getElementById('feed');
     const list = document.getElementById('contact-list');
@@ -469,7 +533,11 @@
         return (attachments || []).map(a => {
             const src = '/dm/attachments/' + a.id;
             if (a.kind === 'video')
-                return `<video class="media-video" src="${src}" controls preload="metadata"></video>`;
+                return `<span class="media-video-wrap deferred" data-video-src="${src}">`
+                    + `<button type="button" class="media-video-load">`
+                    + `<strong>Видео</strong>`
+                    + `<small>Нажмите, чтобы загрузить</small>`
+                    + `</button></span>`;
             if (a.kind === 'audio')
                 return `<audio class="media-audio" src="${src}" controls preload="metadata"></audio>`;
             if (a.kind === 'file')
