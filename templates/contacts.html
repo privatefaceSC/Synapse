@@ -1986,6 +1986,12 @@
        и Enter'ом, но иконка нужна как сигнал «сообщение готово». */
     .composer.has-text .send-btn { display: inline-flex; }
     .composer.has-text .voice-btn { display: none; }
+    .composer:has(#composer-text:not(:placeholder-shown)) .send-btn {
+        display: inline-flex;
+    }
+    .composer:has(#composer-text:not(:placeholder-shown)) .voice-btn {
+        display: none;
+    }
     /* Поповер emoji/sticker-picker — выезжает над composer'ом. */
     .emoji-picker {
         position: absolute; bottom: 56px; right: 12px;
@@ -7474,6 +7480,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (window.__skillwoodSyncVoiceMode) {
             window.__skillwoodSyncVoiceMode(feed);
         }
+        syncComposerAfterRender(feed.querySelector('#composer'));
         // Дальнейшее «вкручивание» вниз делает scrollToBottomSticky из
         // openContact (он подписывается на image-load и подталкивает).
     }
@@ -9558,6 +9565,26 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             hasText || !!pendingForward || pendingFiles.length > 0);
     }
 
+    function syncComposerTextState(ta, opts) {
+        opts = opts || {};
+        if (!ta) return;
+        ta.style.height = 'auto';
+        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+        const form = ta.closest('#composer');
+        if (!opts.keepClientSendKey) clearClientSendKey(form);
+        refreshComposerSendState(form);
+    }
+
+    function syncComposerAfterRender(form) {
+        if (!form) return;
+        const ta = form.querySelector('#composer-text');
+        if (ta) {
+            syncComposerTextState(ta, {keepClientSendKey: true});
+        } else {
+            refreshComposerSendState(form);
+        }
+    }
+
     function renderForwardBanner() {
         const box = feed.querySelector('#composer-forward');
         if (!box) return;
@@ -10312,14 +10339,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         await attachFiles(files);
     });
     // Авторост поля ввода + toggle has-text для замены mic ↔ send.
-    feed.addEventListener('input', function(e) {
-        const ta = e.target.closest('#composer-text');
-        if (!ta) return;
-        ta.style.height = 'auto';
-        ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
-        const form = ta.closest('#composer');
-        clearClientSendKey(form);
-        refreshComposerSendState(form);
+    // Некоторые мобильные клавиатуры/IME могут прислать compositionend
+    // или keyup без обычного input, поэтому синхронизируемся шире.
+    ['input', 'keyup', 'change', 'compositionend'].forEach(function(eventName) {
+        feed.addEventListener(eventName, function(e) {
+            const ta = e.target.closest('#composer-text');
+            if (!ta) return;
+            syncComposerTextState(ta);
+        });
     });
     // Enter — отправить, Shift+Enter — перенос строки.
     feed.addEventListener('keydown', function(e) {
