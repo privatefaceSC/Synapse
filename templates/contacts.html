@@ -9742,6 +9742,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     // Кнопка «прикрепить» открывает выбор файла; «×» убирает выбранное.
     feed.addEventListener('click', function(e) {
+        const send = e.target.closest('#composer-send');
+        if (send) {
+            e.preventDefault();
+            e.stopPropagation();
+            const form = send.closest('#composer');
+            if (form) sendMessage(form);
+            return;
+        }
         if (e.target.closest('#composer-attach')) {
             const form = e.target.closest('#composer');
             if (form && form.dataset.sending === '1') return;
