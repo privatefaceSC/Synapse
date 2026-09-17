@@ -7980,23 +7980,6 @@
         draggedFolder = null;
     });
 
-    function handleContactRowClick(e) {
-        if (!e.target.closest) return false;
-        const row = e.target.closest('a.contact-row');
-        if (!(row && list.contains(row))) return false;
-        e.preventDefault();
-        e.stopPropagation();
-        const wrap = row.closest('.contact-row-wrap');
-        const id = wrap && wrap.dataset.contactId;
-        if (!id) return true;
-        // Мессенджер определяет активная папка (или первый доступный
-        // если папка не выбрана). Picker'а больше нет.
-        openContact(id, pickMessengerFor(wrap));
-        return true;
-    }
-
-    list.addEventListener('click', handleContactRowClick, true);
-
     document.addEventListener('click', function(e) {
         if (!e.target.closest) return;
         // Спойлер в сообщении — клик раскрывает (как в Telegram).
@@ -8021,10 +8004,6 @@
             showList();
             return;
         }
-        // Клик по шапке чата теперь обрабатывает правая выезжающая
-        // панель «Профиль контакта» (см. скрипт в конце шаблона):
-        // там и список личностей, и счётчики медиа, и действия.
-        if (handleContactRowClick(e)) return;
     });
 
     function messengerFromUrl() {
