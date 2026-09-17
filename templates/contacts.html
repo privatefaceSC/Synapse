@@ -5378,9 +5378,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             '#composer-send, #composer-attach, #composer-emoji, '
             + '#composer-voice, #composer-file, #composer-text'
         ).forEach(el => { el.disabled = !!busy; });
-        if (mediaDraftModal) {
-            mediaDraftModal.classList.toggle('sending', !!busy);
-            mediaDraftModal.querySelectorAll(
+        const draftModal = document.getElementById('media-draft-modal');
+        if (draftModal) {
+            draftModal.classList.toggle('sending', !!busy);
+            draftModal.querySelectorAll(
                 '[data-media-action], [data-media-thumb], '
                 + '[data-media-caption]'
             ).forEach(el => { el.disabled = !!busy; });
@@ -5401,6 +5402,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     window.__skillwoodMakeClientSendKey = makeClientSendKey;
+    window.__skillwoodEnsureClientSendKey = ensureClientSendKey;
+    window.__skillwoodClearClientSendKey = clearClientSendKey;
     window.__skillwoodStartComposerSend = startComposerSend;
     window.__skillwoodFinishComposerSend = finishComposerSend;
 
@@ -6657,6 +6660,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let pendingForward = null; // сообщение, выбранное для пересылки через composer
     const MAX_UPLOAD_BYTES = 24 * 1024 * 1024;
     const IMAGE_EDITOR_MAX_SIDE = 1900;
+    const makeClientSendKey = window.__skillwoodMakeClientSendKey;
+    const ensureClientSendKey = window.__skillwoodEnsureClientSendKey;
+    const clearClientSendKey = window.__skillwoodClearClientSendKey;
+    const startComposerSend = window.__skillwoodStartComposerSend;
+    const finishComposerSend = window.__skillwoodFinishComposerSend;
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -11080,6 +11088,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         '🔥','💯','⭐','🌟','✨','⚡','💥','💫',
         '🎉','🎊','🎁','🎂','🍰','☕','🍕','🍔',
     ];
+    const makeClientSendKey = window.__skillwoodMakeClientSendKey;
+    const ensureClientSendKey = window.__skillwoodEnsureClientSendKey;
+    const clearClientSendKey = window.__skillwoodClearClientSendKey;
+    const startComposerSend = window.__skillwoodStartComposerSend;
+    const finishComposerSend = window.__skillwoodFinishComposerSend;
 
     function esc(s) {
         return String(s == null ? '' : s)
