@@ -400,6 +400,9 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
     # это на handle. Делается лениво — при первом сообщении.
     if tg_is_forum is not None and bool(handle.tg_is_forum) != bool(tg_is_forum):
         handle.tg_is_forum = bool(tg_is_forum)
+    if (tg_is_forum is not None
+            and tg_chat_type in ('group', 'channel')):
+        handle.tg_forum_checked_at = _dt.datetime.now()
 
     if notification_dedup_key is not None:
         existing = (db.query(Messages)

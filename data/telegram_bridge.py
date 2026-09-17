@@ -556,8 +556,6 @@ async def _handle_message(event, user_id=None, client=None):
     else:
         chat_type = "channel"
 
-    archived = await _chat_archived_by_telegram(
-        event.chat_id, user_id=user_id, client=client)
     muted = await _chat_muted_by_telegram(
         event.chat_id, user_id=user_id, client=client)
 
@@ -587,13 +585,13 @@ async def _handle_message(event, user_id=None, client=None):
                                     chat_type, is_out, author, kind, text,
                                     author_tg_chat_id=author_tg_chat_id,
                                     user_id=user_id, client=client,
-                                    archived=archived, muted=muted)
+                                    muted=muted)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                     is_out, author, kind, text,
                                     author_tg_chat_id=None, user_id=None,
-                                    client=None, archived=False, muted=None,
+                                    client=None, archived=None, muted=None,
                                     download_media=True):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
@@ -749,6 +747,24 @@ def _chat_type_from_entity(chat) -> str:
     return "private"
 
 
+def _archive_handle_types_for_entity(chat):
+    """Типы handle, совместимые с Telegram-сущностью диалога."""
+    return (_chat_type_from_entity(chat),)
+
+
+def _archive_handle_types_for_peer(peer):
+    """Ограничить legacy-поиск ID тем же пространством Telegram peer."""
+    name = type(peer).__name__.lower()
+    if 'user' in name:
+        return ('private',)
+    if 'channel' in name:
+        # PeerChannel покрывает и каналы, и megagroup/supergroup.
+        return ('group', 'channel')
+    if 'chat' in name:
+        return ('group',)
+    return None
+
+
 def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
     if tg_message_id is None:
         return False
@@ -792,6 +808,7 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
     message_limit = int(message_limit or _RECENT_SYNC_MESSAGE_LIMIT)
     saved = 0
     seen_dialogs = 0
+    archive_states = []
     async for dialog in client.iter_dialogs(limit=dialog_limit):
         if seen_dialogs >= dialog_limit:
             break
@@ -818,11 +835,7 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
 
         chat_key = _chat_title(chat)
         chat_type = _chat_type_from_entity(chat)
-        try:
-            archived = await _chat_archived_by_telegram(
-                chat_id, user_id=owner, client=client)
-        except Exception:  # noqa: BLE001
-            archived = False
+        archived = int(getattr(dialog, "folder_id", 0) or 0) == 1
         try:
             muted = await _chat_muted_by_telegram(
                 chat_id, user_id=owner, client=client)
@@ -860,9 +873,22 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
                 is_out, author, kind, text,
                 author_tg_chat_id=author_tg_chat_id,
                 user_id=owner, client=client,
-                archived=archived, muted=muted,
+                muted=muted,
                 download_media=False)
             saved += 1
+        # Статус архива приходит от самого Dialog, а не вычисляется по
+        # числовым вариантам ID сообщения. Так входящее сообщение само по
+        # себе не меняет архив, но catch-up подхватывает действие из Telegram.
+        archive_handle_types = _archive_handle_types_for_entity(chat)
+        archive_states.append((chat_id, archived, archive_handle_types))
+        # Entity уже пришла вместе со списком диалогов, поэтому определение
+        # форума не требует отдельного блокирующего MTProto-запроса из UI.
+        if (chat_type in ('group', 'channel')
+                and hasattr(chat, 'forum')):
+            _apply_telegram_forum_state(
+                owner, chat_id, bool(getattr(chat, 'forum', False)),
+                allowed_types=archive_handle_types)
+    _apply_telegram_archive_snapshot(owner, archive_states)
     return saved
 
 
@@ -1374,10 +1400,130 @@ def _apply_telegram_mute_cache(user_id, known_ids, muted_ids):
         db.close()
 
 
-def _apply_telegram_archive_state(user_id, chat_id, archived):
+def _telegram_handles_for_peer(db, owner, chat_id, allowed_types=None):
+    """Найти handle peer без смешивания Telegram user/chat/channel ID."""
+    try:
+        exact_id = int(chat_id)
+    except (TypeError, ValueError):
+        return []
+    from data.contacts import MessengerHandle
+    # Канонический peer id уникален между user/chat/channel. Сначала ищем
+    # только его: расширенные варианты (+123 ↔ -1000000000123) могут
+    # совпасть у совершенно разных Telegram-сущностей.
+    exact_query = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.user_id == owner,
+                           MessengerHandle.messenger_name == "Telegram",
+                           MessengerHandle.tg_chat_id == exact_id))
+    handles = exact_query.all()
+    if allowed_types:
+        allowed_types = tuple(allowed_types)
+        handles = [
+            handle for handle in handles
+            if (handle.tg_chat_type in allowed_types
+                # Отрицательные canonical ID не пересекаются с PeerUser,
+                # поэтому безопасны и для старых строк без сохранённого типа.
+                or (handle.tg_chat_type is None and exact_id < 0))
+        ]
+    # Fallback нужен для старых строк, где channel_id мог сохраниться без
+    # префикса -100. Он безопасен только внутри известного peer-типа.
+    safe_legacy_types = tuple(
+        chat_type for chat_type in (allowed_types or ())
+        if chat_type != 'group')
+    if not handles and safe_legacy_types:
+        legacy_ids = _chat_id_variants(exact_id) - {exact_id}
+        if legacy_ids:
+            handles = (db.query(MessengerHandle)
+                       .filter(MessengerHandle.user_id == owner,
+                               MessengerHandle.messenger_name == "Telegram",
+                               MessengerHandle.tg_chat_type.in_(
+                                   safe_legacy_types),
+                               MessengerHandle.tg_chat_id.in_(
+                                   list(legacy_ids)))
+                       .all())
+    return handles
+
+
+def _telegram_handle_is_archived(handle, archived_ids):
+    """Сопоставить сохранённый handle с каноническими ID из Telegram."""
+    try:
+        chat_id = int(handle.tg_chat_id)
+    except (TypeError, ValueError):
+        return False
+    chat_type = handle.tg_chat_type
+    if chat_type == 'private':
+        candidates = {abs(chat_id)}
+    elif chat_type == 'channel':
+        short_id = abs(chat_id)
+        if short_id > 1_000_000_000_000:
+            short_id -= 1_000_000_000_000
+        candidates = {-(1_000_000_000_000 + short_id)}
+    elif chat_type == 'group':
+        if chat_id < 0:
+            candidates = {chat_id}
+        else:
+            # Старые строки могли хранить без знака и basic group, и
+            # megagroup. Пространство private сюда намеренно не попадает.
+            candidates = {
+                -chat_id,
+                -(1_000_000_000_000 + chat_id),
+            }
+    else:
+        candidates = {chat_id}
+    return bool(candidates & archived_ids)
+
+
+def _apply_telegram_archive_state(user_id, chat_id, archived,
+                                  allowed_types=None):
     """Записать archive/unarchive конкретного Telegram-диалога в Contact."""
-    ids = _chat_id_variants(chat_id)
-    if not ids:
+    from data import db_sessions
+    from data.contacts import Contact, MessengerHandle
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    changed = 0
+    try:
+        handles = _telegram_handles_for_peer(
+            db, owner, chat_id, allowed_types=allowed_types)
+        contact_ids = {handle.contact_id for handle in handles}
+        if not contact_ids:
+            return 0
+        all_handles = (db.query(MessengerHandle)
+                       .filter(MessengerHandle.user_id == owner,
+                               MessengerHandle.messenger_name == 'Telegram',
+                               MessengerHandle.contact_id.in_(contact_ids),
+                               MessengerHandle.tg_chat_id.isnot(None))
+                       .all())
+        updated_handle_ids = {handle.id for handle in handles}
+        cached = _archived_chat_ids_by_user.get(owner)
+        archived_ids = set(cached[1]) if cached is not None else set()
+        states_by_contact = {}
+        for handle in all_handles:
+            handle_archived = (bool(archived)
+                               if handle.id in updated_handle_ids
+                               else _telegram_handle_is_archived(
+                                   handle, archived_ids))
+            states_by_contact.setdefault(handle.contact_id, []).append(
+                handle_archived)
+        contacts = (db.query(Contact)
+                    .filter(Contact.user_id == owner,
+                            Contact.id.in_(contact_ids))
+                    .all())
+        for contact in contacts:
+            # Объединённый контакт скрывается только тогда, когда в архиве
+            # находятся все привязанные к нему Telegram-диалоги.
+            should_archive = all(states_by_contact.get(contact.id, (False,)))
+            if bool(contact.archived) != should_archive:
+                contact.archived = should_archive
+                changed += 1
+        if changed:
+            db.commit()
+        return changed
+    finally:
+        db.close()
+
+
+def _apply_telegram_archive_snapshot(user_id, states):
+    """Применить полный Telegram-снимок одним запросом и транзакцией."""
+    if not states:
         return 0
     from data import db_sessions
     from data.contacts import Contact, MessengerHandle
@@ -1387,15 +1533,89 @@ def _apply_telegram_archive_state(user_id, chat_id, archived):
     try:
         handles = (db.query(MessengerHandle)
                    .filter(MessengerHandle.user_id == owner,
-                           MessengerHandle.messenger_name == "Telegram",
-                           MessengerHandle.tg_chat_id.in_(list(ids)))
+                           MessengerHandle.messenger_name == 'Telegram',
+                           MessengerHandle.tg_chat_id.isnot(None))
                    .all())
+        by_exact = {}
         for handle in handles:
-            contact = db.query(Contact).filter(
-                Contact.id == handle.contact_id,
-                Contact.user_id == owner).first()
-            if contact is not None and bool(contact.archived) != bool(archived):
-                contact.archived = bool(archived)
+            by_exact.setdefault(int(handle.tg_chat_id), []).append(handle)
+
+        handle_states = {}
+        affected_contact_ids = set()
+        for chat_id, archived, allowed_types in states:
+            try:
+                exact_id = int(chat_id)
+            except (TypeError, ValueError):
+                continue
+            allowed_types = tuple(allowed_types or ())
+            matched = [
+                handle for handle in by_exact.get(exact_id, ())
+                if (not allowed_types
+                    or handle.tg_chat_type in allowed_types
+                    or (handle.tg_chat_type is None and exact_id < 0))
+            ]
+            safe_legacy_types = tuple(
+                chat_type for chat_type in allowed_types
+                if chat_type != 'group')
+            if not matched and safe_legacy_types:
+                legacy_ids = _chat_id_variants(exact_id) - {exact_id}
+                matched = [
+                    handle for handle in handles
+                    if handle.tg_chat_type in safe_legacy_types
+                    and int(handle.tg_chat_id) in legacy_ids
+                ]
+            for handle in matched:
+                handle_states[handle.id] = bool(archived)
+                affected_contact_ids.add(handle.contact_id)
+
+        if affected_contact_ids:
+            contacts = (db.query(Contact)
+                        .filter(Contact.user_id == owner,
+                                Contact.id.in_(list(affected_contact_ids)))
+                        .all())
+        else:
+            contacts = []
+        handles_by_contact = {}
+        for handle in handles:
+            if handle.contact_id in affected_contact_ids:
+                handles_by_contact.setdefault(handle.contact_id, []).append(
+                    handle)
+        for contact in contacts:
+            # Объединённый контакт остаётся в основном списке, пока хотя бы
+            # один из его Telegram-диалогов не архивирован. Отсутствующий в
+            # частичном recent-снимке handle считается активным: так catch-up
+            # не может самопроизвольно скрыть контакт.
+            should_archive = all(
+                handle_states.get(handle.id, False)
+                for handle in handles_by_contact.get(contact.id, ()))
+            if bool(contact.archived) != should_archive:
+                contact.archived = should_archive
+                changed += 1
+        if changed:
+            db.commit()
+        return changed
+    finally:
+        db.close()
+
+
+def _apply_telegram_forum_state(user_id, chat_id, is_forum,
+                                allowed_types=None):
+    """Сохранить тип форума из уже загруженной Telegram-сущности."""
+    import datetime as _dt
+    from data import db_sessions
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    changed = 0
+    try:
+        handles = _telegram_handles_for_peer(
+            db, owner, chat_id, allowed_types=allowed_types)
+        checked_at = _dt.datetime.now()
+        for handle in handles:
+            if bool(handle.tg_is_forum) != bool(is_forum):
+                handle.tg_is_forum = bool(is_forum)
+                changed += 1
+            if handle.tg_forum_checked_at is None:
+                handle.tg_forum_checked_at = checked_at
                 changed += 1
         if changed:
             db.commit()
@@ -1420,15 +1640,16 @@ def _set_cached_mute_state(user_id, chat_id, muted):
 
 def _set_cached_archive_state(user_id, chat_id, archived):
     owner = _normalize_user_id(user_id)
-    ids = _chat_id_variants(chat_id)
-    if not ids:
+    try:
+        exact_id = int(chat_id)
+    except (TypeError, ValueError):
         return
     cached = _archived_chat_ids_by_user.get(owner)
     archived_ids = set(cached[1]) if cached is not None else set()
     if archived:
-        archived_ids.update(ids)
+        archived_ids.add(exact_id)
     else:
-        archived_ids.difference_update(ids)
+        archived_ids.discard(exact_id)
     _archived_chat_ids_by_user[owner] = (time.monotonic(), archived_ids)
 
 
@@ -1530,7 +1751,9 @@ async def _handle_folder_peers_update(update, user_id=None):
             continue
         archived = int(getattr(folder_peer, "folder_id", 0) or 0) == 1
         _set_cached_archive_state(user_id, chat_id, archived)
-        _apply_telegram_archive_state(user_id, chat_id, archived)
+        _apply_telegram_archive_state(
+            user_id, chat_id, archived,
+            allowed_types=_archive_handle_types_for_peer(peer))
 
 
 async def _refresh_filter_cache(user_id=None, client=None):
@@ -1548,22 +1771,34 @@ async def _refresh_filter_cache(user_id=None, client=None):
         _muted_chat_ids_by_user.pop(owner, None)
     if _skip_archived():
         await _refresh_archive_cache(owner, client)
+    else:
+        _archived_chat_ids_by_user.pop(owner, None)
 
 
 async def _refresh_archive_cache(user_id=None, client=None):
-    """Возвращает множество chat_id, которые лежат в архиве Telegram."""
+    """Сверить локальные контакты с фактическими папками Telegram."""
     owner = _normalize_user_id(user_id)
     if client is None:
         client = _clients.get(owner)
     if client is None:
         return set()
     ids = set()
-    async for d in client.iter_dialogs(archived=True):
+    states = []
+    # archived=None возвращает все диалоги. Это важно: иначе мы узнаем только
+    # о добавлении в архив, но не сможем вернуть локальный контакт обратно.
+    async for d in client.iter_dialogs():
         try:
-            ids.add(int(d.id))
+            chat_id = int(d.id)
         except (TypeError, ValueError):
             continue
+        archived = int(getattr(d, 'folder_id', 0) or 0) == 1
+        if archived:
+            ids.add(chat_id)
+        states.append((chat_id, archived,
+                       _archive_handle_types_for_entity(
+                           getattr(d, 'entity', None))))
     _archived_chat_ids_by_user[owner] = (time.monotonic(), ids)
+    _apply_telegram_archive_snapshot(owner, states)
     return ids
 
 
@@ -1585,11 +1820,7 @@ async def _chat_archived_by_telegram(chat_id, user_id=None, client=None):
         cid = int(chat_id)
     except (TypeError, ValueError):
         return False
-    try:
-        from data.telegram_ids import chat_id_variants
-        return any(int(v) in ids for v in chat_id_variants(cid))
-    except Exception:  # noqa: BLE001
-        return cid in ids
+    return cid in ids
 
 
 async def _periodic_refresh(user_id=None):
@@ -2316,8 +2547,15 @@ async def _set_archive(chat_id, archived, user_id=None):
         raise RuntimeError("Telegram не авторизован")
     peer = await client.get_input_entity(int(chat_id))
     await client.edit_folder(peer, 1 if archived else 0)
-    _set_cached_archive_state(owner, chat_id, archived)
-    _apply_telegram_archive_state(owner, chat_id, archived)
+    try:
+        from telethon import utils
+        resolved_chat_id = int(utils.get_peer_id(peer))
+    except Exception:  # noqa: BLE001
+        resolved_chat_id = int(chat_id)
+    _set_cached_archive_state(owner, resolved_chat_id, archived)
+    _apply_telegram_archive_state(
+        owner, resolved_chat_id, archived,
+        allowed_types=_archive_handle_types_for_peer(peer))
 
 
 def set_archive(chat_id, archived=True, user_id=None):

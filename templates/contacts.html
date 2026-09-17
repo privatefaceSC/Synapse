@@ -6635,6 +6635,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let currentMessenger = null;
     let lastSig = '';
     let navToken = 0;
+    let contactLoadController = null;
     let pollTimer = null;
     let typingTimer = null;
     let scrollDateTimer = null;
@@ -7782,6 +7783,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     async function openContact(id, messenger, opts) {
         opts = opts || {};
         const token = ++navToken;
+        if (contactLoadController) contactLoadController.abort();
+        contactLoadController = window.AbortController
+            ? new AbortController() : null;
+        const loadController = contactLoadController;
         currentContactId = String(id);
         currentMessenger = messenger || null;
         currentTopicId = opts.topicId
@@ -7809,7 +7814,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         try {
             const r = await fetchWithTimeout(
                 '/contacts/' + id + '/messages.json' + qs,
-                {credentials: 'same-origin'},
+                {
+                    credentials: 'same-origin',
+                    signal: loadController ? loadController.signal : undefined,
+                },
                 12000);
             if (token !== navToken) return;
             if (!r.ok) {
@@ -7894,13 +7902,23 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     '', url);
             }
         } catch (e) {
+            // Быстрое переключение на другой чат отменяет предыдущий fetch.
+            // Старый запрос не должен увести пользователя полной навигацией.
+            if (token !== navToken) return;
             window.location = '/contacts/' + id
                 + (archiveMode ? '?archived=1' : '');
+        } finally {
+            if (contactLoadController === loadController) {
+                contactLoadController = null;
+            }
         }
     }
 
     function showList(opts) {
         opts = opts || {};
+        navToken += 1;
+        if (contactLoadController) contactLoadController.abort();
+        contactLoadController = null;
         currentContactId = null;
         lastSig = '';
         currentMessages = [];
@@ -8070,6 +8088,26 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (activeFolder && msgrs.includes(activeFolder)) return activeFolder;
         return msgrs[0] || null;
     }
+
+    function handleContactRowClick(e) {
+        if (e.defaultPrevented || e.button !== 0
+                || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey
+                || !e.target.closest) return;
+        const row = e.target.closest('a.contact-row');
+        if (!row || !list.contains(row)
+                || row.target === '_blank' || row.hasAttribute('download')) {
+            return;
+        }
+        const wrap = row.closest('.contact-row-wrap');
+        const id = wrap && wrap.dataset.contactId;
+        if (!id) return;
+        // Ссылка остаётся настоящей: новая вкладка, отключённый JS и ошибка
+        // API по-прежнему откроют обычную серверную страницу.
+        e.preventDefault();
+        openContact(id, pickMessengerFor(wrap));
+    }
+
+    list.addEventListener('click', handleContactRowClick);
     document.addEventListener('DOMContentLoaded', function() {
         renderFolders();
         applyFolderFilter();
@@ -8408,11 +8446,23 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             return fetch(url, options);
         }
         const controller = new AbortController();
+        const sourceSignal = options && options.signal;
+        const abortFromSource = () => controller.abort();
+        if (sourceSignal) {
+            if (sourceSignal.aborted) controller.abort();
+            else sourceSignal.addEventListener('abort', abortFromSource,
+                                               {once: true});
+        }
         const timer = setTimeout(() => controller.abort(), timeoutMs || 120000);
         const finalOptions = Object.assign({}, options || {}, {
             signal: controller.signal,
         });
-        return fetch(url, finalOptions).finally(() => clearTimeout(timer));
+        return fetch(url, finalOptions).finally(() => {
+            clearTimeout(timer);
+            if (sourceSignal) {
+                sourceSignal.removeEventListener('abort', abortFromSource);
+            }
+        });
     }
 
     // Отправка файла (фото/видео) в Telegram. Текст из поля — подпись.

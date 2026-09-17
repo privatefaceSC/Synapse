@@ -2507,6 +2507,8 @@ def register_routes(app: Flask) -> None:
 
         sender = db.query(User).filter(User.id == me_id).first()
         users_by_id = {me_id: sender, user_id: partner}
+        _mirror_direct_message_for_owner(
+            db, msg, me_id, users_by_id)
         recipient_msg = _mirror_direct_message_for_owner(
             db, msg, user_id, users_by_id)
 
@@ -2911,7 +2913,6 @@ def register_routes(app: Flask) -> None:
         user_id = session['user_id']
         archive_mode = _archive_mode_from_request()
         _kick_telegram_recent_sync(user_id)
-        _sync_direct_messages_to_contacts(db, user_id)
         consolidate_android_group_contacts(db, user_id)
         contacts = (
             db.query(Contact)
@@ -3195,7 +3196,6 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         user_id = session['user_id']
         _kick_telegram_recent_sync(user_id)
-        _sync_direct_messages_to_contacts(db, user_id)
         contact = (db.query(Contact)
                    .filter(Contact.id == contact_id, Contact.user_id == user_id).first())
         if not contact:
@@ -3228,24 +3228,10 @@ def register_routes(app: Flask) -> None:
         is_group = any(_is_group_handle(h) for h in m_handles)
         is_forum = bool(tg_chat_handle is not None
                         and tg_chat_handle.tg_is_forum)
-        # Lazy-определение форума: проверяем Telegram-группу через MTProto
-        # только один раз. Если Telegram вернул пустой список тем, кэшируем
-        # сам факт проверки, чтобы каждый polling /messages.json не висел
-        # на повторной live-проверке обычной группы.
-        if (tg_chat_handle is not None
-                and tg_chat_handle.tg_forum_checked_at is None
-                and tg_chat_handle.tg_chat_type in ('group', 'channel')):
-            from data import telegram_bridge as _tg
-            try:
-                live = _tg.fetch_forum_topics(tg_chat_handle.tg_chat_id,
-                                              user_id=user_id)
-            except Exception:  # noqa: BLE001
-                live = None
-            if live is not None:
-                tg_chat_handle.tg_is_forum = bool(live)
-                tg_chat_handle.tg_forum_checked_at = datetime.now()
-                _commit_best_effort(db, 'messages_json.tg_forum_checked_at')
-                is_forum = bool(live)
+        # `/messages.json` вызывается при каждом открытии и polling чата.
+        # Внешний MTProto-запрос определения форума здесь блокировал ответ
+        # вплоть до таймаута. Метаданные форума обновляет Telegram bridge;
+        # отдельный `/forum-topics.json` остаётся для явного открытия тем.
         _avatar_for(contact)
         # Фильтр по теме (для форум-чатов): если ?topic_id=N — отдаём
         # только сообщения из этой темы. Если не задан — все сообщения
