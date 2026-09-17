@@ -1119,6 +1119,15 @@ def _telegram_admin_status(user_id: int) -> dict:
     }
 
 
+def _kick_telegram_recent_sync(user_id: int):
+    """Неблокирующая догонка Telegram-сообщений для UI polling."""
+    try:
+        from data import telegram_bridge
+        telegram_bridge.sync_recent(user_id)
+    except Exception:
+        pass
+
+
 def _user_media_bytes(db, user_id: int) -> int:
     from sqlalchemy import func, or_
     from data.attachments import Attachment
@@ -2893,6 +2902,7 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         user_id = session['user_id']
         archive_mode = _archive_mode_from_request()
+        _kick_telegram_recent_sync(user_id)
         _sync_direct_messages_to_contacts(db, user_id)
         consolidate_android_group_contacts(db, user_id)
         contacts = (
@@ -3176,6 +3186,7 @@ def register_routes(app: Flask) -> None:
         from data.matching import display_author
         db = get_db()
         user_id = session['user_id']
+        _kick_telegram_recent_sync(user_id)
         _sync_direct_messages_to_contacts(db, user_id)
         contact = (db.query(Contact)
                    .filter(Contact.id == contact_id, Contact.user_id == user_id).first())

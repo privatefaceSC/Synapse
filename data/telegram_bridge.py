@@ -45,6 +45,11 @@ _recent_self_sent = []
 # chat_id -> typing state. Старый формат float ещё поддерживается ниже:
 # {expires: monotonic, authors: {user_id_or_name: display_name}}.
 _typing = {}
+_recent_sync_at_by_user = {}
+_recent_sync_inflight_users = set()
+_RECENT_SYNC_INTERVAL = 45
+_RECENT_SYNC_DIALOG_LIMIT = 20
+_RECENT_SYNC_MESSAGE_LIMIT = 5
 _DEFAULT_MEDIA_MAX_MB = 20
 _STATE_TEMPLATE = {
     "phone": None,
@@ -258,7 +263,14 @@ async def _get_client(user_id=None):
     global _client
     user_id = _normalize_user_id(user_id)
     if user_id in _clients:
-        return _clients[user_id]
+        client = _clients[user_id]
+        try:
+            is_connected = client.is_connected()
+        except Exception:  # noqa: BLE001
+            is_connected = True
+        if not is_connected:
+            await client.connect()
+        return client
     from telethon import TelegramClient
     aid, ah = _env_api()
     # connection_retries поменьше — без VPN серверы Telegram недоступны,
@@ -572,13 +584,18 @@ async def _handle_message(event, user_id=None, client=None):
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                     is_out, author, kind, text,
                                     author_tg_chat_id=None, user_id=None,
-                                    client=None, archived=False, muted=None):
+                                    client=None, archived=False, muted=None,
+                                    download_media=True):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
     созданные синхронно прямо из веб-панели (forward / send) — иначе UI ждёт
     NewMessage-эха из Telethon, которое может задержаться или потеряться."""
-    # Скачиваем медиа, если оно есть и не слишком большое.
-    kind, data = await _download_media_payload(msg, kind, user_id=user_id)
+    # Скачиваем медиа, если оно есть и не слишком большое. Для catch-up
+    # синхронизации истории медиа не тянем автоматически, чтобы после
+    # временного обрыва мост не забивал квоту пачкой старых видео/файлов.
+    data = None
+    if download_media:
+        kind, data = await _download_media_payload(msg, kind, user_id=user_id)
 
     if not text:
         text = _media_placeholder(_media_kind(msg), msg)
@@ -708,6 +725,171 @@ def _pop_self_sent(chat_id, text) -> bool:
         kept.append((rec_cid, rec_text, ts))
     _recent_self_sent[:] = kept
     return found
+
+
+def _chat_type_from_entity(chat) -> str:
+    """Грубый тип Telegram-сущности для catch-up синхронизации."""
+    if chat is None:
+        return "private"
+    if getattr(chat, "broadcast", False):
+        return "channel"
+    if (getattr(chat, "megagroup", False)
+            or getattr(chat, "gigagroup", False)
+            or getattr(chat, "title", None)):
+        return "group"
+    return "private"
+
+
+def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
+    if tg_message_id is None:
+        return False
+    from data import db_sessions
+    from data.contacts import MessengerHandle
+    from data.users import Messages as _Messages
+
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    try:
+        handle_ids = [hid for (hid,) in db.query(MessengerHandle.id).filter(
+            MessengerHandle.user_id == owner,
+            MessengerHandle.messenger_name == "Telegram",
+            MessengerHandle.tg_chat_id == chat_id).all()]
+        if not handle_ids:
+            return False
+        return db.query(_Messages.id).filter(
+            _Messages.user_id == owner,
+            _Messages.tg_message_id == int(tg_message_id),
+            _Messages.handle_id.in_(handle_ids)).first() is not None
+    finally:
+        db.close()
+
+
+async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
+                               message_limit=None):
+    """Best-effort catch-up последних Telegram-сообщений.
+
+    Live NewMessage обычно ловит входящие/исходящие сразу. Но после рестарта,
+    сетевого обрыва или сбоя фонового event-stream часть апдейтов можно
+    пропустить. Этот проход дешево догоняет последние сообщения из недавних
+    диалогов и сохраняет только те tg_message_id, которых ещё нет в БД.
+    """
+    owner = _normalize_user_id(user_id)
+    if client is None:
+        client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        return 0
+
+    dialog_limit = int(dialog_limit or _RECENT_SYNC_DIALOG_LIMIT)
+    message_limit = int(message_limit or _RECENT_SYNC_MESSAGE_LIMIT)
+    saved = 0
+    seen_dialogs = 0
+    async for dialog in client.iter_dialogs(limit=dialog_limit):
+        if seen_dialogs >= dialog_limit:
+            break
+        seen_dialogs += 1
+        chat = getattr(dialog, "entity", None)
+        chat_id = getattr(dialog, "id", None)
+        if chat_id is None and chat is not None:
+            try:
+                from telethon import utils
+                chat_id = utils.get_peer_id(chat)
+            except Exception:  # noqa: BLE001
+                chat_id = None
+        if chat_id is None:
+            continue
+        try:
+            chat_id = int(chat_id)
+        except (TypeError, ValueError):
+            continue
+        if chat_id in _skip_chat_ids:
+            continue
+        _ensure_discussion_groups_loaded()
+        if chat_id in _known_discussion_groups:
+            continue
+
+        chat_key = _chat_title(chat)
+        chat_type = _chat_type_from_entity(chat)
+        try:
+            archived = await _chat_archived_by_telegram(
+                chat_id, user_id=owner, client=client)
+        except Exception:  # noqa: BLE001
+            archived = False
+        try:
+            muted = await _chat_muted_by_telegram(
+                chat_id, user_id=owner, client=client)
+        except Exception:  # noqa: BLE001
+            muted = None
+
+        async for msg in client.iter_messages(chat or chat_id,
+                                              limit=message_limit):
+            tg_id = getattr(msg, "id", None)
+            if tg_id is None:
+                continue
+            if _telegram_message_exists(owner, chat_id, tg_id):
+                continue
+            kind = _media_kind(msg)
+            text = getattr(msg, "message", None) or ""
+            if not text and kind is None:
+                continue
+            is_out = bool(getattr(msg, "out", False))
+            author_tg_chat_id = None
+            if is_out:
+                author = "Вы"
+            elif chat_type == "group":
+                try:
+                    sender = await msg.get_sender()
+                except Exception:  # noqa: BLE001
+                    sender = None
+                author = _sender_name(sender)
+                author_tg_chat_id = getattr(sender, "id", None)
+            else:
+                author = chat_key
+                author_tg_chat_id = getattr(msg, "sender_id", None)
+
+            await _persist_telegram_message(
+                msg, chat_id, chat, chat_key, chat_type,
+                is_out, author, kind, text,
+                author_tg_chat_id=author_tg_chat_id,
+                user_id=owner, client=client,
+                archived=archived, muted=muted,
+                download_media=False)
+            saved += 1
+    return saved
+
+
+async def _safe_sync_recent_dialogs(user_id=None):
+    owner = _normalize_user_id(user_id)
+    try:
+        return await _sync_recent_dialogs(owner)
+    except Exception as exc:  # noqa: BLE001
+        _state_for(owner)["error"] = f"sync_recent: {exc}"
+        return 0
+    finally:
+        _recent_sync_at_by_user[owner] = time.monotonic()
+        _recent_sync_inflight_users.discard(owner)
+
+
+def sync_recent(user_id=None, wait=False):
+    """Запускает throttled catch-up недавних Telegram-диалогов.
+
+    В обычном UI режиме не блокируем запрос: догонка завершится в фоне, а
+    следующий polling контактов/ленты покажет найденные сообщения.
+    """
+    if not is_configured() or not telethon_available():
+        return None
+    owner = _normalize_user_id(user_id)
+    if wait:
+        return _call(_sync_recent_dialogs(owner), timeout=60)
+    now = time.monotonic()
+    last = _recent_sync_at_by_user.get(owner, 0)
+    if owner in _recent_sync_inflight_users:
+        return None
+    if now - last < _RECENT_SYNC_INTERVAL:
+        return None
+    _recent_sync_inflight_users.add(owner)
+    _ensure_loop()
+    asyncio.run_coroutine_threadsafe(_safe_sync_recent_dialogs(owner), _loop)
+    return None
 
 
 async def _register_handler(user_id=None, client=None):
