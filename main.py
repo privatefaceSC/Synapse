@@ -147,13 +147,20 @@ def _avatar_for(contact):
 
 
 def _contact_avatar_url(contact):
-    if getattr(contact, 'avatar_path', None):
+    avatar_path = getattr(contact, 'avatar_path', None)
+    if avatar_path and _media_rel_path_exists(avatar_path):
         return f'/contacts/{contact.id}/photo'
     try:
         cached = _cached_tg_avatar_photo_id(contact)
     except Exception:  # noqa: BLE001
         cached = None
     return (f'/contacts/{contact.id}/avatar/{cached}' if cached else None)
+
+
+def _media_rel_path_exists(rel_path):
+    if not rel_path:
+        return False
+    return os.path.exists(os.path.join(_media_root(), rel_path))
 
 
 def _cached_tg_avatar_photo_id(contact):
@@ -374,6 +381,7 @@ def _commit_best_effort(db, context: str) -> bool:
 
 def _message_author_avatar_url(msg):
     if (getattr(msg, 'author_avatar_path', None)
+            and _media_rel_path_exists(msg.author_avatar_path)
             and not getattr(msg, 'outgoing', False)):
         return f'/messages/{int(msg.id)}/author-photo'
     author_id = getattr(msg, 'author_tg_chat_id', None)
@@ -4024,7 +4032,7 @@ def register_routes(app: Flask) -> None:
         if handle is None or not telegram_bridge.is_configured():
             items = ([{'photo_id': 'local',
                        'url': f'/contacts/{contact.id}/photo'}]
-                     if contact.avatar_path else [])
+                     if _media_rel_path_exists(contact.avatar_path) else [])
             return jsonify({'ok': True, 'items': items})
         try:
             photos = telegram_bridge.fetch_profile_photos(handle.tg_chat_id,
@@ -4032,14 +4040,14 @@ def register_routes(app: Flask) -> None:
         except Exception:  # noqa: BLE001
             items = ([{'photo_id': 'local',
                        'url': f'/contacts/{contact.id}/photo'}]
-                     if contact.avatar_path else [])
+                     if _media_rel_path_exists(contact.avatar_path) else [])
             return jsonify({'ok': True, 'items': items})
         items = [{'photo_id': p['id'],
                   'url': f'/contacts/{contact.id}/avatar/{p["id"]}'}
                  for p in photos if p.get('id')]
         # Фолбэк: если TG ничего не отдал (например, фото скрыты), но
         # локально у нас фото есть — покажем хотя бы его.
-        if not items and contact.avatar_path:
+        if not items and _media_rel_path_exists(contact.avatar_path):
             items = [{'photo_id': 'local',
                       'url': f'/contacts/{contact.id}/photo'}]
         return jsonify({'ok': True, 'items': items})
@@ -4096,6 +4104,8 @@ def register_routes(app: Flask) -> None:
             return 'Not Found', 404
         full = os.path.join(_media_root(), contact.avatar_path)
         if not os.path.exists(full):
+            contact.avatar_path = None
+            _commit_best_effort(db, 'clear missing contact avatar')
             return 'Not Found', 404
         with open(full, 'rb') as f:
             raw = decrypt_bytes(f.read())
@@ -4117,6 +4127,8 @@ def register_routes(app: Flask) -> None:
             return 'Not Found', 404
         full = os.path.join(_media_root(), msg.author_avatar_path)
         if not os.path.exists(full):
+            msg.author_avatar_path = None
+            _commit_best_effort(db, 'clear missing author avatar')
             return 'Not Found', 404
         with open(full, 'rb') as f:
             raw = decrypt_bytes(f.read())

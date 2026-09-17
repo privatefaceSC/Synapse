@@ -460,7 +460,7 @@ async def _download_media_payload(msg, kind, user_id=None):
 
 async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
     """Лениво скачивает фото профиля чата и сохраняет его контакту.
-    Качает только если у контакта аватара ещё нет."""
+    Качает только если у контакта аватара ещё нет или файл был удалён."""
     from data import db_sessions
     from data.contacts import Contact, MessengerHandle
     from data.crypto import encrypt_bytes
@@ -476,14 +476,23 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
             return
         contact = db.query(Contact).filter(
             Contact.id == handle.contact_id).first()
-        if contact is None or contact.avatar_path:
+        if contact is None:
             return
+        had_stale_path = False
+        if contact.avatar_path:
+            full = os.path.join(_media_root(), contact.avatar_path)
+            if os.path.exists(full):
+                return
+            contact.avatar_path = None
+            had_stale_path = True
         contact_id = contact.id
 
         if client is None:
             client = await _get_client(owner)
         photo = await client.download_profile_photo(chat, file=bytes)
         if not photo:
+            if had_stale_path:
+                db.commit()
             return  # у чата нет фото профиля
 
         rel_dir = f"{owner}/tg_avatars"
