@@ -51,6 +51,11 @@ _RECENT_SYNC_INTERVAL = 45
 _RECENT_SYNC_DIALOG_LIMIT = 20
 _RECENT_SYNC_MESSAGE_LIMIT = 5
 _DEFAULT_MEDIA_MAX_MB = 20
+# Результат проверки «является ли megagroup группой комментариев канала».
+# Отрицательный ответ кэшируем ненадолго: связь группы с каналом может
+# появиться позже, но делать GetFullChannel на каждое входящее слишком дорого.
+_discussion_check_cache = {}
+_DISCUSSION_CHECK_TTL = 300
 _STATE_TEMPLATE = {
     "phone": None,
     "phone_code_hash": None,
@@ -514,10 +519,20 @@ async def _handle_message(event, user_id=None, client=None):
     # Discussion-группы каналов (комментарии) — не создаём из них
     # отдельный Contact в БД. См. _known_discussion_groups.
     _ensure_discussion_groups_loaded()
-    if event.chat_id in _known_discussion_groups:
+    if _chat_id_variants(event.chat_id) & _known_discussion_groups:
         return
     msg = event.message
     is_out = bool(getattr(msg, "out", False))
+
+    # Telegram присылает комментарии как обычные сообщения связанной
+    # megagroup. Пользователь мог впервые открыть комментарии в оригинальном
+    # Telegram, поэтому группа ещё не обязательно есть в нашем реестре.
+    # Определяем её до любых запросов к SQLite и до Web Push: это не даёт
+    # шквалу комментариев подвесить сайт.
+    chat = await event.get_chat()
+    if await _is_linked_discussion_group(
+            chat, event.chat_id, user_id=user_id, client=client):
+        return
 
     # Anti-dupe: при пересылке (и в принципе любых исходящих, записанных
     # синхронно из веб-панели) мы уже создали запись в БД с этим
@@ -546,7 +561,6 @@ async def _handle_message(event, user_id=None, client=None):
     # Контакт = сам чат: для лички это собеседник, для группы/канала —
     # название чата. event.get_chat() возвращает собеседника и для
     # входящих, и для исходящих, поэтому исходящие тоже попадают куда надо.
-    chat = await event.get_chat()
     chat_key = _chat_title(chat)
 
     if event.is_private:
@@ -555,9 +569,6 @@ async def _handle_message(event, user_id=None, client=None):
         chat_type = "group"
     else:
         chat_type = "channel"
-
-    muted = await _chat_muted_by_telegram(
-        event.chat_id, user_id=user_id, client=client)
 
     # Автор подписи над сообщением.
     author_tg_chat_id = None
@@ -584,8 +595,7 @@ async def _handle_message(event, user_id=None, client=None):
     await _persist_telegram_message(msg, event.chat_id, chat, chat_key,
                                     chat_type, is_out, author, kind, text,
                                     author_tg_chat_id=author_tg_chat_id,
-                                    user_id=user_id, client=client,
-                                    muted=muted)
+                                    user_id=user_id, client=client)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
@@ -830,17 +840,15 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
         if chat_id in _skip_chat_ids:
             continue
         _ensure_discussion_groups_loaded()
-        if chat_id in _known_discussion_groups:
+        if _chat_id_variants(chat_id) & _known_discussion_groups:
+            continue
+        if await _is_linked_discussion_group(
+                chat, chat_id, user_id=owner, client=client):
             continue
 
         chat_key = _chat_title(chat)
         chat_type = _chat_type_from_entity(chat)
         archived = int(getattr(dialog, "folder_id", 0) or 0) == 1
-        try:
-            muted = await _chat_muted_by_telegram(
-                chat_id, user_id=owner, client=client)
-        except Exception:  # noqa: BLE001
-            muted = None
 
         async for msg in client.iter_messages(chat or chat_id,
                                               limit=message_limit):
@@ -873,7 +881,6 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
                 is_out, author, kind, text,
                 author_tg_chat_id=author_tg_chat_id,
                 user_id=owner, client=client,
-                muted=muted,
                 download_media=False)
             saved += 1
         # Статус архива приходит от самого Dialog, а не вычисляется по
@@ -2113,6 +2120,78 @@ def get_common_chats(chat_id, limit=20, user_id=None):
 # «Комментарии» — события из этих групп игнорируются.
 _known_discussion_groups = set()
 _discussion_groups_loaded = False
+
+
+def _remember_discussion_group(chat_id):
+    """Запомнить linked discussion и удалить созданный ранее чат-призрак."""
+    variants = _chat_id_variants(chat_id)
+    _known_discussion_groups.update(variants)
+    _persist_discussion_group(chat_id)
+    try:
+        _cleanup_discussion_contact(chat_id)
+    except Exception:  # noqa: BLE001
+        # Фильтр в памяти уже включён, поэтому новые сообщения и push всё
+        # равно остановлены; очистку повторит загрузка реестра после рестарта.
+        pass
+
+
+async def _is_linked_discussion_group(chat, chat_id, user_id=None,
+                                      client=None):
+    """Проверяет, является ли megagroup комментариями Telegram-канала.
+
+    У linked discussion-supergroup поле ChannelFull.linked_chat_id указывает
+    обратно на канал. Проверка выполняется до сохранения сообщения, чтобы
+    неизвестная ранее группа комментариев не создавала контакт и Web Push.
+    """
+    _ensure_discussion_groups_loaded()
+    variants = _chat_id_variants(chat_id)
+    if variants & _known_discussion_groups:
+        return True
+
+    # Broadcast-канал тоже имеет linked_chat_id, но сам канал скрывать нельзя:
+    # отбрасываем только связанную с ним megagroup комментариев.
+    if (chat is None
+            or not (getattr(chat, "megagroup", False)
+                    or getattr(chat, "gigagroup", False))
+            or getattr(chat, "broadcast", False)):
+        return False
+
+    owner = _normalize_user_id(user_id)
+    positive_ids = [value for value in variants if value > 0]
+    canonical_id = min(positive_ids) if positive_ids else int(chat_id)
+    key = (owner, canonical_id)
+    now = time.monotonic()
+    cached = _discussion_check_cache.get(key)
+    if cached is not None and now - cached[0] < _DISCUSSION_CHECK_TTL:
+        return bool(cached[1])
+
+    if client is None:
+        client = await _get_client(owner)
+    try:
+        from telethon.tl.functions.channels import GetFullChannelRequest
+        peer = chat
+        get_input_entity = getattr(client, "get_input_entity", None)
+        if get_input_entity is not None:
+            peer = await get_input_entity(chat)
+        full = await client(GetFullChannelRequest(channel=peer))
+        linked_chat_id = getattr(
+            getattr(full, "full_chat", None), "linked_chat_id", None)
+        is_discussion = linked_chat_id is not None
+    except Exception as exc:  # noqa: BLE001
+        # Ошибка MTProto не должна ломать приём обычных групп. Не кэшируем её:
+        # следующий апдейт сможет повторить проверку после восстановления сети.
+        _state_for(owner)["error"] = f"discussion_check: {exc}"
+        return False
+
+    _discussion_check_cache[key] = (now, is_discussion)
+    if len(_discussion_check_cache) > 1024:
+        expired_before = now - _DISCUSSION_CHECK_TTL
+        for cache_key, value in list(_discussion_check_cache.items()):
+            if value[0] < expired_before:
+                _discussion_check_cache.pop(cache_key, None)
+    if is_discussion:
+        _remember_discussion_group(chat_id)
+    return is_discussion
 
 
 def _persist_discussion_group(chat_id):
