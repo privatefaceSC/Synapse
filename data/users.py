@@ -102,5 +102,22 @@ class Messages(SqlAlchemyBase):
     # Android Notification Listener: стабильный ключ конкретного уведомления,
     # чтобы обновления одного и того же push'а не создавали дубликаты.
     notification_dedup_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    # Состояние исходящего медиа, которое веб уже принял, а Telethon ещё
+    # отправляет в фоне: sending / sent / failed. Для обычных и старых
+    # сообщений остаётся NULL.
+    delivery_status = sqlalchemy.Column(sqlalchemy.String, nullable=True)
+    delivery_error = sqlalchemy.Column(EncryptedText(), nullable=True)
+    # Исходная подпись нужна для безопасной повторной отправки. В `text`
+    # у медиа без подписи лежит человекочитаемый placeholder («📷 Фото»).
+    delivery_caption = sqlalchemy.Column(EncryptedText(), nullable=True)
+    delivery_silent = sqlalchemy.Column(sqlalchemy.Boolean, nullable=True)
+    delivery_reply_to_tg_id = sqlalchemy.Column(
+        sqlalchemy.BigInteger, nullable=True)
+    delivery_schedule_at = sqlalchemy.Column(sqlalchemy.DateTime,
+                                             nullable=True)
+    # Lease текущей фоновой попытки. `created_at` менять нельзя: это время
+    # самого сообщения, а повторная отправка может начаться намного позже.
+    delivery_started_at = sqlalchemy.Column(sqlalchemy.DateTime,
+                                            nullable=True)
     # Аватар автора внутри группового Android-чата (Max/VK/WhatsApp).
     author_avatar_path = sqlalchemy.Column(sqlalchemy.String, nullable=True)

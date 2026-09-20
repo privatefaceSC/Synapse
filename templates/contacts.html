@@ -704,7 +704,42 @@
     .bubble-row.new-msg .bubble { animation: bubbleSlideIn .22s ease-out; }
     /* Свежеотправленное наше сообщение — пока сервер не подтвердил доставку,
        сидит чуть приглушённое (как в Telegram «отправляется»). */
-    .bubble-row.outgoing.pending .bubble { opacity: .65; }
+    .bubble-row.outgoing.pending .bubble { opacity: .78; }
+    .bubble-row.outgoing.delivery-failed .bubble {
+        outline: 1px solid rgba(239,68,68,.6);
+    }
+    .upload-state {
+        display: flex; align-items: center; gap: 7px;
+        min-width: 150px; margin-top: 7px;
+        color: #64748b; font-size: 11px; line-height: 1.25;
+    }
+    .upload-spinner {
+        width: 14px; height: 14px; flex: 0 0 14px;
+        border: 2px solid rgba(100,116,139,.28);
+        border-top-color: #3b82f6; border-radius: 50%;
+        animation: uploadSpin .72s linear infinite;
+    }
+    @keyframes uploadSpin { to { transform: rotate(360deg); } }
+    .upload-state.failed { color: #ef4444; }
+    .upload-state.failed .upload-spinner {
+        animation: none; border: 0; width: auto; height: auto;
+    }
+    .upload-state.failed .upload-spinner::before { content: "!"; font-weight: 800; }
+    .upload-state-text { flex: 1 1 auto; }
+    .upload-progress {
+        width: 100%; height: 3px; margin-top: 5px; overflow: hidden;
+        border-radius: 999px; background: rgba(100,116,139,.2);
+    }
+    .upload-progress > span {
+        display: block; width: var(--upload-progress, 8%); height: 100%;
+        border-radius: inherit; background: #3b82f6;
+        transition: width .18s ease;
+    }
+    .upload-retry {
+        border: 0; padding: 2px 7px; border-radius: 7px;
+        background: rgba(239,68,68,.12); color: #dc2626;
+        font: inherit; font-weight: 700; cursor: pointer;
+    }
     .bubble-row .source {
         font-size: 11px; color: #5b6472; margin: 0 0 4px 7px;
         font-weight: 600; letter-spacing: .02em;
@@ -3171,7 +3206,7 @@
         animation: popoverIn .18s cubic-bezier(.34,1.3,.64,1) both;
     }
     .selection-bar[hidden] { display: none; }
-    .sb-cancel, .sb-forward {
+    .sb-cancel, .sb-forward, .sb-delete {
         background: transparent; color: inherit;
         border: 1px solid rgba(255,255,255,.18);
         border-radius: 8px; padding: 6px 12px; cursor: pointer;
@@ -3187,6 +3222,22 @@
     }
     .sb-forward:hover { background: #2563eb; border-color: #2563eb; }
     .sb-forward:disabled { opacity: .5; cursor: not-allowed; }
+    .sb-delete { color: #fca5a5; border-color: rgba(248,113,113,.38); }
+    .sb-delete:hover { background: rgba(239,68,68,.16); }
+    .sb-delete:disabled { opacity: .5; cursor: not-allowed; }
+    .selection-delete-menu {
+        position: fixed; z-index: 1105; min-width: 205px;
+        padding: 5px; border-radius: 10px;
+        background: #1e2533; color: #f8fafc;
+        box-shadow: 0 12px 28px rgba(0,0,0,.45);
+    }
+    .selection-delete-menu[hidden] { display: none; }
+    .selection-delete-menu button {
+        display: block; width: 100%; border: 0; border-radius: 7px;
+        padding: 9px 11px; background: transparent; color: #fca5a5;
+        text-align: left; font-size: 13px; cursor: pointer;
+    }
+    .selection-delete-menu button:hover { background: rgba(239,68,68,.16); }
     #messages-container.selecting .bubble-row { cursor: pointer; }
     #messages-container.selecting .bubble-row .bubble {
         transition: outline .12s ease, background .12s ease;
@@ -4093,8 +4144,10 @@
                             {% set msg_key = ('out:' if m.outgoing else 'in:') ~ msg_author %}
                             {% set msg_grouped = msg_ns.prev_key == msg_key %}
                             {% set msg_show_source = _show_authors and not m.outgoing and not msg_grouped %}
-                            <div class="bubble-row{% if m.outgoing %} outgoing{% else %} incoming{% endif %}{% if m.pinned_at %} pinned{% endif %}{% if msg_grouped %} grouped{% endif %}"
+                            <div class="bubble-row{% if m.outgoing %} outgoing{% else %} incoming{% endif %}{% if m.pinned_at %} pinned{% endif %}{% if msg_grouped %} grouped{% endif %}{% if m.delivery_status == 'failed' %} delivery-failed{% elif m.delivery_status and m.delivery_status != 'sent' %} pending{% endif %}"
                                  data-message-id="{{ m.id }}"
+                                 data-client-send-key="{{ m.notification_dedup_key or '' }}"
+                                 data-can-delete-all="{{ '1' if m.outgoing and m.tg_message_id else '0' }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
                                  data-author="{{ msg_author }}"
                                 data-date-label="{{ m.date_label or '' }}"
@@ -4211,6 +4264,22 @@
                                     <div class="truncated-note">
                                         ⚠ Сообщение обрезано Android до 1024 символов.
                                         Откройте {{ m.messenger_name }}, чтобы прочесть целиком.
+                                    </div>
+                                    {% endif %}
+                                    {% if m.delivery_status and m.delivery_status != 'sent' %}
+                                    <div class="upload-state{% if m.delivery_status == 'failed' %} failed{% endif %}"
+                                         data-delivery-status="{{ m.delivery_status }}">
+                                        <span class="upload-spinner" aria-hidden="true"></span>
+                                        <span class="upload-state-text">
+                                            {% if m.delivery_status == 'failed' %}
+                                                {{ m.delivery_error or 'Не удалось отправить' }}
+                                            {% else %}
+                                                Отправляется в Telegram…
+                                            {% endif %}
+                                        </span>
+                                        {% if m.delivery_status == 'failed' %}
+                                        <button type="button" class="upload-retry">Повторить</button>
+                                        {% endif %}
                                     </div>
                                     {% endif %}
                                     <div class="time-row">
@@ -4390,6 +4459,12 @@
     <span class="sb-count" id="sb-count">0 выбрано</span>
     <button type="button" class="sb-forward" id="sb-forward">
         ↪ Переслать</button>
+    <button type="button" class="sb-delete" id="sb-delete">
+        🗑 Удалить</button>
+</div>
+<div class="selection-delete-menu" id="selection-delete-menu" hidden>
+    <button type="button" data-scope="self">Удалить у меня</button>
+    <button type="button" data-scope="all">Удалить у всех</button>
 </div>
 
 <div class="send-menu" id="send-menu" hidden role="menu">
@@ -5469,10 +5544,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             '#composer-send, #composer-attach, #composer-emoji, '
             + '#composer-voice, #composer-file, #composer-text'
         ).forEach(el => { el.disabled = !!busy; });
-        const draftModal = document.getElementById('media-draft-modal');
-        if (draftModal) {
-            draftModal.classList.toggle('sending', !!busy);
-            draftModal.querySelectorAll(
+        const mediaDraftModal = document.getElementById('media-draft-modal');
+        if (mediaDraftModal) {
+            mediaDraftModal.classList.toggle('sending', !!busy);
+            mediaDraftModal.querySelectorAll(
                 '[data-media-action], [data-media-thumb], '
                 + '[data-media-caption]'
             ).forEach(el => { el.disabled = !!busy; });
@@ -6746,6 +6821,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let hasOlderMessages = false;
     let loadingOlderMessages = false;
     let pendingFiles = [];    // выбранные, но ещё не отправленные файлы
+    const activeUploads = new Map(); // client_send_key -> локальный preview
     let mediaDraftIndex = 0;
     let mediaDraftModal = null;
     let replyTarget = null;   // сообщение, на которое отвечаем (reply)
@@ -6948,13 +7024,53 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    let cancelPendingAnchorRestore = null;
+
     function restoreScrollAnchorSoon(container, anchor) {
         if (!container || !anchor) return;
-        restoreScrollAnchor(container, anchor);
-        requestAnimationFrame(() => restoreScrollAnchor(container, anchor));
-        [90, 260, 650].forEach(t => {
-            setTimeout(() => restoreScrollAnchor(container, anchor), t);
+        if (cancelPendingAnchorRestore) cancelPendingAnchorRestore();
+        let active = true;
+        let frame = null;
+        let cleanupTimer = null;
+        const watchedImages = [];
+
+        const restore = () => {
+            if (active) restoreScrollAnchor(container, anchor);
+        };
+        const onMediaLoad = () => {
+            if (!active) return;
+            if (frame) cancelAnimationFrame(frame);
+            frame = requestAnimationFrame(restore);
+        };
+        const cancel = () => {
+            if (!active) return;
+            active = false;
+            if (frame) cancelAnimationFrame(frame);
+            if (cleanupTimer) clearTimeout(cleanupTimer);
+            container.removeEventListener('touchstart', cancel);
+            container.removeEventListener('pointerdown', cancel);
+            container.removeEventListener('wheel', cancel);
+            watchedImages.forEach(img => img.removeEventListener(
+                'load', onMediaLoad));
+            if (cancelPendingAnchorRestore === cancel) {
+                cancelPendingAnchorRestore = null;
+            }
+        };
+
+        // Касание пользователя всегда важнее автоматики: после него
+        // поздняя загрузка фото больше не переписывает scrollTop.
+        container.addEventListener('touchstart', cancel, {passive: true});
+        container.addEventListener('pointerdown', cancel, {passive: true});
+        container.addEventListener('wheel', cancel, {passive: true});
+        container.querySelectorAll('img').forEach(img => {
+            if (img.complete) return;
+            watchedImages.push(img);
+            img.addEventListener('load', onMediaLoad, {once: true});
         });
+        restore();
+        frame = requestAnimationFrame(restore);
+        cleanupTimer = setTimeout(cancel, 1400);
+        cancelPendingAnchorRestore = cancel;
     }
 
     function ensureScrollDatePill(container) {
@@ -6991,16 +7107,49 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }, 900);
     }
 
+    function uploadDestinationKey(contactId, messenger, topicId) {
+        return [String(contactId || ''), String(messenger || ''),
+                String(topicId || '')].join('|');
+    }
+
+    function currentUploadDestinationKey() {
+        const composer = feed.querySelector('#composer');
+        const messenger = currentMessenger
+            || (composer && composer.dataset.messenger) || '';
+        return uploadDestinationKey(
+            currentContactId, messenger, currentTopicId);
+    }
+
     function combinedMessages() {
         const seen = new Set();
         const out = [];
-        olderMessages.concat(currentMessages).forEach(m => {
-            const key = String(m.id || (m.time + m.text));
+        const optimistic = Array.from(activeUploads.values())
+            .filter(upload => upload.destinationKey
+                === currentUploadDestinationKey())
+            .map(upload => upload.message)
+            .filter(Boolean);
+        olderMessages.concat(currentMessages, optimistic).forEach(m => {
+            const key = m.client_send_key
+                ? 'send:' + String(m.client_send_key)
+                : 'id:' + String(m.id || (m.time + m.text));
             if (seen.has(key)) return;
             seen.add(key);
             out.push(m);
         });
         return out;
+    }
+
+    function messagePollSignature(messages) {
+        return JSON.stringify((messages || []).map(m => [
+            m.id || (m.time + m.text), m.text, m.text_html || '', m.time,
+            m.tg_read ? 1 : 0, m.deleted ? 1 : 0, m.pinned ? 1 : 0,
+            m.delivery_status || '', m.delivery_error || '',
+            (m.reactions || []).map(r =>
+                r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
+            ).join(','),
+            (m.attachments || []).map(a =>
+                [a.id, a.kind, a.mime, a.name].join(':')).join(','),
+        ]));
     }
 
     /** Скролл в самый низ + автоподтяжка пока в ленте догружаются
@@ -7303,6 +7452,48 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    function messageRenderKey(message) {
+        const m = message || {};
+        // Статусы доставки/прочтения обновляются точечно и намеренно не
+        // входят в ключ: из-за одной галочки нельзя пересоздавать <img>.
+        return JSON.stringify([
+            m.text || '', m.text_html || '', !!m.outgoing, !!m.deleted,
+            m.messenger_name || '', m.display_author || m.sender || '',
+            m.author_avatar_url || '', m.author_profile_url || '',
+            m.reply_to || null, m.fwd_from || null, m.ttl_seconds || null,
+            m.edits || [], m.reactions || [],
+            (m.attachments || []).map(a => [
+                a.id || '', a.kind || '', a.mime || '', a.name || '',
+                a.local_url || '', !!a.has_sticker_pack,
+            ]),
+        ]);
+    }
+
+    function deliveryStatusHtml(message) {
+        const status = message && message.delivery_status;
+        if (!status || status === 'sent') return '';
+        const progress = Math.max(0, Math.min(100,
+            Number(message.upload_progress) || 0));
+        const failed = status === 'failed';
+        const label = failed
+            ? (message.delivery_error || 'Не удалось отправить')
+            : (status === 'uploading'
+                ? ('Загрузка' + (progress ? ' · ' + progress + '%' : '…'))
+                : 'Отправляется в Telegram…');
+        const retry = failed
+            ? '<button type="button" class="upload-retry">Повторить</button>'
+            : '';
+        const bar = status === 'uploading'
+            ? '<div class="upload-progress" style="--upload-progress:'
+              + progress + '%"><span></span></div>'
+            : '';
+        return '<div class="upload-state' + (failed ? ' failed' : '')
+            + '" data-delivery-status="' + escapeHtml(status) + '">'
+            + '<span class="upload-spinner" aria-hidden="true"></span>'
+            + '<span class="upload-state-text">' + escapeHtml(label)
+            + bar + '</span>' + retry + '</div>';
+    }
+
     function renderMessages(messages) {
         if (!messages.length) return '<div class="empty-state">Нет сообщений.</div>';
         function renderSticker(a, m) {
@@ -7330,6 +7521,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 : '';
             const media = (m.attachments || [])
                 .map(a => {
+                    const mediaUrl = a.local_url
+                        ? escapeHtml(a.local_url)
+                        : `/attachments/${a.id}`;
                     if (a.kind === 'sticker') return renderSticker(a, m);
                     if (a.kind === 'video_note')
                         return `<span class="media-vnote-wrap deferred" `
@@ -7341,6 +7535,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                             + `<strong>Видеосообщение</strong>`
                             + `<small>Нажмите, чтобы загрузить</small>`
                             + `</button></span>`;
+                    if (a.kind === 'video' && a.local_url)
+                        return `<span class="media-video-wrap">`
+                            + `<video class="media-video" src="${mediaUrl}" `
+                            + `muted playsinline preload="metadata"></video>`
+                            + `</span>`;
                     if (a.kind === 'video')
                         return `<span class="media-video-wrap deferred" `
                             + `data-video-src="/attachments/${a.id}" `
@@ -7356,12 +7555,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                             + `<span class="video-progress"><span class="video-progress-fill"></span></span>`
                             + `<span class="video-duration">0:00</span></span></span>`;
                     if (a.kind === 'voice' || a.kind === 'audio')
-                        return `<audio class="media-audio" src="/attachments/${a.id}" controls preload="none"></audio>`;
+                        return `<audio class="media-audio" src="${mediaUrl}" controls preload="none"></audio>`;
                     if (a.kind === 'file')
-                        return `<a class="media-file" href="/attachments/${a.id}" download>`
+                        return `<a class="media-file" href="${mediaUrl}" download>`
                             + `<span class="file-ico">📎</span>`
                             + `<span class="file-name">${escapeHtml(a.name || 'Файл')}</span></a>`;
-                    return `<img class="media-img" src="/attachments/${a.id}" data-full="/attachments/${a.id}" loading="lazy" alt="фото">`;
+                    return `<img class="media-img" src="${mediaUrl}" data-full="${mediaUrl}" loading="lazy" alt="фото">`;
                 })
                 .join('');
             const author = m.outgoing
@@ -7469,8 +7668,16 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 && !m.reply_to
                 && !m.fwd_from
                 && (!!m.text || !!m.text_html);
-            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ' incoming'}${m.pinned ? ' pinned' : ''}${grouped ? ' grouped' : ''}"
+            const delivery = deliveryStatusHtml(m);
+            const deliveryClass = m.delivery_status === 'failed'
+                ? ' delivery-failed'
+                : (m.delivery_status && m.delivery_status !== 'sent'
+                    ? ' pending' : '');
+            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ' incoming'}${m.pinned ? ' pinned' : ''}${grouped ? ' grouped' : ''}${deliveryClass}"
                 data-message-id="${m.id}"
+                data-render-key="${escapeHtml(messageRenderKey(m) + '|' + (grouped ? '1' : '0'))}"
+                data-client-send-key="${escapeHtml(m.client_send_key || '')}"
+                data-can-delete-all="${m.outgoing && m.tg_read !== null && m.tg_read !== undefined ? '1' : '0'}"
                 data-messenger="${escapeHtml(m.messenger_name || '')}"
                 data-author="${escapeHtml(author)}"
                 data-date-label="${escapeHtml(m.date_label || '')}"${editsJson}>
@@ -7484,6 +7691,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     ${media}
                     ${textHtml}
                     ${truncated}
+                    ${delivery}
                     <div class="time-row">
                         <span class="time">${escapeHtml(m.time)}</span>
                         ${ttl}
@@ -7495,6 +7703,87 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 ${m.outgoing ? '' : '</div>'}
             </div>`;
         }).join('');
+    }
+
+    function syncMessageRowState(row, message) {
+        if (!row || !message) return;
+        row.classList.toggle('pinned', !!message.pinned);
+        const pending = !!(message.delivery_status
+            && message.delivery_status !== 'sent'
+            && message.delivery_status !== 'failed');
+        row.classList.toggle('pending', pending);
+        row.classList.toggle('delivery-failed',
+                             message.delivery_status === 'failed');
+        row.dataset.clientSendKey = message.client_send_key || '';
+        row.dataset.canDeleteAll = message.outgoing
+            && message.tg_read !== null && message.tg_read !== undefined
+            ? '1' : '0';
+
+        const oldState = row.querySelector('.upload-state');
+        const stateHtml = deliveryStatusHtml(message);
+        if (oldState) oldState.remove();
+        if (stateHtml) {
+            const timeRow = row.querySelector('.time-row');
+            if (timeRow) timeRow.insertAdjacentHTML('beforebegin', stateHtml);
+        }
+
+        const timeRow = row.querySelector('.time-row');
+        if (timeRow) {
+            const oldTick = timeRow.querySelector('.tg-tick');
+            if (oldTick) oldTick.remove();
+            if (message.outgoing && message.tg_read !== null
+                    && message.tg_read !== undefined) {
+                const read = !!message.tg_read;
+                timeRow.insertAdjacentHTML('beforeend',
+                    '<span class="tg-tick' + (read ? ' read' : '') + '"'
+                    + ' title="' + (read ? 'Прочитано' : 'Доставлено')
+                    + '">' + (read ? '✓✓' : '✓') + '</span>');
+            }
+        }
+    }
+
+    function patchMessagesContainer(container, messages) {
+        if (!container) return;
+        if (!messages.length) {
+            const pill = container.querySelector('.scroll-date-pill');
+            container.innerHTML = '<div class="empty-state">Нет сообщений.</div>';
+            if (pill) container.insertBefore(pill, container.firstChild);
+            return;
+        }
+        const staging = document.createElement('div');
+        staging.innerHTML = renderMessages(messages);
+        const freshRows = Array.from(staging.querySelectorAll(
+            '.bubble-row[data-message-id]'));
+        const existingRows = new Map(Array.from(container.querySelectorAll(
+            '.bubble-row[data-message-id]')).map(row => [
+                String(row.dataset.messageId), row,
+            ]));
+        const wanted = new Set();
+        const pill = container.querySelector('.scroll-date-pill');
+        let previous = pill || null;
+        const empty = container.querySelector('.empty-state');
+        if (empty) empty.remove();
+
+        freshRows.forEach((fresh, index) => {
+            const message = messages[index];
+            const id = String(fresh.dataset.messageId);
+            wanted.add(id);
+            const current = existingRows.get(id);
+            let node = fresh;
+            if (current && current.dataset.renderKey === fresh.dataset.renderKey) {
+                node = current;
+                syncMessageRowState(node, message);
+            } else if (current) {
+                current.replaceWith(fresh);
+            }
+            const reference = previous
+                ? previous.nextSibling : container.firstChild;
+            if (node !== reference) container.insertBefore(node, reference);
+            previous = node;
+        });
+        existingRows.forEach((row, id) => {
+            if (!wanted.has(id)) row.remove();
+        });
     }
 
     function renderChannelNotice(contact) {
@@ -7575,7 +7864,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             loadForumTopics(contact.id);
         } else {
             feed.innerHTML = renderHeader(contact)
-                + '<div id="messages-container">' + renderMessages(messages) + '</div>'
+                + '<div id="messages-container">'
+                + renderMessages(combinedMessages()) + '</div>'
                 + renderComposer(contact);
         }
         if (window.__skillwoodSyncVoiceMode) {
@@ -7750,18 +8040,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             // В сигнатуру кладём не только id/text/time, но и tg_read,
             // deleted, reactions — иначе перерисовки не будет когда
             // собеседник прочитал (✓→✓✓), удалил или поставил реакцию.
-            const sigItems = data.messages.map(m => [
-                m.id || (m.time + m.text), m.text, m.time,
-                m.tg_read ? 1 : 0, m.deleted ? 1 : 0,
-                m.pinned ? 1 : 0,
-                (m.reactions || []).map(r =>
-                    r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
-                ).join(','),
-            ]);
             // Плашка «📌 Закреплённые сообщения» обновляется отдельно от
             // ленты — pinned_messages приходят рядом в /messages.json.
             setPinnedMessages(data.pinned_messages || []);
-            const sig = JSON.stringify(sigItems);
+            const sig = messagePollSignature(data.messages);
             if (sig !== lastSig) {
                 const stick = isNearBottom();
                 // ID-сет «что уже было» — для бэйджа FAB и анимации новых.
@@ -7777,7 +8059,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 const scrollAnchor = stick || !c ? null : captureScrollAnchor(c);
                 if (c) {
                     currentMessages = data.messages || [];
-                    c.innerHTML = renderMessages(combinedMessages());
+                    patchMessagesContainer(c, combinedMessages());
                     // Анимируем только bubble тех сообщений, которых не было
                     // в прошлом тике (а не вся лента при каждой перерисовке).
                     if (prevIds.size > 0) {
@@ -7850,7 +8132,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (incoming.length) {
                 olderMessages = incoming.concat(olderMessages);
                 hasOlderMessages = !!data.has_older;
-                c.innerHTML = renderMessages(combinedMessages());
+                patchMessagesContainer(c, combinedMessages());
                 restoreScrollAnchorSoon(c, scrollAnchor);
                 reapplyTopicHighlight();
             } else {
@@ -7952,13 +8234,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             }
             // Сигнатура — та же что в pollMessages: id+text+time+tg_read+
             // deleted+reactions. Иначе первый же tick пересоберёт ленту впустую.
-            lastSig = JSON.stringify(data.messages.map(m => [
-                m.id || (m.time + m.text), m.text, m.time,
-                m.tg_read ? 1 : 0, m.deleted ? 1 : 0,
-                (m.reactions || []).map(r =>
-                    r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
-                ).join(','),
-            ]));
+            lastSig = messagePollSignature(data.messages);
             document.title = data.contact.display_name;
             if (opts.scrollToMessageId) {
                 // Ждём один кадр, чтобы DOM реально появился, потом скроллим
@@ -8562,6 +8838,53 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         });
     }
 
+    function uploadFormData(url, formData, onProgress, timeoutMs) {
+        if (!window.XMLHttpRequest) {
+            return fetchWithTimeout(url, {
+                method: 'POST', credentials: 'same-origin',
+                headers: {'X-Requested-With': 'XMLHttpRequest'},
+                body: formData,
+            }, timeoutMs);
+        }
+        return new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', url, true);
+            xhr.withCredentials = true;
+            xhr.timeout = timeoutMs || 120000;
+            xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+            if (xhr.upload && onProgress) {
+                xhr.upload.addEventListener('progress', event => {
+                    if (!event.lengthComputable) return;
+                    onProgress(Math.round(event.loaded / event.total * 100));
+                });
+            }
+            xhr.addEventListener('load', () => {
+                let data = {};
+                try { data = JSON.parse(xhr.responseText || '{}'); }
+                catch (e) { data = {}; }
+                resolve({
+                    ok: xhr.status >= 200 && xhr.status < 300,
+                    status: xhr.status,
+                    data,
+                    json: () => Promise.resolve(data),
+                });
+            });
+            xhr.addEventListener('error', () => reject(
+                new TypeError('Load failed')));
+            xhr.addEventListener('timeout', () => {
+                const error = new Error('Upload timeout');
+                error.name = 'AbortError';
+                reject(error);
+            });
+            xhr.addEventListener('abort', () => {
+                const error = new Error('Upload aborted');
+                error.name = 'AbortError';
+                reject(error);
+            });
+            xhr.send(formData);
+        });
+    }
+
     // Отправка файла (фото/видео) в Telegram. Текст из поля — подпись.
     async function sendFile(form, file, captionOverride, opts) {
         opts = opts || {};
@@ -8571,9 +8894,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const cid = form.dataset.contactId;
         const ta = form.querySelector('#composer-text');
         if (file && file.size > MAX_UPLOAD_BYTES) {
-            alert('Не удалось отправить файл: '
-                  + uploadFailureMessage(null, {}, null, file));
-            return false;
+            item.lastError = uploadFailureMessage(null, {}, null, file);
+            if (!opts.silentFailure) {
+                alert('Не удалось отправить файл: ' + item.lastError);
+            }
+            return null;
         }
         let lockedHere = false;
         if (!opts.controlsLocked) {
@@ -8591,32 +8916,37 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             : (ta ? ta.value.trim() : '');
         fd.append('text', caption);
         if (form.dataset.messenger) fd.append('messenger', form.dataset.messenger);
-        if (replyTarget) fd.append('reply_to', replyTarget.id);
-        if (pendingForward) fd.append('forward_message_id', pendingForward.id);
+        const replyId = Object.prototype.hasOwnProperty.call(opts, 'replyTo')
+            ? opts.replyTo : (replyTarget && replyTarget.id);
+        const forwardId = Object.prototype.hasOwnProperty.call(
+            opts, 'forwardMessageId')
+            ? opts.forwardMessageId : (pendingForward && pendingForward.id);
+        if (replyId) fd.append('reply_to', replyId);
+        if (forwardId) fd.append('forward_message_id', forwardId);
         // Флаги из ПКМ-меню кнопки отправки (без звука / отложенно).
         const silentEl = form.querySelector(
             'input[name="silent"][type="hidden"]');
-        if (silentEl && silentEl.value) fd.append('silent', silentEl.value);
+        if (opts.silent || (silentEl && silentEl.value)) {
+            fd.append('silent', '1');
+        }
         const schedEl = form.querySelector(
             'input[name="schedule_at"][type="hidden"]');
-        if (schedEl && schedEl.value) {
-            fd.append('schedule_at', schedEl.value);
+        const scheduleAt = Object.prototype.hasOwnProperty.call(
+            opts, 'scheduleAt') ? opts.scheduleAt
+            : (schedEl && schedEl.value);
+        if (scheduleAt) {
+            fd.append('schedule_at', scheduleAt);
         }
         try {
-            const uploadRequest = () => fetchWithTimeout(
-                '/contacts/' + cid + '/send', {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    headers: {'X-Requested-With': 'XMLHttpRequest'},
-                    body: fd,
-                }, 120000);
+            const uploadRequest = () => uploadFormData(
+                '/contacts/' + cid + '/send', fd, opts.onProgress, 120000);
             const r = mediaTools
                 ? await mediaTools.requestWithRetry(uploadRequest, {
                     maxAttempts: 2,
                     delayMs: 450,
                 })
                 : await uploadRequest();
-            const data = await r.json().catch(() => ({}));
+            const data = r.data || await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
                 if (data.scheduled) {
                     const whenText = data.when
@@ -8647,22 +8977,26 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                         pollMessages();
                     }
                 }
-                return true;
+                return data;
             } else {
-                alert('Не удалось отправить файл: '
-                      + uploadFailureMessage(r, data, null, file));
+                item.lastError = uploadFailureMessage(r, data, null, file);
+                if (!opts.silentFailure) {
+                    alert('Не удалось отправить файл: ' + item.lastError);
+                }
                 if (window.__skillwoodResetSendFlags) {
                     window.__skillwoodResetSendFlags(form);
                 }
-                return false;
+                return null;
             }
         } catch (e) {
-            alert('Не удалось отправить файл: '
-                  + uploadFailureMessage(null, {}, e, file));
+            item.lastError = uploadFailureMessage(null, {}, e, file);
+            if (!opts.silentFailure) {
+                alert('Не удалось отправить файл: ' + item.lastError);
+            }
             if (window.__skillwoodResetSendFlags) {
                 window.__skillwoodResetSendFlags(form);
             }
-            return false;
+            return null;
         } finally {
             if (lockedHere) finishComposerSend(form);
         }
@@ -8724,12 +9058,143 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const original = item.file;
         const prepared = await optimizeUploadImage(original);
         if (prepared && prepared !== original) {
-            if (item.url) URL.revokeObjectURL(item.url);
             item.file = prepared;
-            item.url = URL.createObjectURL(prepared);
         }
         item.prepared = true;
         return item;
+    }
+
+    function optimisticAttachment(item) {
+        const mime = (item.file && item.file.type) || '';
+        let kind = 'file';
+        if (mime.indexOf('image/') === 0) kind = 'image';
+        else if (mime.indexOf('video/') === 0) kind = 'video';
+        else if (mime.indexOf('audio/') === 0) kind = 'audio';
+        return {
+            id: 'local-' + item.sendKey,
+            kind,
+            mime,
+            name: (item.file && item.file.name) || 'Файл',
+            local_url: item.url,
+        };
+    }
+
+    function appendOptimisticUpload(item, caption, form, sendOpts) {
+        const now = new Date();
+        const message = {
+            id: 'upload-' + item.sendKey,
+            client_send_key: item.sendKey,
+            text: caption || '',
+            text_html: '',
+            time: now.toLocaleTimeString('ru-RU', {
+                hour: '2-digit', minute: '2-digit',
+            }),
+            date_label: 'Сегодня',
+            outgoing: true,
+            messenger_name: form.dataset.messenger || 'Telegram',
+            tg_read: null,
+            pinned: false,
+            deleted: false,
+            delivery_status: 'uploading',
+            delivery_error: '',
+            upload_progress: 0,
+            attachments: [optimisticAttachment(item)],
+            reactions: [],
+            edits: [],
+        };
+        activeUploads.set(item.sendKey, {
+            item, message, caption,
+            destinationKey: uploadDestinationKey(
+                form.dataset.contactId, form.dataset.messenger,
+                currentTopicId),
+            sendOpts: Object.assign({}, sendOpts || {}),
+        });
+        const container = document.getElementById('messages-container');
+        if (container) {
+            patchMessagesContainer(container, combinedMessages());
+            scrollToBottom();
+        }
+        return message;
+    }
+
+    function updateOptimisticUpload(item, patch) {
+        const upload = activeUploads.get(item.sendKey);
+        if (!upload) return;
+        Object.assign(upload.message, patch || {});
+        const row = document.querySelector(
+            '.bubble-row[data-client-send-key="'
+            + cssEscapeValue(item.sendKey) + '"]');
+        if (row) syncMessageRowState(row, upload.message);
+    }
+
+    function updateOptimisticUploadProgress(item, percent) {
+        updateOptimisticUpload(item, {
+            delivery_status: 'uploading', upload_progress: percent,
+        });
+    }
+
+    function settleOptimisticUpload(item, data) {
+        const upload = activeUploads.get(item.sendKey);
+        if (!upload) return;
+        activeUploads.delete(item.sendKey);
+        if (data && data.scheduled) {
+            const row = document.querySelector(
+                '.bubble-row[data-client-send-key="'
+                + cssEscapeValue(item.sendKey) + '"]');
+            if (row) row.remove();
+        } else if (data && data.id
+                && upload.destinationKey === currentUploadDestinationKey()) {
+            const message = Object.assign({}, upload.message, data, {
+                id: data.id,
+                outgoing: true,
+                client_send_key: item.sendKey,
+                tg_read: data.tg_read == null ? null : data.tg_read,
+                delivery_status: data.delivery_status || 'sending',
+                delivery_error: data.delivery_error || '',
+                attachments: data.attachments || [],
+            });
+            const index = currentMessages.findIndex(
+                m => String(m.id) === String(message.id));
+            if (index >= 0) currentMessages[index] = message;
+            else currentMessages.push(message);
+            const container = document.getElementById('messages-container');
+            if (container) patchMessagesContainer(container, combinedMessages());
+        }
+        if (item.url) URL.revokeObjectURL(item.url);
+    }
+
+    function failOptimisticUpload(item) {
+        updateOptimisticUpload(item, {
+            delivery_status: 'failed',
+            delivery_error: item.lastError || 'Не удалось отправить',
+        });
+    }
+
+    async function transmitOptimisticUpload(item, caption, form, sendOpts) {
+        updateOptimisticUpload(item, {
+            delivery_status: 'uploading', delivery_error: '',
+            upload_progress: 0,
+        });
+        await preparePendingImage(item);
+        const data = await sendFile(form, item, caption, Object.assign({
+            deferClear: true,
+            controlsLocked: true,
+            silentFailure: true,
+            clientSendKey: item.sendKey,
+            onProgress: percent => updateOptimisticUploadProgress(
+                item, percent),
+        }, sendOpts || {}));
+        if (data) {
+            updateOptimisticUpload(item, {
+                delivery_status: data.scheduled ? 'sent' : 'sending',
+                upload_progress: 100,
+            });
+            settleOptimisticUpload(item, data);
+            pollMessages();
+            return true;
+        }
+        failOptimisticUpload(item);
+        return false;
     }
 
     async function sendFiles(form) {
@@ -8737,51 +9202,87 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (!items.length) return;
         const ta = form.querySelector('#composer-text');
         const caption = ta ? ta.value.trim() : '';
-        if (!startComposerSend(form)) return;
-        try {
-            for (let i = 0; i < items.length; i++) {
-                const item = await preparePendingImage(items[i]);
-                const ok = await sendFile(form, item,
-                    i === 0 ? caption : '',
-                    {
-                        deferClear: true,
-                        controlsLocked: true,
-                        clientSendKey: item.sendKey
-                            || makeClientSendKey('file'),
-                    });
-                if (!ok) {
-                    mediaDraftIndex = 0;
-                    showMediaDraft();
-                    showPreview();
-                    return;
-                }
-                const pendingIndex = pendingFiles.indexOf(item);
-                if (pendingIndex >= 0) {
-                    const sent = pendingFiles.splice(pendingIndex, 1)[0];
-                    if (sent && sent.url) URL.revokeObjectURL(sent.url);
-                }
-                // Подпись ушла только с первым фото. Если второе не
-                // загрузится, повторная попытка не продублирует подпись.
-                if (i === 0 && ta) {
-                    ta.value = '';
-                    ta.style.height = '';
-                }
-            }
-            form.classList.remove('has-text');
-            if (window.__skillwoodResetSendFlags) {
-                window.__skillwoodResetSendFlags(form);
-            }
-            clearPreview();
-            clearClientSendKey(form);
-            clearReply();
-            if (pendingForward) {
-                clearForward();
-                pollMessages();
-            }
-        } finally {
-            finishComposerSend(form);
+        const sendOpts = {
+            replyTo: replyTarget ? replyTarget.id : '',
+            forwardMessageId: pendingForward ? pendingForward.id : '',
+            silent: !!form.querySelector('input[name="silent"][value="1"]'),
+            scheduleAt: (form.querySelector(
+                'input[name="schedule_at"][type="hidden"]') || {}).value || '',
+        };
+
+        items.forEach(item => {
+            item.sendKey = item.sendKey || makeClientSendKey('file');
+        });
+        // Сразу возвращаем пользователя в чат. Object URL не освобождаем:
+        // он нужен оптимистичному сообщению до ответа сервера.
+        pendingFiles = [];
+        mediaDraftIndex = 0;
+        closeMediaDraft();
+        const preview = feed.querySelector('#composer-preview');
+        if (preview) { preview.hidden = true; preview.innerHTML = ''; }
+        if (ta) { ta.value = ''; ta.style.height = ''; }
+        form.classList.remove('has-text');
+        clearClientSendKey(form);
+        clearReply();
+        if (pendingForward) clearForward();
+        if (window.__skillwoodResetSendFlags) {
+            window.__skillwoodResetSendFlags(form);
+        }
+
+        items.forEach((item, index) => appendOptimisticUpload(
+            item, index === 0 ? caption : '', form, sendOpts));
+        // Даём браузеру закрыть окно и нарисовать превью до потенциально
+        // тяжёлого ресайза фотографии.
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        for (let i = 0; i < items.length; i++) {
+            await transmitOptimisticUpload(
+                items[i], i === 0 ? caption : '', form, sendOpts);
         }
     }
+
+    document.addEventListener('click', async event => {
+        const button = event.target.closest('.upload-retry');
+        if (!button) return;
+        const row = button.closest('.bubble-row[data-message-id]');
+        if (!row) return;
+        event.preventDefault();
+        const sendKey = row.dataset.clientSendKey || '';
+        const local = sendKey && activeUploads.get(sendKey);
+        button.disabled = true;
+        if (local) {
+            const retryForm = feed.querySelector('#composer');
+            if (!retryForm
+                    || local.destinationKey !== currentUploadDestinationKey()) {
+                button.disabled = false;
+                return;
+            }
+            await transmitOptimisticUpload(
+                local.item, local.caption, retryForm, local.sendOpts);
+            return;
+        }
+        const messageId = row.dataset.messageId;
+        try {
+            const response = await fetch(
+                '/messages/' + encodeURIComponent(messageId) + '/retry-send',
+                {method: 'POST', credentials: 'same-origin',
+                 headers: {'X-Requested-With': 'XMLHttpRequest'}});
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok) throw new Error(
+                data.detail || data.error || ('HTTP ' + response.status));
+            const failed = data.delivery_status === 'failed';
+            row.classList.toggle('delivery-failed', failed);
+            row.classList.toggle('pending', !failed);
+            const state = row.querySelector('.upload-state');
+            if (state) state.outerHTML = deliveryStatusHtml({
+                delivery_status: failed ? 'failed' : 'sending',
+                delivery_error: data.delivery_error || '',
+            });
+            pollMessages();
+        } catch (error) {
+            button.disabled = false;
+            alert('Не удалось повторить отправку: ' + error.message);
+        }
+    });
 
     feed.addEventListener('submit', function(e) {
         const form = e.target.closest('#composer');
@@ -11044,10 +11545,18 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     const countEl = document.getElementById('sb-count');
     const cancelBtn = document.getElementById('sb-cancel');
     const fwdBtn = document.getElementById('sb-forward');
+    const deleteBtn = document.getElementById('sb-delete');
+    const deleteMenu = document.getElementById('selection-delete-menu');
     if (!bar) return;
 
     const selected = new Set();
     let active = false;
+
+    function selectedRow(id) {
+        return Array.from(document.querySelectorAll(
+            '.bubble-row[data-message-id]')).find(
+                row => String(row.dataset.messageId) === String(id)) || null;
+    }
 
     function getContainer() {
         return document.getElementById('messages-container');
@@ -11055,7 +11564,16 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function refresh() {
         countEl.textContent = selected.size + ' выбрано';
-        fwdBtn.disabled = selected.size === 0;
+        const rows = Array.from(selected).map(selectedRow);
+        fwdBtn.disabled = selected.size === 0 || rows.some(
+            row => !row || row.dataset.messenger !== 'Telegram');
+        if (deleteBtn) deleteBtn.disabled = selected.size === 0;
+        const allButton = deleteMenu && deleteMenu.querySelector(
+            '[data-scope="all"]');
+        if (allButton) {
+            allButton.hidden = rows.some(row => !row
+                || row.dataset.canDeleteAll !== '1');
+        }
     }
 
     function enter(initialMsgId) {
@@ -11075,15 +11593,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         c && c.querySelectorAll('.bubble-row.selected').forEach(
             r => r.classList.remove('selected'));
         bar.hidden = true;
+        if (deleteMenu) deleteMenu.hidden = true;
         selected.clear();
         active = false;
     }
 
     function toggle(msgId) {
-        const row = document.querySelector(
-            '.bubble-row[data-message-id="' + msgId + '"]');
-        // Не-Telegram — пропускаем тихо: bulk-forward требует tg_message_id.
-        if (!row || row.dataset.messenger !== 'Telegram') return;
+        const row = selectedRow(msgId);
+        if (!row) return;
         if (selected.has(msgId)) {
             selected.delete(msgId);
             row.classList.remove('selected');
@@ -11114,6 +11631,77 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             window.openForwardModal(Array.from(selected));
         }
     });
+    if (deleteBtn && deleteMenu) {
+        deleteBtn.addEventListener('click', event => {
+            event.stopPropagation();
+            if (!selected.size) return;
+            deleteMenu.hidden = !deleteMenu.hidden;
+            if (!deleteMenu.hidden) {
+                const rect = deleteBtn.getBoundingClientRect();
+                const menuRect = deleteMenu.getBoundingClientRect();
+                deleteMenu.style.left = Math.max(8, Math.min(
+                    window.innerWidth - menuRect.width - 8,
+                    rect.right - menuRect.width)) + 'px';
+                deleteMenu.style.top = Math.max(8,
+                    rect.top - menuRect.height - 8) + 'px';
+            }
+        });
+        deleteMenu.addEventListener('click', async event => {
+            const action = event.target.closest('button[data-scope]');
+            if (!action || !selected.size) return;
+            event.stopPropagation();
+            const scope = action.dataset.scope || 'self';
+            deleteMenu.hidden = true;
+            const forAll = scope === 'all';
+            const ok = window.confirmDialog
+                ? await window.confirmDialog({
+                    title: forAll
+                        ? 'Удалить у всех?' : 'Удалить у меня?',
+                    text: 'Будет удалено сообщений: ' + selected.size + '.',
+                    okLabel: 'Удалить', cancelLabel: 'Отмена', danger: true,
+                })
+                : window.confirm('Удалить выбранные сообщения?');
+            if (!ok) return;
+            const ids = Array.from(selected);
+            action.disabled = true;
+            try {
+                const response = await fetch('/messages/delete-bulk', {
+                    method: 'POST', credentials: 'same-origin',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                    },
+                    body: JSON.stringify({ids, scope}),
+                });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok || !data.ok) {
+                    throw new Error(data.detail || data.error
+                        || ('HTTP ' + response.status));
+                }
+                const deleted = new Set((data.deleted_ids || ids)
+                    .map(id => String(id)));
+                deleted.forEach(id => {
+                    const row = selectedRow(id);
+                    if (row) row.remove();
+                });
+                exit();
+                if (window.__skillwoodPollMessages) {
+                    window.__skillwoodPollMessages();
+                }
+            } catch (error) {
+                alert('Не удалось удалить сообщения: ' + error.message);
+            } finally {
+                action.disabled = false;
+            }
+        });
+        document.addEventListener('click', event => {
+            if (!deleteMenu.hidden
+                    && !deleteMenu.contains(event.target)
+                    && event.target !== deleteBtn) {
+                deleteMenu.hidden = true;
+            }
+        });
+    }
     document.addEventListener('keydown', (e) => {
         if (active && e.key === 'Escape') exit();
     });
@@ -12101,7 +12689,6 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             begin(info.btn, info.event);
         }, HOLD_TO_RECORD_MS);
     });
-
     document.addEventListener('pointermove', (e) => {
         if (pendingPress && !activeForm) {
             const dx0 = e.clientX - pendingPress.event.clientX;

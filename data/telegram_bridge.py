@@ -27,6 +27,10 @@ _clients = {}
 _handler_registered = False
 _handler_registered_users = set()
 _refresh_task = None
+_file_send_semaphore = None
+_file_send_semaphore_loop = None
+_pending_file_sends = 0
+_pending_file_sends_lock = threading.Lock()
 # chat_id диалогов, сообщения из которых мост игнорирует. Сейчас muted-чаты
 # не попадают сюда: они синхронизируются с Contact.muted, но не теряются.
 _skip_chat_ids = set()
@@ -42,6 +46,9 @@ _ARCHIVE_CACHE_TTL = 120
 # чтобы не записать их повторно, когда Telegram пришлёт их обратно
 # как исходящее событие.
 _recent_self_sent = []
+# Точные Telegram-id отправленных web-медиа. В отличие от подписи (часто
+# пустой) такой ключ не может случайно поглотить нативную отправку пользователя.
+_recent_self_sent_ids = []
 # chat_id -> typing state. Старый формат float ещё поддерживается ниже:
 # {expires: monotonic, authors: {user_id_or_name: display_name}}.
 _typing = {}
@@ -411,6 +418,12 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
     from data.attachments import Attachment
     from data.crypto import encrypt_bytes
 
+    existing = (db.query(Attachment)
+                .filter(Attachment.user_id == user_id,
+                        Attachment.message_id == message_id).first())
+    if existing is not None:
+        return existing
+
     root = _media_root()
     rel_dir = str(user_id)
     os.makedirs(os.path.join(root, rel_dir), exist_ok=True)
@@ -438,6 +451,7 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
     )
     db.add(att)
     db.commit()
+    return att
 
 
 async def _download_media_payload(msg, kind, user_id=None):
@@ -549,11 +563,16 @@ async def _handle_message(event, user_id=None, client=None):
                 MessengerHandle.messenger_name == "Telegram",
                 MessengerHandle.tg_chat_id == event.chat_id).all()]
             if handle_ids:
-                exists = db.query(_Messages.id).filter(
+                exists = db.query(
+                    _Messages.id, _Messages.delivery_status).filter(
                     _Messages.user_id == _normalize_user_id(user_id),
                     _Messages.tg_message_id == int(tg_message_id_for_dupe),
                     _Messages.handle_id.in_(handle_ids)).first()
-                if exists is not None:
+                # `scheduled` — скрытая idempotency-запись. Реальное эхо
+                # должно пройти в record_message, который превратит её в
+                # видимое отправленное сообщение и сохранит стабильный id.
+                if (exists is not None
+                        and exists.delivery_status != 'scheduled'):
                     return
         finally:
             db.close()
@@ -587,6 +606,10 @@ async def _handle_message(event, user_id=None, client=None):
         # Ни текста, ни понятного вложения (например системное событие).
         return
 
+    if is_out and _pop_self_sent_id(
+            event.chat_id, getattr(msg, "id", None), user_id):
+        return
+
     # Своё сообщение, отправленное через веб-панель, уже записано
     # маршрутом /send — не дублируем его эхом из Telegram.
     if is_out and _pop_self_sent(event.chat_id, text):
@@ -613,6 +636,12 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     data = None
     if download_media:
         kind, data = await _download_media_payload(msg, kind, user_id=user_id)
+
+    # send_file мог завершиться, пока handler ждал download_media. Проверяем
+    # точный id повторно прямо перед записью в БД.
+    if is_out and _pop_self_sent_id(
+            chat_id, getattr(msg, "id", None), user_id):
+        return
 
     if not text:
         text = _media_placeholder(_media_kind(msg), msg)
@@ -741,6 +770,31 @@ def _pop_self_sent(chat_id, text) -> bool:
             continue
         kept.append((rec_cid, rec_text, ts))
     _recent_self_sent[:] = kept
+    return found
+
+
+def _pop_self_sent_id(chat_id, message_id, user_id=None) -> bool:
+    """Снимает маркер конкретного Telegram-сообщения, отправленного web."""
+    if message_id is None:
+        return False
+    now = time.monotonic()
+    try:
+        owner = _normalize_user_id(user_id)
+        cid = int(chat_id)
+        mid = int(message_id)
+    except (TypeError, ValueError):
+        return False
+    found = False
+    kept = []
+    for rec_owner, rec_cid, rec_mid, ts in _recent_self_sent_ids:
+        if now - ts >= 120:
+            continue
+        if (not found and rec_owner == owner
+                and rec_cid == cid and rec_mid == mid):
+            found = True
+            continue
+        kept.append((rec_owner, rec_cid, rec_mid, ts))
+    _recent_self_sent_ids[:] = kept
     return found
 
 
@@ -2716,7 +2770,14 @@ async def _send_file(chat_id, data, filename, caption, reply_to=None,
     if schedule:
         kwargs["schedule"] = schedule
     sent = await client.send_file(int(chat_id), bio, **kwargs)
-    return getattr(sent, "id", None)
+    sent_id = getattr(sent, "id", None)
+    if not schedule and sent_id is not None:
+        now = time.monotonic()
+        _recent_self_sent_ids[:] = [
+            row for row in _recent_self_sent_ids if now - row[3] < 120]
+        _recent_self_sent_ids.append((
+            _normalize_user_id(user_id), int(chat_id), int(sent_id), now))
+    return sent_id
 
 
 def send_file(chat_id, data, filename, caption="", reply_to=None,
@@ -2733,11 +2794,104 @@ def send_file(chat_id, data, filename, caption="", reply_to=None,
                  timeout=120)
 
 
+async def _queued_file_send(chat_id, data, filename, caption, callback,
+                            reply_to=None, parse_mode=None, silent=False,
+                            schedule=None, user_id=None, voice_note=False):
+    """Фоновая оболочка: Telethon работает в своём loop, callback с БД —
+    в worker-thread, чтобы не задерживать входящие Telegram-события."""
+    sent_id = None
+    error = None
+    try:
+        global _file_send_semaphore, _file_send_semaphore_loop
+        running_loop = asyncio.get_running_loop()
+        if (_file_send_semaphore is None
+                or _file_send_semaphore_loop is not running_loop):
+            try:
+                limit = max(1, int(os.environ.get(
+                    "TELEGRAM_FILE_SEND_CONCURRENCY", "2")))
+            except ValueError:
+                limit = 2
+            _file_send_semaphore = asyncio.Semaphore(limit)
+            _file_send_semaphore_loop = running_loop
+        async with _file_send_semaphore:
+            payload = (await asyncio.to_thread(data)
+                       if callable(data) else data)
+            if payload is None:
+                raise RuntimeError("Локальный файл отправки недоступен")
+            sent_id = await asyncio.wait_for(
+                _send_file(
+                    chat_id, payload, filename, caption, reply_to, parse_mode,
+                    silent, schedule, user_id=user_id,
+                    voice_note=voice_note),
+                timeout=180)
+    except Exception as exc:  # noqa: BLE001
+        error = exc
+        _state_for(user_id)["error"] = f"media send: {exc}"
+    if callback is not None:
+        callback_error = None
+        for attempt in range(3):
+            try:
+                await asyncio.to_thread(callback, sent_id, error)
+                callback_error = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                callback_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.2 * (attempt + 1))
+        if callback_error is not None:
+            _state_for(user_id)["error"] = (
+                f"media callback: {callback_error}")
+    return sent_id
+
+
+def queue_file(chat_id, data, filename, caption="", callback=None,
+               reply_to=None, parse_mode=None, silent=False, schedule=None,
+               user_id=None, voice_note=False):
+    """Ставит медиа в уже существующий Telethon-loop и сразу возвращает
+    concurrent Future. HTTP-запрос не ждёт загрузку файла в Telegram."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    _ensure_loop()
+    try:
+        max_pending = max(1, int(os.environ.get(
+            "TELEGRAM_FILE_QUEUE_MAX", "8")))
+    except ValueError:
+        max_pending = 8
+    global _pending_file_sends
+    with _pending_file_sends_lock:
+        if _pending_file_sends >= max_pending:
+            raise RuntimeError(
+                "Очередь медиа заполнена — повторите отправку позже")
+        _pending_file_sends += 1
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _queued_file_send(
+                chat_id, data, filename, caption, callback, reply_to,
+                parse_mode, silent, schedule, user_id=user_id,
+                voice_note=voice_note),
+            _loop)
+    except Exception:
+        with _pending_file_sends_lock:
+            _pending_file_sends = max(0, _pending_file_sends - 1)
+        raise
+
+    def _release_slot(_future):
+        global _pending_file_sends
+        with _pending_file_sends_lock:
+            _pending_file_sends = max(0, _pending_file_sends - 1)
+
+    future.add_done_callback(_release_slot)
+    return future
+
+
 async def _delete_message(chat_id, message_id, revoke, user_id=None):
     client = await _get_client(user_id)
     if not await client.is_user_authorized():
         raise RuntimeError("Telegram не авторизован")
-    await client.delete_messages(int(chat_id), [int(message_id)],
+    message_ids = (message_id if isinstance(message_id, (list, tuple, set))
+                   else [message_id])
+    await client.delete_messages(int(chat_id),
+                                 [int(value) for value in message_ids],
                                  revoke=bool(revoke))
 
 
@@ -2748,6 +2902,16 @@ def delete_message(chat_id, message_id, revoke=True, user_id=None):
     if not is_configured() or not telethon_available():
         raise RuntimeError("Telegram-мост не настроен")
     _call(_delete_message(chat_id, message_id, revoke, user_id=user_id))
+
+
+def delete_messages(chat_id, message_ids, revoke=True, user_id=None):
+    """Удаляет несколько сообщений одним Telegram-запросом."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    ids = [int(message_id) for message_id in message_ids]
+    if not ids:
+        return
+    _call(_delete_message(chat_id, ids, revoke, user_id=user_id))
 
 
 async def _edit_message(chat_id, message_id, text, user_id=None):

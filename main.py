@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
                    request, send_from_directory, session)
+from sqlalchemy import or_
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from data import db_sessions
@@ -185,7 +186,7 @@ def _cached_tg_avatar_photo_id(contact):
 
 def _enrich_with_last_message(db, contacts):
     from data.contacts import Contact, MessengerHandle
-    from sqlalchemy import func, or_
+    from sqlalchemy import func
 
     creator_ids = _creator_user_ids(db)
     if not contacts:
@@ -235,6 +236,8 @@ def _enrich_with_last_message(db, contacts):
             )
             .join(Messages, Messages.handle_id == MessengerHandle.id)
             .filter(MessengerHandle.contact_id.in_(contact_ids))
+            .filter(or_(Messages.delivery_status.is_(None),
+                        Messages.delivery_status != 'scheduled'))
             .subquery()
         )
         last_rows = (
@@ -843,9 +846,48 @@ def _attach_replies(db, msgs, contact):
     return msgs
 
 
+_last_delivery_recovery_at = 0.0
+
+
+def _recover_interrupted_media_deliveries(force=False):
+    """После перезапуска in-memory Telethon-задач уже нет.
+
+    Не трогаем свежие задачи другого WSGI worker. Очередь ограничена восемью
+    задачами и каждая попытка имеет timeout, поэтому 15 минут — безопасный
+    порог: более старая запись уже потеряла исполняющую coroutine.
+    """
+    global _last_delivery_recovery_at
+    now_mono = time.monotonic()
+    if not force and now_mono - _last_delivery_recovery_at < 60:
+        return 0
+    _last_delivery_recovery_at = now_mono
+    db = db_sessions.create_session()
+    try:
+        cutoff = datetime.now() - timedelta(minutes=15)
+        candidates = db.query(Messages).filter(
+            Messages.delivery_status == 'sending',
+            Messages.tg_message_id.is_(None)).all()
+        rows = [msg for msg in candidates
+                if (msg.delivery_started_at or msg.created_at) is not None
+                and (msg.delivery_started_at or msg.created_at) < cutoff]
+        if not rows:
+            return 0
+        for msg in rows:
+            msg.delivery_status = 'failed'
+            msg.delivery_error = (
+                'Отправка прервалась из-за перезапуска сервера. '
+                'Нажмите «Повторить».')
+            msg.delivery_started_at = None
+        db.commit()
+        return len(rows)
+    finally:
+        db.close()
+
+
 def create_app(db_path: str = "db/blogs.db") -> Flask:
     _configure_timezone()
     db_sessions.global_init(db_path)
+    _recover_interrupted_media_deliveries(force=True)
 
     app = Flask(__name__)
     app.config['SECRET_KEY'] = 'yandexlyceum_secret_key'
@@ -908,6 +950,97 @@ def _message_attachment_rows(db, message_id: int):
             .all())
 
 
+def _purge_message_attachments(db, message_ids):
+    """Удаляет только вложения сообщений и возвращает их media paths."""
+    from data.attachments import Attachment
+    from data.stickers import SavedSticker
+
+    ids = [int(value) for value in message_ids]
+    if not ids:
+        return []
+    attachments = (db.query(Attachment)
+                   .filter(Attachment.message_id.in_(ids)).all())
+    stored_paths = [row.stored_path for row in attachments
+                    if row.stored_path]
+    attachment_ids = [row.id for row in attachments]
+    if attachment_ids:
+        (db.query(SavedSticker)
+         .filter(SavedSticker.source_attachment_id.in_(attachment_ids))
+         .update({SavedSticker.source_attachment_id: None},
+                 synchronize_session=False))
+    for row in attachments:
+        db.delete(row)
+    return stored_paths
+
+
+def _purge_message_dependencies(db, messages):
+    """Удаляет строки, принадлежащие сообщениям; возвращает media paths.
+
+    Файлы удаляются вызывающей стороной только после успешного commit, чтобы
+    ошибка БД не оставила живую запись без вложения на диске.
+    """
+    from data.edits import MessageEdit
+    from data.pending_replies import PendingReply
+    from data.reactions import MessageReaction
+
+    ids = [int(message.id) for message in messages if message is not None]
+    if not ids:
+        return []
+    stored_paths = _purge_message_attachments(db, ids)
+    (db.query(MessageReaction)
+     .filter(MessageReaction.message_id.in_(ids))
+     .delete(synchronize_session=False))
+    (db.query(MessageEdit)
+     .filter(MessageEdit.message_id.in_(ids))
+     .delete(synchronize_session=False))
+    (db.query(PendingReply)
+     .filter(PendingReply.reply_to_message_id.in_(ids))
+     .update({PendingReply.reply_to_message_id: None},
+             synchronize_session=False))
+    (db.query(Messages)
+     .filter(Messages.reply_to_message_id.in_(ids))
+     .update({Messages.reply_to_message_id: None},
+             synchronize_session=False))
+    for message in messages:
+        db.delete(message)
+    return stored_paths
+
+
+def _remove_media_paths(stored_paths):
+    from data.attachments import Attachment
+    from data.direct import DirectAttachment
+    from data.stickers import SavedSticker
+
+    root = os.path.abspath(_media_root())
+    db = db_sessions.create_session()
+    try:
+        for stored_path in set(stored_paths or ()):
+            # Один encrypted blob может одновременно принадлежать зеркалу
+            # Synapse, пересланной копии и сохранённому стикеру.
+            still_used = (
+                db.query(Attachment.id).filter(
+                    Attachment.stored_path == stored_path).first()
+                or db.query(DirectAttachment.id).filter(
+                    DirectAttachment.stored_path == stored_path).first()
+                or db.query(SavedSticker.id).filter(
+                    SavedSticker.stored_path == stored_path).first()
+            )
+            if still_used:
+                continue
+            full = os.path.abspath(os.path.join(root, stored_path))
+            try:
+                if os.path.commonpath([root, full]) != root:
+                    continue
+                if os.path.isfile(full):
+                    os.remove(full)
+            except (OSError, ValueError):
+                # БД уже очищена; оставшийся файл безопаснее убрать следующей
+                # плановой чисткой, чем откатывать удаление сообщения в UI.
+                continue
+    finally:
+        db.close()
+
+
 def _client_send_key(raw_value: str | None) -> str | None:
     key = (raw_value or '').strip()
     if not key:
@@ -927,7 +1060,14 @@ def _manual_send_duplicate_payload(db, msg, user_id: int) -> dict:
         'text': getattr(msg, 'visible_text', msg.text or ''),
         'text_html': getattr(msg, 'visible_text_html', None),
         'messenger_name': msg.messenger_name,
+        'client_send_key': getattr(msg, 'notification_dedup_key', None),
         'media': bool(getattr(msg, 'media', [])),
+        'queued': getattr(msg, 'delivery_status', None) == 'sending',
+        'scheduled': getattr(msg, 'delivery_schedule_at', None) is not None,
+        'when': (msg.delivery_schedule_at.isoformat()
+                 if getattr(msg, 'delivery_schedule_at', None) else None),
+        'delivery_status': getattr(msg, 'delivery_status', None),
+        'delivery_error': getattr(msg, 'delivery_error', None),
         'fwd_from': getattr(msg, 'fwd_quote', None),
         'attachments': [
             {'id': a.id, 'kind': a.kind, 'mime': a.mime,
@@ -936,6 +1076,84 @@ def _manual_send_duplicate_payload(db, msg, user_id: int) -> dict:
             for a in getattr(msg, 'media', [])
         ],
     }
+
+
+def _finish_telegram_media_delivery(message_id: int, sent_id,
+                                    error) -> None:
+    """Callback фоновой Telethon-отправки. Работает вне Flask request,
+    поэтому использует отдельную SQLAlchemy-сессию."""
+    db = db_sessions.create_session()
+    stale_paths = []
+    try:
+        msg = db.query(Messages).filter(Messages.id == message_id).first()
+        if msg is None:
+            return
+        if error is None:
+            telegram_id = int(sent_id) if sent_id is not None else None
+            # Если NewMessage-эхо успело сохраниться раньше callback,
+            # оставляем исходную queued-запись и убираем только дубль.
+            duplicate = None
+            if telegram_id is not None:
+                duplicate = (db.query(Messages)
+                             .filter(Messages.user_id == msg.user_id,
+                                     Messages.handle_id == msg.handle_id,
+                                     Messages.tg_message_id == telegram_id,
+                                     Messages.id != msg.id)
+                             .order_by(Messages.id.asc()).first())
+            if duplicate is not None:
+                msg.tg_read_at = duplicate.tg_read_at
+                msg.tg_topic_id = duplicate.tg_topic_id
+                msg.tg_topic_title = duplicate.tg_topic_title
+                stale_paths = _purge_message_dependencies(db, [duplicate])
+            msg.tg_message_id = telegram_id
+            msg.delivery_status = 'sent'
+            msg.delivery_error = None
+            msg.delivery_started_at = None
+        else:
+            msg.delivery_status = 'failed'
+            msg.delivery_error = str(error)[:1000]
+            msg.delivery_started_at = None
+        db.commit()
+        _remove_media_paths(stale_paths)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _finish_scheduled_media_delivery(message_id: int, sent_id,
+                                     error) -> None:
+    """После принятия schedule оставляет скрытую idempotency-запись.
+
+    При ошибке сохраняем сообщение/файл со статусом failed для retry.
+    При успехе файл больше не нужен локально, но строка Messages с
+    client_send_key должна жить до реального NewMessage: повтор потерянного
+    HTTP-ответа тогда не создаст вторую отложенную отправку.
+    """
+    db = db_sessions.create_session()
+    stored_paths = []
+    try:
+        msg = db.query(Messages).filter(Messages.id == message_id).first()
+        if msg is None:
+            return
+        if error is not None:
+            msg.delivery_status = 'failed'
+            msg.delivery_error = str(error)[:1000]
+            msg.delivery_started_at = None
+        else:
+            msg.tg_message_id = int(sent_id) if sent_id is not None else None
+            msg.delivery_status = 'scheduled'
+            msg.delivery_error = None
+            msg.delivery_started_at = None
+            stored_paths = _purge_message_attachments(db, [msg.id])
+        db.commit()
+        _remove_media_paths(stored_paths)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 def _attach_message_file(db, user_id: int, message_id: int, kind: str,
@@ -3162,7 +3380,9 @@ def register_routes(app: Flask) -> None:
                      if tg_chat_handle is not None else None)
         msgs = (
             db.query(Messages)
-            .filter(Messages.handle_id.in_(handle_ids))
+            .filter(Messages.handle_id.in_(handle_ids),
+                    or_(Messages.delivery_status.is_(None),
+                        Messages.delivery_status != 'scheduled'))
             .order_by(Messages.created_at.desc().nullslast(), Messages.id.desc())
             .limit(80)
             .all()
@@ -3193,6 +3413,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'unauthorized'}), 401
         from data.contacts import Contact, MessengerHandle
         from data.matching import display_author
+        _recover_interrupted_media_deliveries()
         db = get_db()
         user_id = session['user_id']
         _kick_telegram_recent_sync(user_id)
@@ -3246,7 +3467,10 @@ def register_routes(app: Flask) -> None:
             before_id = int(request.args.get('before_id') or 0)
         except ValueError:
             before_id = 0
-        msgs_q = db.query(Messages).filter(Messages.handle_id.in_(handle_ids))
+        msgs_q = db.query(Messages).filter(
+            Messages.handle_id.in_(handle_ids),
+            or_(Messages.delivery_status.is_(None),
+                Messages.delivery_status != 'scheduled'))
         if topic_id_int is not None:
             msgs_q = msgs_q.filter(Messages.tg_topic_id == topic_id_int)
         if before_id:
@@ -3310,10 +3534,15 @@ def register_routes(app: Flask) -> None:
             'messages': [
                 {'id': m.id, 'sender': m.sender, 'text': m.visible_text,
                  'text_html': m.visible_text_html,
-                 'messenger_name': m.messenger_name, 'time': m.time,
+                 'messenger_name': m.messenger_name,
+                 'client_send_key': getattr(
+                     m, 'notification_dedup_key', None),
+                 'time': m.time,
                  'date_label': _message_date_label(m.created_at),
                  'outgoing': bool(m.outgoing),
                  'tg_read': bool(m.tg_read_at) if m.tg_message_id else None,
+                 'delivery_status': getattr(m, 'delivery_status', None),
+                 'delivery_error': getattr(m, 'delivery_error', None),
                  'deleted': bool(m.deleted_at),
                  'pinned': bool(m.pinned_at),
                  'ttl_seconds': m.tg_ttl_seconds,
@@ -3684,25 +3913,11 @@ def register_routes(app: Flask) -> None:
                     _opts_f['silent'] = True
                 if schedule_at is not None:
                     _opts_f['schedule'] = schedule_at
-                try:
-                    sent_id = telegram_bridge.send_file(
-                        tg_handle.tg_chat_id, data,
-                        upload_name, text,
-                        **_md_kw_f, **reply_kw_tg, **_opts_f,
-                        user_id=user_id, voice_note=voice_upload)
-                except Exception as exc:  # noqa: BLE001
-                    return jsonify({'error': 'send_failed',
-                                    'detail': str(exc)}), 502
-                # Scheduled: Telegram пришлёт echo только когда оно реально
-                # отправится, поэтому локально записывать его сейчас не нужно.
-                if schedule_at is not None:
-                    return jsonify({'ok': True, 'scheduled': True,
-                                    'when': schedule_at.isoformat()})
-                # СРАЗУ пишем локальную запись Messages + Attachment —
-                # echo для своих media от Telethon приходит не всегда
-                # (зависит от версии/настроек клиента). Anti-dupe по
-                # tg_message_id в `_handle_message` защитит от двойной
-                # записи, если echo всё-таки прилетит.
+                # Медиа сначала надёжно сохраняем в локальный outbox и сразу
+                # возвращаем браузеру. Медленный upload в Telegram продолжит
+                # Telethon-loop — так AlwaysData/Safari не обрывают длинный
+                # HTTP-запрос с ложным `Load failed`. Для schedule запись
+                # удалится только после подтверждения Telegram.
                 mime = upload_mime
                 if voice_upload:
                     kind = 'voice'
@@ -3730,38 +3945,80 @@ def register_routes(app: Flask) -> None:
                     handle_id=tg_handle.id,
                     created_at=now,
                     outgoing=True,
-                    tg_message_id=sent_id,
+                    tg_message_id=None,
                     reply_to_message_id=(
                         reply_target.id if reply_target else None),
                     notification_dedup_key=client_send_key,
+                    delivery_status='sending',
+                    delivery_error=None,
+                    delivery_caption=text or '',
+                    delivery_silent=bool(silent),
+                    delivery_reply_to_tg_id=reply_kw_tg.get('reply_to'),
+                    delivery_schedule_at=schedule_at,
+                    delivery_started_at=now,
                 )
                 db.add(msg)
                 db.flush()  # нужно msg.id для Attachment
-                # Шифруем и кладём файл в media/<user_id>/<uuid>.enc —
-                # тот же контракт, что у моста (_save_attachment).
-                from data.attachments import Attachment as _Attachment
-                from data.crypto import encrypt_bytes as _encrypt_bytes
-                import uuid as _uuid
-                root = (os.environ.get('SKILLWOOD_MEDIA_ROOT')
-                        or os.path.join(os.getcwd(), 'media'))
-                rel_dir = str(user_id)
-                os.makedirs(os.path.join(root, rel_dir), exist_ok=True)
-                stored_path = f"{rel_dir}/{_uuid.uuid4().hex}.enc"
-                with open(os.path.join(root, stored_path), 'wb') as f:
-                    f.write(_encrypt_bytes(data))
-                att = _Attachment(
-                    user_id=user_id,
-                    message_id=msg.id,
-                    kind=kind,
-                    mime=mime or None,
-                    original_name=upload_name or None,
-                    stored_path=stored_path,
-                    size=len(data),
-                )
-                db.add(att)
+                stored_path = _store_media_bytes(user_id, data)
+                att = _attach_message_file(
+                    db, user_id, msg.id, kind, mime, upload_name,
+                    stored_path, len(data))
                 db.commit()
-                return jsonify({'ok': True, 'media': True, 'id': msg.id,
-                                'forwarded': forward_source is not None})
+
+                message_id = msg.id
+                response_payload = {
+                    'ok': True,
+                    'queued': True,
+                    'scheduled': schedule_at is not None,
+                    'when': (schedule_at.isoformat()
+                             if schedule_at is not None else None),
+                    'media': True,
+                    'id': msg.id,
+                    'time': msg.time,
+                    'date_label': _message_date_label(msg.created_at),
+                    'text': md_plain or '',
+                    'text_html': md_html,
+                    'messenger_name': 'Telegram',
+                    'delivery_status': 'sending',
+                    'delivery_error': None,
+                    'forwarded': forward_source is not None,
+                    'attachments': [{
+                        'id': att.id,
+                        'kind': att.kind,
+                        'mime': att.mime,
+                        'name': att.original_name,
+                        'has_sticker_pack': False,
+                    }],
+                }
+
+                def _delivery_done(sent_id, error):
+                    if schedule_at is not None:
+                        _finish_scheduled_media_delivery(
+                            message_id, sent_id, error)
+                    else:
+                        _finish_telegram_media_delivery(
+                            message_id, sent_id, error)
+
+                def _load_delivery_file(path=stored_path):
+                    payload = _read_media_bytes(path)
+                    if payload is None:
+                        raise RuntimeError(
+                            'Локальный файл отправки недоступен')
+                    return payload
+
+                try:
+                    telegram_bridge.queue_file(
+                        tg_handle.tg_chat_id, _load_delivery_file,
+                        upload_name, text,
+                        callback=_delivery_done,
+                        **_md_kw_f, **reply_kw_tg, **_opts_f,
+                        user_id=user_id, voice_note=voice_upload)
+                except Exception as exc:  # noqa: BLE001
+                    _finish_telegram_media_delivery(message_id, None, exc)
+                    response_payload['delivery_status'] = 'failed'
+                    response_payload['delivery_error'] = str(exc)[:1000]
+
+                return jsonify(response_payload), 202
 
             # parse_mode передаём ТОЛЬКО когда нашли markdown — иначе
             # ломаются унаследованные моки в тестах, у которых сигнатура
@@ -5306,6 +5563,174 @@ def register_routes(app: Flask) -> None:
         db.commit()
         return jsonify({'ok': True, 'reactions': snapshot})
 
+    @app.route('/messages/delete-bulk', methods=['POST'])
+    def messages_delete_bulk():
+        """Удаляет выбранные сообщения одним действием.
+
+        scope=self удаляет Telegram-сообщения только у владельца и чистит
+        локальные записи. scope=all разрешён только когда все выбранные
+        сообщения исходящие и принадлежат одному Telegram-чату.
+        """
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+
+        raw_ids = (request.form.get('ids')
+                   or (request.get_json(silent=True) or {}).get('ids')
+                   or '')
+        if isinstance(raw_ids, list):
+            raw_parts = raw_ids
+        else:
+            raw_parts = str(raw_ids).split(',')
+        try:
+            requested_ids = []
+            seen = set()
+            for raw in raw_parts:
+                value = int(str(raw).strip())
+                if value not in seen:
+                    requested_ids.append(value)
+                    seen.add(value)
+        except (TypeError, ValueError):
+            return jsonify({'error': 'bad_ids'}), 400
+        if not requested_ids:
+            return jsonify({'error': 'no_ids'}), 400
+        if len(requested_ids) > 200:
+            return jsonify({'error': 'too_many_ids', 'limit': 200}), 400
+
+        db = get_db()
+        user_id = session['user_id']
+        rows = (db.query(Messages)
+                .filter(Messages.user_id == user_id,
+                        Messages.id.in_(requested_ids)).all())
+        by_id = {row.id: row for row in rows}
+        if len(by_id) != len(requested_ids):
+            return jsonify({'error': 'some_not_found'}), 404
+        messages = [by_id[value] for value in requested_ids]
+        scope = (request.form.get('scope')
+                 or (request.get_json(silent=True) or {}).get('scope')
+                 or 'self')
+        for_all = scope == 'all'
+        if for_all and any(not bool(msg.outgoing) for msg in messages):
+            return jsonify({'error': 'cannot_delete_for_all'}), 400
+
+        telegram_groups = {}
+        for msg in messages:
+            if msg.tg_message_id is None:
+                if for_all:
+                    return jsonify({'error': 'not_telegram'}), 400
+                continue
+            chat_id = _msg_tg_chat_id(db, msg)
+            if chat_id is None:
+                if for_all:
+                    return jsonify({'error': 'no_chat'}), 400
+                continue
+            telegram_groups.setdefault(chat_id, []).append(msg.tg_message_id)
+        if for_all and len(telegram_groups) != 1:
+            return jsonify({'error': 'mixed_sources'}), 400
+
+        tg_deleted = True if telegram_groups else None
+        for chat_id, tg_ids in telegram_groups.items():
+            try:
+                telegram_bridge.delete_messages(
+                    chat_id, tg_ids, revoke=for_all, user_id=user_id)
+            except Exception:  # noqa: BLE001
+                tg_deleted = False
+        if for_all and tg_deleted is False:
+            db.rollback()
+            return jsonify({'error': 'telegram_delete_failed'}), 502
+        stored_paths = _purge_message_dependencies(db, messages)
+        db.commit()
+        _remove_media_paths(stored_paths)
+        return jsonify({
+            'ok': True,
+            'deleted_ids': requested_ids,
+            'tg_deleted': tg_deleted,
+            'scope': 'all' if for_all else 'self',
+        })
+
+    @app.route('/messages/<int:message_id>/retry-send', methods=['POST'])
+    def message_retry_media_send(message_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+
+        db = get_db()
+        user_id = session['user_id']
+        msg = db.query(Messages).filter(
+            Messages.id == message_id,
+            Messages.user_id == user_id,
+            Messages.outgoing.is_(True)).first()
+        if msg is None:
+            return jsonify({'error': 'not_found'}), 404
+        if msg.tg_message_id is not None:
+            return jsonify({'ok': True, 'already_sent': True}), 200
+        if getattr(msg, 'delivery_status', None) != 'failed':
+            return jsonify({'error': 'not_retryable'}), 400
+        chat_id = _msg_tg_chat_id(db, msg)
+        attachment = next(iter(_message_attachment_rows(db, msg.id)), None)
+        if chat_id is None or attachment is None:
+            return jsonify({'error': 'media_missing'}), 400
+        data = _read_media_bytes(attachment.stored_path)
+        if data is None:
+            return jsonify({'error': 'media_missing'}), 404
+        del data
+
+        caption = getattr(msg, 'delivery_caption', None) or ''
+        silent = bool(getattr(msg, 'delivery_silent', False))
+        reply_to_tg_id = getattr(msg, 'delivery_reply_to_tg_id', None)
+        stored_schedule_at = getattr(msg, 'delivery_schedule_at', None)
+        retry_schedule_at = (stored_schedule_at
+                             if stored_schedule_at is not None
+                             and stored_schedule_at > datetime.now()
+                             else None)
+        claimed = (db.query(Messages)
+                   .filter(Messages.id == message_id,
+                           Messages.user_id == user_id,
+                           Messages.tg_message_id.is_(None),
+                           Messages.delivery_status == 'failed')
+                   .update({Messages.delivery_status: 'sending',
+                            Messages.delivery_error: None,
+                            Messages.delivery_started_at: datetime.now()},
+                           synchronize_session=False))
+        db.commit()
+        if claimed != 1:
+            return jsonify({'error': 'already_retrying'}), 409
+
+        def _delivery_done(sent_id, error):
+            if retry_schedule_at is not None:
+                _finish_scheduled_media_delivery(message_id, sent_id, error)
+            else:
+                _finish_telegram_media_delivery(message_id, sent_id, error)
+
+        stored_path = attachment.stored_path
+
+        def _load_delivery_file(path=stored_path):
+            payload = _read_media_bytes(path)
+            if payload is None:
+                raise RuntimeError('Локальный файл отправки недоступен')
+            return payload
+
+        response_status = 'sending'
+        response_error = None
+        try:
+            telegram_bridge.queue_file(
+                chat_id, _load_delivery_file,
+                attachment.original_name or 'file',
+                caption,
+                callback=_delivery_done, user_id=user_id,
+                reply_to=reply_to_tg_id,
+                parse_mode='md' if _has_markdown(caption) else None,
+                silent=silent,
+                schedule=retry_schedule_at,
+                voice_note=attachment.kind == 'voice')
+        except Exception as exc:  # noqa: BLE001
+            _finish_telegram_media_delivery(message_id, None, exc)
+            response_status = 'failed'
+            response_error = str(exc)[:1000]
+        return jsonify({'ok': True, 'queued': True,
+                        'delivery_status': response_status,
+                        'delivery_error': response_error}), 202
+
     @app.route('/messages/<int:message_id>/delete', methods=['POST'])
     def message_delete(message_id):
         if not session.get('user_id'):
@@ -5339,8 +5764,9 @@ def register_routes(app: Flask) -> None:
                 tg_deleted = True
             except Exception:  # noqa: BLE001
                 tg_deleted = False
-        db.delete(msg)
+        stored_paths = _purge_message_dependencies(db, [msg])
         db.commit()
+        _remove_media_paths(stored_paths)
         return jsonify({'ok': True, 'tg_deleted': tg_deleted,
                         'scope': 'all' if for_all else 'self'})
 

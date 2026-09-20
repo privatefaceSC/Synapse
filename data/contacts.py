@@ -404,6 +404,53 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
             and tg_chat_type in ('group', 'channel')):
         handle.tg_forum_checked_at = _dt.datetime.now()
 
+    # Telegram может доставить одно и то же NewMessage несколькими путями
+    # (live update, catch-up, echo нашей фоновой отправки). Точный id внутри
+    # одного handle надёжнее текста/подписи и не теряет нативные сообщения.
+    if tg_message_id is not None:
+        existing = (db.query(Messages)
+                    .filter(Messages.user_id == user_id,
+                            Messages.handle_id == handle.id,
+                            Messages.tg_message_id == tg_message_id)
+                    .order_by(Messages.id.asc()).first())
+        if existing is not None:
+            # После принятия отложенного файла Telegram мы сохраняем
+            # невидимую запись с client_send_key, чтобы повтор HTTP-запроса
+            # не поставил тот же файл в расписание второй раз. Когда в
+            # назначенный момент приходит реальный NewMessage, превращаем
+            # эту запись в обычное сообщение, сохраняя её стабильный id.
+            if existing.delivery_status == 'scheduled':
+                now = _dt.datetime.now()
+                existing.sender = (author if author is not None
+                                   else sender_raw)
+                existing.text = text
+                existing.text_html = text_html
+                existing.time = now.strftime("%H:%M")
+                existing.created_at = now
+                existing.outgoing = outgoing
+                existing.reply_to_message_id = None
+                if reply_to_tg_id is not None:
+                    prior = (db.query(Messages)
+                             .filter(Messages.handle_id == handle.id,
+                                     Messages.tg_message_id ==
+                                     reply_to_tg_id)
+                             .first())
+                    if prior is not None:
+                        existing.reply_to_message_id = prior.id
+                existing.tg_ttl_seconds = tg_ttl_seconds
+                existing.fwd_from_name = fwd_from_name
+                existing.fwd_from_tg_chat_id = fwd_from_tg_chat_id
+                existing.fwd_from_messenger = fwd_from_messenger
+                existing.fwd_from_synapse_user_id = fwd_from_synapse_user_id
+                existing.author_tg_chat_id = author_tg_chat_id
+                existing.tg_topic_id = tg_topic_id
+                existing.tg_topic_title = tg_topic_title
+                existing.delivery_status = 'sent'
+                existing.delivery_error = None
+                existing.delivery_started_at = None
+            db.commit()
+            return existing
+
     if notification_dedup_key is not None:
         existing = (db.query(Messages)
                     .filter(Messages.user_id == user_id,
