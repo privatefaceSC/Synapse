@@ -1494,6 +1494,59 @@
     .bubble .media-video-load small {
         color: #b8c7d9; font-size: 11px; line-height: 1.25;
     }
+    /* Локальный кэш Telegram может очистить старое фото/видео. В таком
+       состоянии намеренно не создаём img/video/audio с src: браузер не
+       должен сам скачивать тяжёлый файл при прокрутке чата. */
+    .bubble .media-remote-wrap {
+        width: min(300px, 72vw); min-height: 150px;
+        display: flex; align-items: center; justify-content: center;
+        margin-top: 8px; overflow: hidden; border-radius: 16px;
+        background:
+            radial-gradient(circle at 45% 25%, rgba(84,165,255,.18), transparent 48%),
+            rgba(8,15,28,.78);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.09);
+    }
+    .bubble .media-remote-wrap.kind-voice,
+    .bubble .media-remote-wrap.kind-audio,
+    .bubble .media-remote-wrap.kind-file {
+        min-height: 112px;
+    }
+    .bubble .media-remote-wrap .media-video-load {
+        margin: 12px;
+    }
+    .media-remote-load[disabled] {
+        cursor: default; opacity: .72;
+    }
+    .media-remote-load.is-loading .media-video-load-ico {
+        animation: media-restore-spin .8s linear infinite;
+    }
+    @keyframes media-restore-spin { to { transform: rotate(360deg); } }
+    .gallery-cell.remote {
+        min-height: 118px; padding: 8px;
+        display: flex; align-items: center; justify-content: center;
+        background:
+            radial-gradient(circle at 45% 25%, rgba(84,165,255,.18), transparent 52%),
+            rgba(8,15,28,.88);
+    }
+    .gallery-cell.remote .media-remote-load,
+    .gallery-item .media-remote-load {
+        width: 100%; min-height: 82px; padding: 10px;
+        display: flex; flex-direction: column; align-items: center;
+        justify-content: center; gap: 5px;
+        border: 1px solid rgba(255,255,255,.14); border-radius: 12px;
+        background: rgba(15,23,42,.78); color: #e5efff;
+        text-align: center; cursor: pointer;
+    }
+    .gallery-cell.remote .media-video-load-ico,
+    .gallery-item .media-video-load-ico {
+        width: 34px; height: 34px; border-radius: 50%;
+        display: inline-flex; align-items: center; justify-content: center;
+        background: linear-gradient(135deg, #3c94ff, #246ce0);
+    }
+    .gallery-cell.remote .media-remote-load small,
+    .gallery-item .media-remote-load small {
+        color: #b8c7d9; font-size: 11px;
+    }
     .bubble .media-video-ui {
         position: absolute; left: 10px; right: 10px; bottom: 9px; z-index: 3;
         display: flex; align-items: center; gap: 8px;
@@ -1535,12 +1588,14 @@
     .bubble.media-only .media-video-wrap,
     .bubble.media-only .media-audio,
     .bubble.media-only .media-file,
+    .bubble.media-only .media-remote-wrap,
     .bubble.media-only .sticker-img,
     .bubble.media-only .media-vnote-wrap,
     .bubble.media-caption .media-img,
     .bubble.media-caption .media-video-wrap,
     .bubble.media-caption .media-audio,
     .bubble.media-caption .media-file,
+    .bubble.media-caption .media-remote-wrap,
     .bubble.media-caption .sticker-img,
     .bubble.media-caption .media-vnote-wrap {
         margin-top: 0;
@@ -4138,8 +4193,8 @@
                         {% if messages %}
                             {% set msg_ns = namespace(prev_key='') %}
                             {% for m in messages %}
-                            {% set media_only = m.media and not m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
-                            {% set media_caption = m.media and m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
+                            {% set media_only = (m.media or m.media_restore_kind) and not m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
+                            {% set media_caption = (m.media or m.media_restore_kind) and m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
                             {% set msg_author = 'Вы' if m.outgoing else (m.display_author or m.sender) %}
                             {% set msg_key = ('out:' if m.outgoing else 'in:') ~ msg_author %}
                             {% set msg_grouped = msg_ns.prev_key == msg_key %}
@@ -4198,7 +4253,25 @@
                                     </div>
                                     {% endif %}
                                     {% for a in m.media %}
-                                        {% if a.kind == 'sticker' %}
+                                        {% set media_availability = a.availability|default('local', true) %}
+                                        {% if media_availability != 'local' %}
+                                        {% set media_title = 'Фото' if a.kind == 'image' else ('Видео' if a.kind == 'video' else ('Видеосообщение' if a.kind == 'video_note' else ('Голосовое сообщение' if a.kind == 'voice' else ('Аудио' if a.kind == 'audio' else 'Файл')))) %}
+                                        {% set media_icon = '📷' if a.kind == 'image' else ('🎥' if a.kind == 'video' else ('⏺' if a.kind == 'video_note' else ('🎤' if a.kind == 'voice' else ('🎵' if a.kind == 'audio' else '📎')))) %}
+                                        <span class="media-remote-wrap kind-{{ a.kind }}">
+                                            <button type="button"
+                                                    class="media-video-load media-remote-load"
+                                                    {% if media_availability == 'remote' %}
+                                                    data-restore-url="/attachments/{{ a.id }}/restore"
+                                                    data-media-url="/attachments/{{ a.id }}"
+                                                    data-media-kind="{{ a.kind }}"
+                                                    title="Загрузить {{ media_title|lower }}"
+                                                    {% else %}disabled title="Файл недоступен"{% endif %}>
+                                                <span class="media-video-load-ico">{{ media_icon }}</span>
+                                                <strong>{{ media_title }}</strong>
+                                                <small>{% if media_availability == 'remote' %}Не загружено · нажмите, чтобы загрузить{% else %}Файл недоступен{% endif %}</small>
+                                            </button>
+                                        </span>
+                                        {% elif a.kind == 'sticker' %}
                                         {% if a.mime and a.mime.startswith('video/') %}
                                         <video class="sticker-video" src="/attachments/{{ a.id }}"
                                                data-sticker-attachment-id="{{ a.id }}"
@@ -4257,6 +4330,21 @@
                                              loading="lazy" alt="фото">
                                         {% endif %}
                                     {% endfor %}
+                                    {% if m.media_restore_kind and not m.media %}
+                                    {% set media_title = 'Фото' if m.media_restore_kind == 'image' else ('Видео' if m.media_restore_kind == 'video' else ('Видеосообщение' if m.media_restore_kind == 'video_note' else ('Голосовое сообщение' if m.media_restore_kind == 'voice' else ('Аудио' if m.media_restore_kind == 'audio' else 'Файл')))) %}
+                                    {% set media_icon = '📷' if m.media_restore_kind == 'image' else ('🎥' if m.media_restore_kind == 'video' else ('⏺' if m.media_restore_kind == 'video_note' else ('🎤' if m.media_restore_kind == 'voice' else ('🎵' if m.media_restore_kind == 'audio' else '📎')))) %}
+                                    <span class="media-remote-wrap kind-{{ m.media_restore_kind }}">
+                                        <button type="button"
+                                                class="media-video-load media-remote-load"
+                                                data-restore-url="/messages/{{ m.id }}/telegram-media/restore"
+                                                data-media-kind="{{ m.media_restore_kind }}"
+                                                title="Загрузить {{ media_title|lower }}">
+                                            <span class="media-video-load-ico">{{ media_icon }}</span>
+                                            <strong>{{ media_title }}</strong>
+                                            <small>Не загружено · нажмите, чтобы загрузить</small>
+                                        </button>
+                                    </span>
+                                    {% endif %}
                                     {% if m.visible_text %}
                                     <div class="text">{{ m.visible_text }}</div>
                                     {% endif %}
@@ -7151,7 +7239,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 r.emoji + ':' + (r.count || 0) + ':' + (r.mine ? 1 : 0)
             ).join(','),
             (m.attachments || []).map(a =>
-                [a.id, a.kind, a.mime, a.name].join(':')).join(','),
+                [a.id, a.kind, a.mime, a.name, a.availability || 'local']
+                    .join(':')).join(','),
+            m.media_restore_kind || '',
         ]));
     }
 
@@ -7455,6 +7545,40 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    function mediaKindInfo(kind) {
+        const normalized = kind === 'photo' ? 'image' : (kind || 'file');
+        const byKind = {
+            image: ['📷', 'Фото'],
+            video: ['🎥', 'Видео'],
+            video_note: ['⏺', 'Видеосообщение'],
+            voice: ['🎤', 'Голосовое сообщение'],
+            audio: ['🎵', 'Аудио'],
+            file: ['📎', 'Файл'],
+        };
+        const info = byKind[normalized] || byKind.file;
+        return {kind: normalized, icon: info[0], title: info[1]};
+    }
+
+    function unavailableMediaHtml(kind, availability, restoreUrl, mediaUrl) {
+        const info = mediaKindInfo(kind);
+        const canRestore = availability === 'remote' && !!restoreUrl;
+        const attrs = canRestore
+            ? ` data-restore-url="${escapeHtml(restoreUrl)}"`
+              + (mediaUrl
+                  ? ` data-media-url="${escapeHtml(mediaUrl)}"` : '')
+              + ` data-media-kind="${escapeHtml(info.kind)}"`
+            : ' disabled';
+        const hint = canRestore
+            ? 'Не загружено · нажмите, чтобы загрузить'
+            : 'Файл недоступен';
+        return `<span class="media-remote-wrap kind-${escapeHtml(info.kind)}">`
+            + `<button type="button" class="media-video-load media-remote-load"${attrs}`
+            + ` title="${canRestore ? 'Загрузить' : 'Недоступно'}: ${escapeHtml(info.title)}">`
+            + `<span class="media-video-load-ico">${info.icon}</span>`
+            + `<strong>${escapeHtml(info.title)}</strong>`
+            + `<small>${hint}</small></button></span>`;
+    }
+
     function messageRenderKey(message) {
         const m = message || {};
         // Статусы доставки/прочтения обновляются точечно и намеренно не
@@ -7464,10 +7588,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             m.messenger_name || '', m.display_author || m.sender || '',
             m.author_avatar_url || '', m.author_profile_url || '',
             m.reply_to || null, m.fwd_from || null, m.ttl_seconds || null,
+            m.media_restore_kind || '',
             m.edits || [], m.reactions || [],
             (m.attachments || []).map(a => [
                 a.id || '', a.kind || '', a.mime || '', a.name || '',
-                a.local_url || '', !!a.has_sticker_pack,
+                a.local_url || '', a.availability || 'local',
+                !!a.has_sticker_pack,
             ]),
         ]);
     }
@@ -7529,11 +7655,19 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     Откройте ${escapeHtml(m.messenger_name)}, чтобы прочесть целиком.
                   </div>`
                 : '';
-            const media = (m.attachments || [])
+            let media = (m.attachments || [])
                 .map(a => {
                     const mediaUrl = a.local_url
                         ? escapeHtml(a.local_url)
                         : `/attachments/${a.id}`;
+                    const availability = a.availability || 'local';
+                    if (availability !== 'local') {
+                        return unavailableMediaHtml(
+                            a.kind, availability,
+                            availability === 'remote'
+                                ? `/attachments/${a.id}/restore` : '',
+                            mediaUrl);
+                    }
                     if (a.kind === 'sticker') return renderSticker(a, m);
                     if (a.kind === 'video_note')
                         return `<span class="media-vnote-wrap deferred" `
@@ -7573,6 +7707,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     return `<img class="media-img" src="${mediaUrl}" data-full="${mediaUrl}" loading="lazy" alt="фото">`;
                 })
                 .join('');
+            if (!media && m.media_restore_kind && m.id) {
+                media = unavailableMediaHtml(
+                    m.media_restore_kind, 'remote',
+                    `/messages/${m.id}/telegram-media/restore`, '');
+            }
             const author = m.outgoing
                 ? 'Вы'
                 : (m.display_author || m.sender || '');
@@ -7667,13 +7806,15 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     ).join('')
                   + '</div>'
                 : '';
-            const mediaOnly = (m.attachments || []).length
+            const hasMedia = !!((m.attachments || []).length
+                || m.media_restore_kind);
+            const mediaOnly = hasMedia
                 && !m.deleted
                 && !m.reply_to
                 && !m.fwd_from
                 && !m.text
                 && !m.text_html;
-            const mediaCaption = (m.attachments || []).length
+            const mediaCaption = hasMedia
                 && !m.deleted
                 && !m.reply_to
                 && !m.fwd_from
@@ -8111,6 +8252,115 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
     window.__skillwoodPollMessages = pollMessages;
+
+    // Старое Telegram-медиа хранится как лёгкая карточка без src. Только
+    // явный клик пользователя запускает POST-восстановление, после чего
+    // обычный poll заменяет карточку настоящим фото/плеером.
+    document.addEventListener('click', async function(e) {
+        const button = e.target.closest
+            && e.target.closest('.media-remote-load[data-restore-url]');
+        if (!button || button.dataset.restoreBusy === '1') return;
+        e.preventDefault();
+        e.stopPropagation();
+        const restoreUrl = button.dataset.restoreUrl || '';
+        if (!restoreUrl) return;
+        const previousHtml = button.innerHTML;
+        button.dataset.restoreBusy = '1';
+        button.disabled = true;
+        button.classList.add('is-loading');
+        const icon = button.querySelector('.media-video-load-ico');
+        const hint = button.querySelector('small');
+        if (icon) icon.textContent = '↻';
+        if (hint) hint.textContent = 'Загружаю из Telegram…';
+        try {
+            let response = null;
+            let data = {};
+            let ready = false;
+            for (let attempt = 0; attempt < 120; attempt += 1) {
+                response = await fetch(restoreUrl, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'X-Requested-With': 'XMLHttpRequest'},
+                });
+                data = await response.json().catch(() => ({}));
+                if (response.status === 202 || data.status === 'loading') {
+                    if (hint) hint.textContent = 'Загружаю из Telegram…';
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
+                }
+                if (!response.ok || data.ok === false) {
+                    throw new Error(data.detail || data.error
+                        || ('HTTP ' + response.status));
+                }
+                ready = true;
+                break;
+            }
+            if (!ready) throw new Error('Telegram слишком долго загружает файл');
+
+            const mediaUrl = button.dataset.mediaUrl
+                || data.url || data.attachment_url
+                || (data.attachment && data.attachment.url) || '';
+            const galleryKind = button.dataset.galleryKind || '';
+            const galleryCell = button.closest('.gallery-cell.remote');
+            const galleryItem = button.closest('.gallery-item');
+            if (galleryCell && mediaUrl) {
+                galleryCell.classList.remove('remote');
+                if (galleryKind === 'image' || galleryKind === 'photo') {
+                    galleryCell.dataset.full = mediaUrl;
+                    galleryCell.innerHTML = '<img src="'
+                        + escapeHtml(mediaUrl)
+                        + '" loading="lazy" alt="">';
+                } else if (galleryKind === 'video'
+                           || galleryKind === 'video_note') {
+                    galleryCell.classList.add('video');
+                    galleryCell.dataset.video = mediaUrl;
+                    galleryCell.innerHTML = '<span class="ico">🎥</span>';
+                }
+            } else if (galleryItem && mediaUrl
+                       && (galleryKind === 'voice'
+                           || galleryKind === 'audio')) {
+                const audio = document.createElement('audio');
+                audio.controls = true;
+                audio.preload = 'none';
+                audio.src = mediaUrl;
+                audio.style.width = '100%';
+                audio.style.marginTop = '6px';
+                button.replaceWith(audio);
+            } else if (galleryItem && mediaUrl && galleryKind === 'file') {
+                const download = document.createElement('a');
+                download.className = 'media-remote-load';
+                download.href = mediaUrl;
+                download.download = '';
+                download.innerHTML = '<span class="media-video-load-ico">📎</span>'
+                    + '<strong>Файл загружен</strong>'
+                    + '<small>Нажмите, чтобы скачать</small>';
+                button.replaceWith(download);
+            } else {
+                if (hint) hint.textContent = 'Загружено';
+            }
+
+            // availability входит в сигнатуру, поэтому новая локальная
+            // версия перерисуется, даже если текст сообщения не менялся.
+            lastSig = '';
+            await pollMessages();
+            scheduleMessagePoll(0);
+        } catch (err) {
+            if (!button.isConnected) return;
+            button.innerHTML = previousHtml;
+            button.disabled = false;
+            const retryHint = button.querySelector('small');
+            if (retryHint) {
+                retryHint.textContent = 'Не удалось загрузить · нажмите ещё раз';
+            }
+            button.title = (err && err.message)
+                ? err.message : 'Не удалось загрузить файл';
+        } finally {
+            if (button.isConnected) {
+                button.classList.remove('is-loading');
+                button.dataset.restoreBusy = '0';
+            }
+        }
+    });
 
     window.addEventListener('online', () => {
         if (currentContactId == null) return;
@@ -13336,10 +13586,42 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    function galleryUnavailableMedia(it, kind) {
+        const availability = it.availability || 'local';
+        if (availability === 'local') return '';
+        const info = {
+            image: ['📷', 'Фото'], video: ['🎥', 'Видео'],
+            video_note: ['⏺', 'Видеосообщение'],
+            voice: ['🎤', 'Голосовое сообщение'], audio: ['🎵', 'Аудио'],
+            file: ['📎', 'Файл'],
+        }[kind] || ['📎', 'Файл'];
+        const restoreUrl = it.restore_url
+            || (it.id ? '/attachments/' + it.id + '/restore' : '');
+        const canRestore = availability === 'remote' && !!restoreUrl;
+        const attrs = canRestore
+            ? ' data-restore-url="' + escapeHtml(restoreUrl) + '"'
+              + ' data-media-url="' + escapeHtml(it.url || '') + '"'
+              + ' data-gallery-kind="' + escapeHtml(kind) + '"'
+            : ' disabled';
+        return '<button type="button" class="media-remote-load"' + attrs + '>'
+            + '<span class="media-video-load-ico">' + info[0] + '</span>'
+            + '<strong>' + escapeHtml(info[1]) + '</strong>'
+            + '<small>' + (canRestore
+                ? 'Не загружено · нажмите, чтобы загрузить'
+                : 'Файл недоступен') + '</small></button>';
+    }
+
     function renderGalleryBody(bucket, items) {
         if (bucket === 'photo' || bucket === 'video') {
             // Грид-плитки: фото — превью, видео — иконка ▶ поверх плейсхолдера.
             const cells = items.map(it => {
+                const kind = it.kind || (bucket === 'photo' ? 'image' : 'video');
+                const unavailable = galleryUnavailableMedia(it, kind);
+                if (unavailable) {
+                    return '<div class="gallery-cell remote"'
+                        + ' data-msg-id="' + it.message_id + '">'
+                        + unavailable + '</div>';
+                }
                 if (bucket === 'photo') {
                     return '<div class="gallery-cell" data-full="'
                         + escapeHtml(it.url) + '">'
@@ -13382,6 +13664,18 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const date = it.created_at
                 ? new Date(it.created_at).toLocaleDateString('ru-RU') : '';
             const meta = [sizeKb, date].filter(Boolean).join(' · ');
+            const unavailable = galleryUnavailableMedia(
+                it, it.kind || bucket);
+            if (unavailable) {
+                return '<div class="gallery-item">'
+                    + '<span class="gi-ico">'
+                    + (labelByBucket[bucket] || '📎') + '</span>'
+                    + '<div style="min-width:0; flex:1;">'
+                    + '<div class="gi-name">' + escapeHtml(name) + '</div>'
+                    + (meta ? '<div class="gi-meta">' + escapeHtml(meta)
+                              + '</div>' : '')
+                    + unavailable + '</div></div>';
+            }
             if (bucket === 'voice' || bucket === 'audio') {
                 return '<div class="gallery-item gallery-audio">'
                     + '<span class="gi-ico">'

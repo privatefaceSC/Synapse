@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 import re
@@ -5,6 +6,7 @@ import shutil
 import string
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 import base64
@@ -20,6 +22,9 @@ from data import db_sessions
 from data.users import Messages, User
 
 
+logger = logging.getLogger(__name__)
+
+
 _AVATAR_PALETTE = [
     "#ef4444", "#f59e0b", "#10b981", "#3b82f6",
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
@@ -29,6 +34,24 @@ CREATOR_USER_IDS = {1}
 LEGACY_CREATOR_USERNAMES = {"ivan", "dfyzkjcmrjd_cdby"}
 CREATOR_BADGE = "Создатель"
 STICKER_COLLECTION_DISABLED_DETAIL = "Функция в разработке."
+
+
+_TELEGRAM_RESTORABLE_MEDIA_KINDS = {
+    'image', 'video', 'video_note', 'voice', 'audio', 'file',
+}
+_MEDIA_RESTORE_WORKERS = 2
+_MEDIA_RESTORE_MAX_PENDING = 8
+_MEDIA_RESTORE_MAX_PER_USER = 2
+_media_restore_locks = tuple(threading.Lock() for _ in range(64))
+_media_restore_slots = threading.BoundedSemaphore(_MEDIA_RESTORE_WORKERS)
+_media_restore_jobs = {}
+_media_restore_jobs_guard = threading.Lock()
+_MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
+
+
+def _media_restore_lock(key):
+    """Полосатые локи без бесконечного роста dict на старых message id."""
+    return _media_restore_locks[hash(key) % len(_media_restore_locks)]
 
 
 def _sticker_collection_disabled_response():
@@ -161,7 +184,65 @@ def _contact_avatar_url(contact):
 def _media_rel_path_exists(rel_path):
     if not rel_path:
         return False
-    return os.path.exists(os.path.join(_media_root(), rel_path))
+    try:
+        return os.path.isfile(_safe_media_full_path(rel_path))
+    except (OSError, ValueError):
+        return False
+
+
+def _safe_media_full_path(rel_path):
+    """Преобразует DB-relative media path, не позволяя выйти из media/."""
+    if not rel_path or os.path.isabs(str(rel_path)):
+        raise ValueError('Некорректный путь медиа')
+    root = os.path.realpath(_media_root())
+    full = os.path.realpath(os.path.join(root, str(rel_path)))
+    try:
+        inside = os.path.commonpath([root, full]) == root
+    except ValueError as exc:
+        raise ValueError('Некорректный путь медиа') from exc
+    if not inside:
+        raise ValueError('Некорректный путь медиа')
+    return full
+
+
+def _telegram_placeholder_media_kind(text):
+    """Определяет тип старого Telegram-медиа, у которого не осталось row.
+
+    Такие записи появились до введения ленивого кэша: в БД есть только
+    технический текст, но Telegram message id всё ещё позволяет вернуть файл.
+    """
+    # Только строки, которые сам bridge использовал как технические
+    # заглушки. По одному эмодзи определять нельзя: обычное сообщение
+    # «📷 фото с прогулки» иначе исчезнет и превратится в ложную кнопку.
+    return {
+        '📷 Фото': 'image',
+        '🎬 Видео': 'video',
+        '🎤 Голосовое сообщение': 'voice',
+        '🎙 Голосовое': 'voice',
+        '🎵 Аудио': 'audio',
+        '📎 Файл': 'file',
+        '📎 Вложение': 'file',
+    }.get((text or '').strip())
+
+
+def _telegram_media_is_restorable(message, kind):
+    return bool(
+        message is not None
+        and kind in _TELEGRAM_RESTORABLE_MEDIA_KINDS
+        and getattr(message, 'messenger_name', None) == 'Telegram'
+        and getattr(message, 'tg_message_id', None) is not None
+        and getattr(message, 'tg_ttl_seconds', None) is None
+        and getattr(message, 'deleted_at', None) is None
+        and getattr(message, 'delivery_status', None) in (None, 'sent')
+    )
+
+
+def _attachment_availability(attachment, message):
+    if _media_rel_path_exists(getattr(attachment, 'stored_path', None)):
+        return 'local'
+    if _telegram_media_is_restorable(message, getattr(attachment, 'kind', None)):
+        return 'remote'
+    return 'missing'
 
 
 def _cached_tg_avatar_photo_id(contact):
@@ -502,10 +583,24 @@ def _attach_media(db, msgs):
             by_msg.setdefault(a.message_id, []).append(a)
     for m in msgs:
         m.media = by_msg.get(m.id, [])
+        for attachment in m.media:
+            attachment.availability = _attachment_availability(attachment, m)
+            attachment.url = (f'/attachments/{attachment.id}'
+                              if attachment.availability == 'local' else None)
+            attachment.restore_url = (
+                f'/attachments/{attachment.id}/restore'
+                if attachment.availability == 'remote' else None)
+        restore_kind = _telegram_placeholder_media_kind(m.text)
+        if m.media or not _telegram_media_is_restorable(m, restore_kind):
+            restore_kind = None
+        m.media_restore_kind = restore_kind
+        m.media_restore_url = (
+            f'/messages/{m.id}/telegram-media/restore'
+            if restore_kind else None)
         # Если у сообщения есть вложение, а текст — это технический
         # плейсхолдер вида «📷 Фото», прячем его: само фото и так в bubble.
         # Реальная подпись остаётся как есть.
-        if m.media and is_media_placeholder(m.text):
+        if (m.media or m.media_restore_kind) and is_media_placeholder(m.text):
             m.visible_text = ''
             m.visible_text_html = None
         else:
@@ -972,14 +1067,253 @@ def _store_media_bytes(owner_id: int, data: bytes, subdir: str | None = None):
 
 def _read_media_bytes(stored_path: str) -> bytes | None:
     from data.crypto import decrypt_bytes
+    from cryptography.fernet import InvalidToken
 
     if not stored_path:
         return None
-    full = os.path.join(_media_root(), stored_path)
-    if not os.path.exists(full):
+    try:
+        full = _safe_media_full_path(stored_path)
+    except ValueError:
         return None
-    with open(full, 'rb') as f:
-        return decrypt_bytes(f.read())
+    try:
+        with open(full, 'rb') as f:
+            return decrypt_bytes(f.read())
+    except (OSError, ValueError, InvalidToken):
+        return None
+
+
+def _telegram_media_restore_handle(db, user_id, message, kind):
+    """Проверяет, что файл действительно можно повторно запросить у TG."""
+    from data.contacts import MessengerHandle
+
+    if message is None or message.user_id != user_id:
+        return None
+    if not _telegram_media_is_restorable(message, kind):
+        return None
+    handle = db.get(MessengerHandle, message.handle_id)
+    if (handle is None or handle.user_id != user_id
+            or handle.messenger_name != 'Telegram'
+            or handle.tg_chat_id is None):
+        return None
+    return handle
+
+
+def _restore_telegram_attachment(db, user_id, message, handle, attachment):
+    """Возвращает Telegram-файл в тот же cache path и Attachment id."""
+    from data import telegram_bridge
+    from data.attachments import Attachment
+
+    if _media_rel_path_exists(attachment.stored_path):
+        return attachment
+
+    message_id = int(message.id)
+    attachment_id = int(attachment.id)
+    tg_message_id = int(message.tg_message_id)
+    tg_chat_id = int(handle.tg_chat_id)
+    stored_path = attachment.stored_path
+    original_kind = attachment.kind
+    # Не держим SQLite read-транзакцию во время MTProto-запроса, который
+    # может длиться до 90 секунд. После сети всё перечитаем заново.
+    db.rollback()
+    result = telegram_bridge.download_message_media(
+        tg_chat_id, tg_message_id, user_id=user_id)
+    if not isinstance(result, dict):
+        raise telegram_bridge.TelegramMediaUnavailableError(
+            'Telegram не вернул медиафайл')
+    data = result.get('data')
+    kind = result.get('kind') or original_kind
+    if (kind not in _TELEGRAM_RESTORABLE_MEDIA_KINDS
+            or not isinstance(data, (bytes, bytearray)) or not data):
+        raise telegram_bridge.TelegramMediaUnavailableError(
+            'Telegram больше не отдаёт этот медиафайл')
+
+    # Сообщение могли удалить, пока Telegram отдавал байты. Перечитываем
+    # строки после новой транзакции и не создаём бесхозный encrypted-файл.
+    message = (db.query(Messages)
+               .filter(Messages.id == message_id,
+                       Messages.user_id == user_id).first())
+    attachment = (db.query(Attachment)
+                  .filter(Attachment.id == attachment_id,
+                          Attachment.user_id == user_id,
+                          Attachment.message_id == message_id).first())
+    handle = _telegram_media_restore_handle(db, user_id, message, kind)
+    if (attachment is None or handle is None
+            or attachment.stored_path != stored_path):
+        raise telegram_bridge.TelegramMediaUnavailableError(
+            'Сообщение было удалено во время загрузки')
+    if _media_rel_path_exists(stored_path):
+        return attachment
+
+    full_path = _safe_media_full_path(stored_path)
+    file_written = False
+    try:
+        _write_encrypted_media_path(full_path, bytes(data))
+        file_written = True
+        attachment.kind = kind
+        attachment.mime = result.get('mime') or attachment.mime
+        attachment.original_name = result.get('name') or attachment.original_name
+        attachment.size = int(result.get('size') or len(data))
+        db.commit()
+    except Exception:
+        db.rollback()
+        if file_written:
+            # Если delete успел закоммититься между повторной проверкой и
+            # нашим commit, удаляем blob лишь когда на него больше нет ссылок.
+            _remove_media_paths([stored_path])
+        raise
+    return attachment
+
+
+def _run_media_restore_job(job, user_id, message_id, attachment_id):
+    """Фоновая загрузка: долгий MTProto-запрос не держит WSGI worker."""
+    from data import db_sessions, telegram_bridge
+    from data.attachments import Attachment
+
+    db = db_sessions.create_session()
+    try:
+        # Не держим striped lock во время сетевого запроса (до 90 секунд):
+        # polling старого placeholder должен мгновенно получать 202.
+        # Повторную job уже дедуплицирует `_media_restore_jobs`, а запись
+        # файла атомарна через os.replace.
+        message = (db.query(Messages)
+                   .filter(Messages.id == message_id,
+                           Messages.user_id == user_id).first())
+        attachment = (db.query(Attachment)
+                      .filter(Attachment.id == attachment_id,
+                              Attachment.user_id == user_id,
+                              Attachment.message_id == message_id).first())
+        kind = attachment.kind if attachment is not None else None
+        handle = _telegram_media_restore_handle(
+            db, user_id, message, kind)
+        if attachment is None or handle is None:
+            raise telegram_bridge.TelegramMediaUnavailableError(
+                'Медиа больше нельзя получить из Telegram.')
+        attachment = _restore_telegram_attachment(
+            db, user_id, message, handle, attachment)
+        result = {
+            'ok': True,
+            'status': 'ready',
+            'attachment': {
+                'id': attachment.id,
+                'kind': attachment.kind,
+                'mime': attachment.mime,
+                'name': attachment.original_name,
+                'availability': 'local',
+                'url': f'/attachments/{attachment.id}',
+            },
+        }
+        with _media_restore_jobs_guard:
+            job['status'] = 'ready'
+            job['http_status'] = 200
+            job['result'] = result
+            # Готовность уже отражена самим файлом на диске. Не держим
+            # terminal job: следующий POST увидит local и сразу вернёт 200.
+            if _media_restore_jobs.get(job['key']) is job:
+                _media_restore_jobs.pop(job['key'], None)
+    except telegram_bridge.MediaStoreFullError as exc:
+        db.rollback()
+        with _media_restore_jobs_guard:
+            job['status'] = 'error'
+            job['http_status'] = 507
+            job['result'] = {'error': 'storage_full', 'detail': str(exc)}
+    except telegram_bridge.TelegramMediaUnavailableError as exc:
+        db.rollback()
+        with _media_restore_jobs_guard:
+            job['status'] = 'error'
+            job['http_status'] = 409
+            job['result'] = {'error': 'media_unavailable', 'detail': str(exc)}
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception(
+            'Telegram media restore failed for user_id=%s message_id=%s',
+            user_id, message_id)
+        with _media_restore_jobs_guard:
+            job['status'] = 'error'
+            job['http_status'] = 502
+            job['result'] = {
+                'error': 'telegram_unavailable',
+                'detail': ('Не удалось загрузить медиа из Telegram. '
+                           'Попробуйте ещё раз.'),
+            }
+    finally:
+        db.close()
+
+
+def _run_bounded_media_restore_job(job, user_id, message_id, attachment_id):
+    with _media_restore_slots:
+        _run_media_restore_job(job, user_id, message_id, attachment_id)
+
+
+def _queue_media_restore(user_id, message_id, attachment_id):
+    """Возвращает общую job для повторных кликов по одному сообщению."""
+    key = (int(user_id), int(message_id))
+    now = time.monotonic()
+    with _media_restore_jobs_guard:
+        for old_key, old_job in list(_media_restore_jobs.items()):
+            if (old_job.get('status') != 'loading'
+                    and now - old_job['started_at']
+                    > _MEDIA_RESTORE_JOB_TTL_SECONDS):
+                _media_restore_jobs.pop(old_key, None)
+        job = _media_restore_jobs.get(key)
+        if job is not None:
+            return key, job
+        loading_jobs = [
+            value for value in _media_restore_jobs.values()
+            if value.get('status') == 'loading'
+        ]
+        user_loading = sum(
+            1 for value in loading_jobs
+            if value.get('key', (None,))[0] == key[0]
+        )
+        if (len(loading_jobs) >= _MEDIA_RESTORE_MAX_PENDING
+                or user_loading >= _MEDIA_RESTORE_MAX_PER_USER):
+            return key, {
+                'key': key,
+                'status': 'error',
+                'http_status': 429,
+                'result': {
+                    'error': 'restore_queue_full',
+                    'detail': ('Сейчас загружается слишком много файлов. '
+                               'Дождитесь завершения и повторите.'),
+                },
+                'started_at': now,
+            }
+        job = {
+            'key': key,
+            'status': 'loading',
+            'http_status': 202,
+            'result': {'ok': True, 'status': 'loading'},
+            'started_at': now,
+        }
+        _media_restore_jobs[key] = job
+    try:
+        thread = threading.Thread(
+            target=_run_bounded_media_restore_job,
+            args=(job, int(user_id), int(message_id), int(attachment_id)),
+            name=f'tg-media-restore-{message_id}', daemon=True)
+        thread.start()
+    except RuntimeError:
+        with _media_restore_jobs_guard:
+            if _media_restore_jobs.get(key) is job:
+                _media_restore_jobs.pop(key, None)
+            job['status'] = 'error'
+            job['http_status'] = 503
+            job['result'] = {
+                'error': 'restore_unavailable',
+                'detail': 'Загрузка временно недоступна. Повторите позже.',
+            }
+    return key, job
+
+
+def _media_restore_job_response(key, job):
+    """Снимок job; завершённый результат отдаётся один раз."""
+    with _media_restore_jobs_guard:
+        status = job.get('status')
+        http_status = int(job.get('http_status') or 500)
+        result = dict(job.get('result') or {})
+        if status != 'loading' and _media_restore_jobs.get(key) is job:
+            _media_restore_jobs.pop(key, None)
+    return result, http_status
 
 
 def _message_attachment_rows(db, message_id: int):
@@ -1883,6 +2217,8 @@ def _save_direct_upload(db, owner_id: int, direct_message_id: int, upload,
 def _copy_message_attachments_to_direct(db, source_msg, direct_message_id: int):
     copied = []
     for att in _message_attachment_rows(db, source_msg.id):
+        if not _media_rel_path_exists(att.stored_path):
+            continue
         copied.append(_add_direct_attachment_ref(
             db, direct_message_id, att.kind, att.mime, att.original_name,
             att.stored_path, att.size,
@@ -3654,9 +3990,16 @@ def register_routes(app: Flask) -> None:
                  'fwd_from': m.fwd_quote,
                  'edits': getattr(m, 'edit_history', []),
                  'reactions': getattr(m, 'reactions', []),
+                 'media_restore_kind': getattr(
+                     m, 'media_restore_kind', None),
+                 'media_restore_url': getattr(
+                     m, 'media_restore_url', None),
                  'attachments': [{'id': a.id, 'kind': a.kind,
                                   'mime': a.mime,
                                   'name': a.original_name,
+                                  'availability': a.availability,
+                                  'url': a.url,
+                                  'restore_url': a.restore_url,
                                   'has_sticker_pack': (
                                       bool(a.sticker_pack_key)
                                       or m.messenger_name == 'Telegram')}
@@ -3817,9 +4160,11 @@ def register_routes(app: Flask) -> None:
                 if not direct_msg.text:
                     direct_msg.text = _DM_PLACEHOLDER.get(
                         direct_att.kind, '📎 Файл')
+            shared_forward_paths = []
             if forward_source is not None:
                 copied = _copy_message_attachments_to_direct(
                     db, forward_source, direct_msg.id)
+                shared_forward_paths = [row.stored_path for row in copied]
                 if copied and not direct_msg.text:
                     direct_msg.text = _DM_PLACEHOLDER.get(
                         copied[0].kind, '📎 Файл')
@@ -3881,7 +4226,22 @@ def register_routes(app: Flask) -> None:
                                                             contact.display_name)),
                             'text': rt_text[:120] + ('...' if len(rt_text) > 120 else ''),
                         }
-            db.commit()
+            if shared_forward_paths:
+                # Между подготовкой DirectAttachment и commit очистка могла
+                # успеть вытеснить source blob. Под общим lock проверяем его
+                # ещё раз и одним атомарным commit публикуем все зеркала.
+                with telegram_bridge.media_reference_guard():
+                    if not all(_media_rel_path_exists(path)
+                               for path in shared_forward_paths):
+                        db.rollback()
+                        return jsonify({
+                            'error': 'media_unavailable',
+                            'detail': ('Файл уже выгружен из кэша. '
+                                       'Сначала загрузите его в чате.'),
+                        }), 409
+                    db.commit()
+            else:
+                db.commit()
             if recipient_msg is not None:
                 _notify_webpush_message(recipient_msg.id)
             local_atts = _message_attachment_rows(db, msg.id)
@@ -5180,7 +5540,7 @@ def register_routes(app: Flask) -> None:
         kinds = _MEDIA_BUCKETS.get(bucket)
         if not kinds:
             return jsonify({'error': 'bad_kind'}), 400
-        rows = (db.query(Attachment)
+        rows = (db.query(Attachment, Messages)
                 .join(Messages, Attachment.message_id == Messages.id)
                 .join(MessengerHandle,
                       Messages.handle_id == MessengerHandle.id)
@@ -5189,19 +5549,28 @@ def register_routes(app: Flask) -> None:
                         Attachment.kind.in_(kinds))
                 .order_by(Attachment.id.desc())
                 .limit(limit).offset(offset).all())
+        items = []
+        for attachment, message in rows:
+            availability = _attachment_availability(
+                attachment, message)
+            items.append({
+                'id': attachment.id,
+                'kind': attachment.kind,
+                'mime': attachment.mime,
+                'name': attachment.original_name,
+                'size': attachment.size,
+                'created_at': (attachment.created_at.isoformat()
+                               if attachment.created_at else None),
+                'message_id': attachment.message_id,
+                'availability': availability,
+                'url': (f'/attachments/{attachment.id}'
+                        if availability == 'local' else None),
+                'restore_url': (f'/attachments/{attachment.id}/restore'
+                                if availability == 'remote' else None),
+            })
         return jsonify({
             'ok': True, 'kind': bucket,
-            'items': [{
-                'id': a.id,
-                'kind': a.kind,
-                'mime': a.mime,
-                'name': a.original_name,
-                'size': a.size,
-                'created_at': (a.created_at.isoformat()
-                               if a.created_at else None),
-                'message_id': a.message_id,
-                'url': f'/attachments/{a.id}',
-            } for a in rows],
+            'items': items,
         })
 
     @app.route('/contacts/by-tg.json')
@@ -6687,18 +7056,135 @@ def register_routes(app: Flask) -> None:
             return 'Unauthorized', 401
         from data.attachments import Attachment
         from data.crypto import decrypt_bytes
+        from cryptography.fernet import InvalidToken
         db = get_db()
         att = (db.query(Attachment)
                .filter(Attachment.id == attachment_id,
                        Attachment.user_id == session['user_id']).first())
         if att is None:
             return 'Not Found', 404
-        full = os.path.join(_media_root(), att.stored_path)
-        if not os.path.exists(full):
+        try:
+            full = _safe_media_full_path(att.stored_path)
+            with open(full, 'rb') as f:
+                raw = decrypt_bytes(f.read())
+        except (OSError, ValueError, InvalidToken):
             return 'Not Found', 404
-        with open(full, 'rb') as f:
-            raw = decrypt_bytes(f.read())
         return Response(raw, mimetype=att.mime or 'application/octet-stream')
+
+    @app.route('/attachments/<int:attachment_id>/restore', methods=['POST'])
+    def attachment_restore_from_telegram(attachment_id):
+        """Явно возвращает вытесненный Telegram-файл в локальный кэш."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.attachments import Attachment
+
+        db = get_db()
+        user_id = session['user_id']
+        attachment = (db.query(Attachment)
+                      .filter(Attachment.id == attachment_id,
+                              Attachment.user_id == user_id).first())
+        if attachment is None:
+            return jsonify({'error': 'not_found'}), 404
+        message = db.get(Messages, attachment.message_id)
+        handle = _telegram_media_restore_handle(
+            db, user_id, message, attachment.kind)
+        if handle is None:
+            return jsonify({
+                'error': 'media_unavailable',
+                'detail': 'Этот файл нельзя повторно загрузить из Telegram.',
+            }), 409
+
+        if _media_rel_path_exists(attachment.stored_path):
+            return jsonify({
+                'ok': True,
+                'status': 'ready',
+                'attachment': {
+                    'id': attachment.id,
+                    'kind': attachment.kind,
+                    'mime': attachment.mime,
+                    'name': attachment.original_name,
+                    'availability': 'local',
+                    'url': f'/attachments/{attachment.id}',
+                },
+            })
+        restore_message_id = int(message.id)
+        restore_attachment_id = int(attachment.id)
+        db.rollback()  # освобождаем SQLite read-lock до фоновой записи
+        key, job = _queue_media_restore(
+            user_id, restore_message_id, restore_attachment_id)
+        result, status_code = _media_restore_job_response(key, job)
+        return jsonify(result), status_code
+
+    @app.route('/messages/<int:message_id>/telegram-media/restore',
+               methods=['POST'])
+    def message_media_restore_from_telegram(message_id):
+        """Чинит старые placeholders, у которых ещё не было Attachment."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.attachments import Attachment
+
+        db = get_db()
+        user_id = session['user_id']
+        message = (db.query(Messages)
+                   .filter(Messages.id == message_id,
+                           Messages.user_id == user_id).first())
+        kind = _telegram_placeholder_media_kind(
+            message.text if message is not None else None)
+        handle = _telegram_media_restore_handle(db, user_id, message, kind)
+        if handle is None:
+            return jsonify({
+                'error': 'media_unavailable',
+                'detail': 'Это сообщение нельзя восстановить из Telegram.',
+            }), 409
+
+        with _media_restore_lock(('message', message.id)):
+            db.expire_all()
+            message = db.get(Messages, message_id)
+            kind = _telegram_placeholder_media_kind(
+                message.text if message is not None else None)
+            handle = _telegram_media_restore_handle(
+                db, user_id, message, kind)
+            if handle is None:
+                return jsonify({
+                    'error': 'media_unavailable',
+                    'detail': 'Медиа больше нельзя получить из Telegram.',
+                }), 409
+            attachment = (db.query(Attachment)
+                          .filter(Attachment.user_id == user_id,
+                                  Attachment.message_id == message.id)
+                          .order_by(Attachment.id.asc()).first())
+            if attachment is None:
+                attachment = Attachment(
+                    user_id=user_id,
+                    message_id=message.id,
+                    kind=kind,
+                    mime=None,
+                    original_name=None,
+                    stored_path=f'{user_id}/{uuid.uuid4().hex}.enc',
+                    size=None,
+                )
+                db.add(attachment)
+                db.commit()
+            if _media_rel_path_exists(attachment.stored_path):
+                return jsonify({
+                    'ok': True,
+                    'status': 'ready',
+                    'attachment': {
+                        'id': attachment.id,
+                        'kind': attachment.kind,
+                        'mime': attachment.mime,
+                        'name': attachment.original_name,
+                        'availability': 'local',
+                        'url': f'/attachments/{attachment.id}',
+                    },
+                })
+        restore_message_id = int(message.id)
+        restore_attachment_id = int(attachment.id)
+        db.rollback()  # освобождаем SQLite read-lock до фоновой записи
+        key, job = _queue_media_restore(
+            user_id, restore_message_id, restore_attachment_id)
+        result, status_code = _media_restore_job_response(key, job)
+        return jsonify(result), status_code
 
     @app.route('/attachments/<int:attachment_id>/telegram-sticker',
                methods=['POST'])

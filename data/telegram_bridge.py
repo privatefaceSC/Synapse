@@ -79,10 +79,16 @@ _DEFAULT_MEDIA_MAX_MB = 20
 _DEFAULT_MEDIA_STORE_MAX_MB = 650
 _DEFAULT_CATCHUP_IMAGE_MAX_MB = 8
 _CATCHUP_MEDIA_MAX_AGE_SECONDS = 15 * 60
+_MEDIA_EVICTION_GRACE_SECONDS = 15 * 60
+_REMOTE_ATTACHMENT_KINDS = frozenset({
+    "image", "video", "video_note", "voice", "audio", "file",
+})
+_EVICTABLE_MEDIA_KINDS = frozenset({"image", "video"})
 # [последний расчёт monotonic, bytes, поколение записей]
 _media_usage_cache = [0.0, 0, 0]
 _media_usage_lock = threading.Lock()
 _media_reservation_lock = threading.Lock()
+_media_eviction_lock = threading.Lock()
 _media_reserved_bytes = 0
 # Результат проверки «является ли megagroup группой комментариев канала».
 # Отрицательный ответ кэшируем ненадолго: связь группы с каналом может
@@ -347,6 +353,19 @@ class MediaStoreFullError(OSError):
     """Безопасный отказ записи до того, как квота уронит SQLite/WSGI."""
 
 
+class TelegramMediaUnavailableError(RuntimeError):
+    """Медиа нельзя безопасно докачать из Telegram."""
+
+
+def media_reference_guard():
+    """Лок защищает commit новой ссылки на файл от cache-eviction.
+
+    Приложение работает одним WSGI-процессом; тот же lock использует
+    `reserve_media_write` перед удалением старых Telegram-файлов.
+    """
+    return _media_eviction_lock
+
+
 @dataclass
 class _MediaReservation:
     size: int
@@ -354,21 +373,182 @@ class _MediaReservation:
     active: bool = True
 
 
+def _safe_media_file_path(stored_path):
+    """Возвращает абсолютный путь только внутри media/."""
+    if not stored_path:
+        return None
+    root = os.path.realpath(os.path.abspath(_media_root()))
+    candidate = os.path.realpath(os.path.abspath(
+        os.path.join(root, str(stored_path))))
+    try:
+        if os.path.normcase(os.path.commonpath((root, candidate))) != \
+                os.path.normcase(root):
+            return None
+    except (OSError, ValueError):
+        return None
+    return candidate
+
+
+def _media_eviction_hysteresis(limit):
+    """Небольшой запас, чтобы не удалять по одному файлу на каждую запись."""
+    return min(
+        max(0, int(limit or 0)),
+        max(8 * 1024 * 1024,
+            min(32 * 1024 * 1024, int(max(0, limit) * 0.02))),
+    )
+
+
+def _evict_reloadable_telegram_media(bytes_needed):
+    """Удаляет только локальный кэш старых Telegram photo/video.
+
+    Строка Attachment остаётся в БД: UI сможет показать «не
+    загружено» и по явному клику снова забрать файл из Telegram.
+    Одноразовые, удалённые, недоставленные и разделяемые файлы
+    не трогаем.
+    """
+    bytes_needed = max(0, int(bytes_needed or 0))
+    if bytes_needed <= 0:
+        return 0
+
+    from sqlalchemy import func, or_
+
+    from data import db_sessions
+    from data.attachments import Attachment
+    from data.contacts import MessengerHandle
+    from data.direct import DirectAttachment
+    from data.stickers import SavedSticker
+    from data.users import Messages
+
+    db = db_sessions.create_session()
+    try:
+        attachment_ref_counts = dict(
+            db.query(Attachment.stored_path, func.count(Attachment.id))
+            .filter(Attachment.stored_path.isnot(None))
+            .group_by(Attachment.stored_path).all()
+        )
+        protected_paths = {
+            path for (path,) in db.query(DirectAttachment.stored_path)
+            .filter(DirectAttachment.stored_path.isnot(None)).all()
+            if path
+        }
+        protected_paths.update(
+            path for (path,) in db.query(SavedSticker.stored_path)
+            .filter(SavedSticker.stored_path.isnot(None)).all()
+            if path
+        )
+        rows = (
+            db.query(Attachment.stored_path)
+            .join(Messages, Messages.id == Attachment.message_id)
+            .join(MessengerHandle, MessengerHandle.id == Messages.handle_id)
+            .filter(
+                Attachment.kind.in_(tuple(_EVICTABLE_MEDIA_KINDS)),
+                Attachment.user_id == Messages.user_id,
+                Messages.user_id == MessengerHandle.user_id,
+                Messages.messenger_name == "Telegram",
+                MessengerHandle.messenger_name == "Telegram",
+                MessengerHandle.tg_chat_id.isnot(None),
+                Messages.tg_message_id.isnot(None),
+                Messages.tg_ttl_seconds.is_(None),
+                Messages.deleted_at.is_(None),
+                or_(Messages.delivery_status.is_(None),
+                    Messages.delivery_status == "sent"),
+            )
+            .all()
+        )
+    finally:
+        db.close()
+
+    cutoff = time.time() - _MEDIA_EVICTION_GRACE_SECONDS
+    candidates = []
+    seen = set()
+    for (stored_path,) in rows:
+        if (not stored_path or stored_path in seen
+                or stored_path in protected_paths
+                or attachment_ref_counts.get(stored_path, 0) != 1):
+            continue
+        seen.add(stored_path)
+        full_path = _safe_media_file_path(stored_path)
+        if full_path is None or not full_path.lower().endswith(".enc"):
+            continue
+        try:
+            stat = os.stat(full_path)
+        except OSError:
+            continue
+        if not os.path.isfile(full_path) or stat.st_mtime > cutoff:
+            continue
+        candidates.append((stat.st_mtime, full_path, stat.st_size))
+
+    candidates.sort(key=lambda item: item[0])
+    freed = 0
+    removed = 0
+    for _mtime, full_path, expected_size in candidates:
+        try:
+            # lstat/stat выше и remove здесь могут состязаться с
+            # ручной чисткой; на такой гонке просто идём дальше.
+            os.remove(full_path)
+        except OSError:
+            continue
+        freed += max(0, int(expected_size or 0))
+        removed += 1
+        if freed >= bytes_needed:
+            break
+    if removed:
+        _invalidate_media_usage_cache()
+        logger.info("Evicted %s old Telegram media files (%s bytes)",
+                    removed, freed)
+    return freed
+
+
 def reserve_media_write(size, replacing_size=0):
-    """Атомарно резервирует место для любого writer в этом процессе."""
+    """Атомарно резервирует место для любого writer в этом процессе.
+
+    Если лимит достигнут, сначала вытесняем безопасно восстановимый
+    Telegram-кэш. Локи берём в порядке eviction -> reservation,
+    чтобы параллельные upload-запросы не зависли.
+    """
     global _media_reserved_bytes
     size = max(0, int(size or 0))
     replacing_size = max(0, int(replacing_size or 0))
     limit = _media_store_max_bytes()
+    growth = max(0, size - replacing_size)
     with _media_reservation_lock:
-        growth = max(0, size - replacing_size)
-        if (limit > 0 and _media_store_usage_bytes()
-                + _media_reserved_bytes + growth > limit):
-            limit_mb = round(limit / 1024 / 1024)
-            raise MediaStoreFullError(
-                f"Хранилище достигло безопасного лимита {limit_mb} МБ")
-        _media_reserved_bytes += growth
-    return _MediaReservation(size=size, replacing_size=replacing_size)
+        if (limit <= 0 or _media_store_usage_bytes()
+                + _media_reserved_bytes + growth <= limit):
+            _media_reserved_bytes += growth
+            return _MediaReservation(size=size,
+                                     replacing_size=replacing_size)
+
+    # Не держим reservation-lock, пока SQLite и os.remove ищут
+    # кандидатов. Один eviction за раз не даёт двум upload-ам
+    # удалить одни и те же файлы.
+    if limit > 0 and growth <= limit:
+        with _media_eviction_lock:
+            with _media_reservation_lock:
+                projected = (_media_store_usage_bytes(force=True)
+                             + _media_reserved_bytes + growth)
+                if projected <= limit:
+                    _media_reserved_bytes += growth
+                    return _MediaReservation(
+                        size=size, replacing_size=replacing_size)
+                needed = projected - limit
+            try:
+                _evict_reloadable_telegram_media(
+                    needed + _media_eviction_hysteresis(limit))
+            except Exception:  # noqa: BLE001
+                # Ошибка SQLite/обхода кэша не должна ронять upload.
+                # Ниже повторная проверка либо разрешит запись,
+                # либо вернёт штатную 507 через MediaStoreFullError.
+                logger.exception("Telegram media eviction failed")
+            with _media_reservation_lock:
+                if (_media_store_usage_bytes(force=True)
+                        + _media_reserved_bytes + growth <= limit):
+                    _media_reserved_bytes += growth
+                    return _MediaReservation(
+                        size=size, replacing_size=replacing_size)
+
+    limit_mb = round(limit / 1024 / 1024)
+    raise MediaStoreFullError(
+        f"Хранилище достигло безопасного лимита {limit_mb} МБ")
 
 
 def finish_media_write(reservation, committed):
@@ -410,12 +590,12 @@ async def _reserve_media_write_async(size, replacing_size=0):
 
 
 def _catchup_media_allowed(msg, kind):
-    """В догонке автоматически берём только свежие небольшие фото.
+    """В догонке автоматически берём свежие небольшие photo/voice/audio.
 
     Видео и документы остаются ленивыми: иначе один reconnect снова заполнит
     ограниченную квоту AlwaysData. Live-события используют обычный лимит.
     """
-    if kind != "image":
+    if kind not in ("image", "voice", "audio"):
         return False
     msg_date = getattr(msg, "date", None)
     if msg_date is None:
@@ -647,29 +827,74 @@ def _sticker_pack_meta_from_message(msg, data=None):
     return pack_key, pack_title, str(item_key) if item_key is not None else None
 
 
-def _save_attachment(db, user_id, message_id, kind, data, msg):
-    """Шифрует и кладёт медиа в media/<user_id>/, создаёт Attachment.
-    Хранилище и шифрование — те же, что у Android-клиента."""
+def _ensure_attachment_stub(db, user_id, message_id, kind, msg):
+    """Создаёт стабильную DB-запись для ленивого Telegram-медиа.
+
+    Файла по stored_path может ещё не быть (или он мог быть
+    вытеснен). Attachment.id и stored_path не меняем: это даёт UI
+    один и тот же URL до и после повторной загрузки.
+    """
+    if kind not in _REMOTE_ATTACHMENT_KINDS:
+        return None
     from data.attachments import Attachment
-    from data.crypto import encrypt_bytes
 
     existing = (db.query(Attachment)
                 .filter(Attachment.user_id == user_id,
-                        Attachment.message_id == message_id).first())
+                        Attachment.message_id == message_id)
+                .order_by(Attachment.id.asc()).first())
     if existing is not None:
-        existing_full = os.path.join(_media_root(), existing.stored_path)
-        if os.path.exists(existing_full):
-            return existing
-        # Запись могла остаться после аварии диска/ручной очистки. Этот метод
-        # вызывается только когда Telegram снова реально отдал байты, поэтому
-        # заменяем битую ссылку, не создавая второе сообщение.
-        db.delete(existing)
-        db.flush()
+        return existing
 
-    root = _media_root()
+    file_obj = getattr(msg, "file", None)
+    declared_size = getattr(file_obj, "size", None)
     rel_dir = str(user_id)
-    os.makedirs(os.path.join(root, rel_dir), exist_ok=True)
     stored_path = f"{rel_dir}/{uuid.uuid4().hex}.enc"
+    att = Attachment(
+        user_id=user_id,
+        message_id=message_id,
+        kind=kind,
+        mime=getattr(file_obj, "mime_type", None),
+        original_name=getattr(file_obj, "name", None),
+        stored_path=stored_path,
+        size=int(declared_size) if declared_size is not None else None,
+        dedup_key=None,
+    )
+    db.add(att)
+    db.commit()
+    return att
+
+
+def _save_attachment(db, user_id, message_id, kind, data, msg):
+    """Шифрует и кладёт медиа в media/<user_id>/.
+
+    Если файл был вытеснен, повторно используем ту же Attachment-строку
+    и stored_path, а не создаём битую ссылку с новым id.
+    """
+    from data.crypto import encrypt_bytes
+
+    existing = _ensure_attachment_stub(
+        db, user_id, message_id, kind, msg)
+    if existing is None:
+        # Стикеры не ленивые: для них по-прежнему создаём
+        # обычную запись только при наличии реальных байтов.
+        from data.attachments import Attachment
+
+        rel_dir = str(user_id)
+        existing = Attachment(
+            user_id=user_id,
+            message_id=message_id,
+            kind=kind,
+            stored_path=f"{rel_dir}/{uuid.uuid4().hex}.enc",
+            dedup_key=None,
+        )
+
+    existing_full = _safe_media_file_path(existing.stored_path)
+    if existing_full is None:
+        raise ValueError("Недопустимый путь Telegram-медиа")
+    if os.path.exists(existing_full):
+        return existing
+
+    os.makedirs(os.path.dirname(existing_full), exist_ok=True)
     encrypted = encrypt_bytes(data)
     try:
         reservation = reserve_media_write(len(encrypted))
@@ -677,12 +902,11 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
         _state_for(user_id)["last_media_skip"] = str(exc)
         return None
     committed = False
-    full_path = os.path.join(root, stored_path)
-    temp_path = full_path + ".tmp-" + uuid.uuid4().hex
+    temp_path = existing_full + ".tmp-" + uuid.uuid4().hex
     try:
         with open(temp_path, "wb") as f:
             f.write(encrypted)
-        os.replace(temp_path, full_path)
+        os.replace(temp_path, existing_full)
         committed = True
     finally:
         if not committed:
@@ -697,22 +921,17 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
     if kind == "sticker":
         pack_key, pack_title, item_key = _sticker_pack_meta_from_message(
             msg, data)
-    att = Attachment(
-        user_id=user_id,
-        message_id=message_id,
-        kind=kind,
-        mime=getattr(file_obj, "mime_type", None),
-        original_name=getattr(file_obj, "name", None),
-        stored_path=stored_path,
-        size=len(data),
-        dedup_key=None,
-        sticker_pack_key=pack_key,
-        sticker_pack_title=pack_title,
-        sticker_item_key=item_key,
-    )
-    db.add(att)
+    existing.kind = kind
+    existing.mime = getattr(file_obj, "mime_type", None)
+    existing.original_name = getattr(file_obj, "name", None)
+    existing.size = len(data)
+    existing.sticker_pack_key = pack_key
+    existing.sticker_pack_title = pack_title
+    existing.sticker_item_key = item_key
+    db.add(existing)
     db.commit()
-    return att
+    _state_for(user_id)["last_media_skip"] = None
+    return existing
 
 
 async def _download_media_payload(msg, kind, user_id=None):
@@ -726,12 +945,6 @@ async def _download_media_payload(msg, kind, user_id=None):
         state["last_media_skip"] = (
             f"{kind}: {size_mb} МБ больше лимита {limit_mb} МБ")
         return None, None
-    if not await asyncio.to_thread(
-            _media_store_has_capacity, _encrypted_size_estimate(size)):
-        limit_mb = round(_media_store_max_bytes() / 1024 / 1024)
-        state["last_media_skip"] = (
-            f"{kind}: хранилище достигло безопасного лимита {limit_mb} МБ")
-        return None, None
     try:
         data = await msg.download_media(file=bytes)
     except Exception as exc:  # noqa: BLE001
@@ -742,11 +955,15 @@ async def _download_media_payload(msg, kind, user_id=None):
     if data is None:
         state["last_media_skip"] = f"{kind}: Telethon не вернул данные"
         return None, None
-    if not await asyncio.to_thread(
-            _media_store_has_capacity, _encrypted_size_estimate(len(data))):
-        limit_mb = round(_media_store_max_bytes() / 1024 / 1024)
+    # Telegram иногда не передаёт size заранее. После download
+    # проверяем фактические байты, а общую квоту применит
+    # reserve_media_write уже после шифрования (и при нужде вытеснит
+    # старый восстановимый кэш).
+    if len(data) > _media_max_bytes():
+        size_mb = round(len(data) / 1024 / 1024, 1)
+        limit_mb = round(_media_max_bytes() / 1024 / 1024, 1)
         state["last_media_skip"] = (
-            f"{kind}: хранилище достигло безопасного лимита {limit_mb} МБ")
+            f"{kind}: {size_mb} МБ больше лимита {limit_mb} МБ")
         return None, None
     state["last_media_skip"] = None
     return kind, data
@@ -916,9 +1133,14 @@ async def _handle_message(event, user_id=None, client=None,
                                 _media_root(), att.stored_path))
                             for att in attachments):
                         return
-                    # Разрешаем repair только свежему фото. Старые файлы могли
-                    # быть удалены владельцем специально при очистке квоты;
-                    # catch_up не должен молча скачивать их заново.
+                    # Даже если тяжёлый файл не качаем в
+                    # catch-up, оставляем стабильный stub для явного
+                    # «загрузить» в UI. Сам catch-up автоматически
+                    # repair-ит только свежие image/voice/audio.
+                    if kind in _REMOTE_ATTACHMENT_KINDS:
+                        _ensure_attachment_stub(
+                            db, _normalize_user_id(user_id), exists.id,
+                            kind, msg)
                     if not _catchup_media_allowed(msg, kind):
                         return
         finally:
@@ -1095,8 +1317,11 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
         if message is not None and not was_known:
             notify_message_id = message.id
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
-        if message is not None and data is not None and kind is not None:
-            _save_attachment(db, owner, message.id, kind, data, msg)
+        if message is not None and kind is not None:
+            if data is not None:
+                _save_attachment(db, owner, message.id, kind, data, msg)
+            elif kind in _REMOTE_ATTACHMENT_KINDS:
+                _ensure_attachment_stub(db, owner, message.id, kind, msg)
     finally:
         db.close()
 
@@ -1239,18 +1464,47 @@ def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
     return message_id is not None
 
 
-async def _repair_telegram_photo(message_id, msg, user_id=None,
-                                 expected_lifecycle=None):
-    """Докачивает файл к существующей текстовой заглушке без нового push."""
+def _ensure_message_attachment_stub(message_id, msg, kind, user_id=None):
+    """Добавляет lazy-stub уже существующему Telegram-сообщению."""
+    if kind not in _REMOTE_ATTACHMENT_KINDS:
+        return None
+    from data import db_sessions
+    from data.users import Messages as _Messages
+
     owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    try:
+        message = db.query(_Messages).filter(
+            _Messages.id == int(message_id),
+            _Messages.user_id == owner).first()
+        if message is None:
+            return None
+        return _ensure_attachment_stub(db, owner, message.id, kind, msg)
+    finally:
+        db.close()
+
+
+async def _repair_telegram_media(message_id, msg, kind, user_id=None,
+                                 expected_lifecycle=None):
+    """Докачивает медиа к заглушке без нового message/push."""
+    owner = _normalize_user_id(user_id)
+    if kind not in _REMOTE_ATTACHMENT_KINDS:
+        return False
     if expected_lifecycle is None:
         expected_lifecycle = _lifecycle_token(owner)
     if _lifecycle_token(owner) != expected_lifecycle:
         return False
-    kind, data = await _download_media_payload(msg, "image", user_id=user_id)
-    if (kind is None or data is None
+
+    # Stub появляется даже при временной ошибке Telegram:
+    # повторный catch-up или явный клик смогут докачать его.
+    _ensure_message_attachment_stub(
+        message_id, msg, kind, user_id=owner)
+    loaded_kind, data = await _download_media_payload(
+        msg, kind, user_id=owner)
+    if (loaded_kind is None or data is None
             or _lifecycle_token(owner) != expected_lifecycle):
         return False
+
     from data import db_sessions
     from data.users import Messages as _Messages
 
@@ -1262,9 +1516,17 @@ async def _repair_telegram_photo(message_id, msg, user_id=None,
         if message is None:
             return False
         return _save_attachment(
-            db, owner, message.id, kind, data, msg) is not None
+            db, owner, message.id, loaded_kind, data, msg) is not None
     finally:
         db.close()
+
+
+async def _repair_telegram_photo(message_id, msg, user_id=None,
+                                 expected_lifecycle=None):
+    """Совместимый alias для старых вызовов/тестов."""
+    return await _repair_telegram_media(
+        message_id, msg, "image", user_id=user_id,
+        expected_lifecycle=expected_lifecycle)
 
 
 async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
@@ -1359,11 +1621,14 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
             existing_id, has_live_attachment = _telegram_message_state(
                 owner, chat_id, tg_id)
             if existing_id is not None:
-                if (kind == "image" and not has_live_attachment
-                        and _catchup_media_allowed(msg, kind)):
-                    await _repair_telegram_photo(
-                        existing_id, msg, user_id=owner,
-                        expected_lifecycle=expected_lifecycle)
+                if (kind in _REMOTE_ATTACHMENT_KINDS
+                        and not has_live_attachment):
+                    _ensure_message_attachment_stub(
+                        existing_id, msg, kind, user_id=owner)
+                    if _catchup_media_allowed(msg, kind):
+                        await _repair_telegram_media(
+                            existing_id, msg, kind, user_id=owner,
+                            expected_lifecycle=expected_lifecycle)
                 continue
             text = getattr(msg, "message", None) or ""
             if not text and kind is None:
@@ -1450,6 +1715,83 @@ def sync_recent(user_id=None, wait=False):
 
     future.add_done_callback(_forget)
     return None
+
+
+async def _download_message_media(chat_id, tg_message_id, user_id=None):
+    """Загружает одно обычное медиа по явному запросу UI."""
+    owner = _normalize_user_id(user_id)
+    try:
+        chat_id = int(chat_id)
+        tg_message_id = int(tg_message_id)
+    except (TypeError, ValueError) as exc:
+        raise TelegramMediaUnavailableError(
+            "Неверный Telegram ID медиа") from exc
+
+    client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        raise TelegramMediaUnavailableError(
+            "Telegram не авторизован")
+    try:
+        msg = await client.get_messages(chat_id, ids=tg_message_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "Telegram lazy media lookup failed for user_id=%s", owner)
+        raise TelegramMediaUnavailableError(
+            "Не удалось получить медиа из Telegram") from exc
+    if msg is None:
+        raise TelegramMediaUnavailableError(
+            "Telegram-сообщение больше недоступно")
+
+    kind = _media_kind(msg)
+    if kind not in _REMOTE_ATTACHMENT_KINDS:
+        raise TelegramMediaUnavailableError(
+            "В этом Telegram-сообщении нет доступного медиа")
+    media = getattr(msg, "media", None)
+    if media is not None and getattr(media, "ttl_seconds", None):
+        # Не обещаем restore того, что Telegram по контракту
+        # уничтожает после первого просмотра.
+        raise TelegramMediaUnavailableError(
+            "Одноразовое Telegram-медиа нельзя загрузить повторно")
+
+    loaded_kind, data = await _download_media_payload(
+        msg, kind, user_id=owner)
+    if loaded_kind is None or data is None:
+        raise TelegramMediaUnavailableError(
+            "Telegram не отдал медиа; попробуйте позже")
+    file_obj = getattr(msg, "file", None)
+    mime = getattr(file_obj, "mime_type", None)
+    if not mime and loaded_kind == "image":
+        mime = "image/jpeg"
+    return {
+        "kind": loaded_kind,
+        "data": data,
+        "mime": mime,
+        "name": getattr(file_obj, "name", None),
+        "size": len(data),
+    }
+
+
+def download_message_media(chat_id, tg_message_id, user_id=None):
+    """Sync API для POST restore-маршрутов Flask.
+
+    Возвращает dict с kind/data/mime/name/size или бросает
+    TelegramMediaUnavailableError с безопасным для UI текстом.
+    """
+    if not is_configured() or not telethon_available():
+        raise TelegramMediaUnavailableError("Telegram-мост не настроен")
+    try:
+        return _call(_download_message_media(
+            chat_id, tg_message_id, user_id=user_id), timeout=90)
+    except TelegramMediaUnavailableError:
+        raise
+    except FutureTimeoutError as exc:
+        raise TelegramMediaUnavailableError(
+            "Telegram не успел отдать медиа") from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Telegram lazy media download failed for user_id=%s",
+                         _normalize_user_id(user_id))
+        raise TelegramMediaUnavailableError(
+            "Не удалось загрузить медиа из Telegram") from exc
 
 
 async def _register_handler(user_id=None, client=None):
