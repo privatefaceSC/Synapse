@@ -417,6 +417,36 @@
     .contact-row .status-marks { display: inline-flex; gap: 3px;
         margin-left: 4px; font-size: 11px; opacity: .75; flex: 0 0 auto; }
     .contact-row .creator-inline { flex: 0 0 auto; }
+    .contact-presence {
+        display: flex; align-items: center; gap: 5px; min-width: 0;
+        width: fit-content; max-width: 100%; margin: 3px 0 2px;
+        padding: 2px 8px 2px 6px; border-radius: 999px;
+        color: #718096; background: rgba(148,163,184,.12);
+        font-size: 10.5px; line-height: 1.35;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .contact-presence__dot {
+        width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+        background: #94a3b8;
+    }
+    .contact-presence.online {
+        color: #047857; background: rgba(16,185,129,.12);
+    }
+    .contact-presence.online .contact-presence__dot {
+        background: #10b981; box-shadow: 0 0 0 0 rgba(16,185,129,.45);
+        animation: presence-pulse 1.9s ease-out infinite;
+    }
+    @keyframes presence-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(16,185,129,.45); }
+        65%, 100% { box-shadow: 0 0 0 6px rgba(16,185,129,0); }
+    }
+    [data-bs-theme="dark"] .contact-presence { color: #94a3b8; }
+    [data-bs-theme="dark"] .contact-presence.online {
+        color: #6ee7b7; background: rgba(16,185,129,.14);
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .contact-presence.online .contact-presence__dot { animation: none; }
+    }
     /* Закреплённые контакты — тонкий жёлтый штрих слева */
     .contact-row-wrap.pinned .contact-row { background: linear-gradient(
         90deg, rgba(250, 204, 21, .12) 0, rgba(250, 204, 21, 0) 24px); }
@@ -4094,6 +4124,13 @@
                                         class="status-marks">{% if c.pinned_at %}📌{% endif %}{% if c.muted %}🔇{% endif %}</span></span>
                                     <span class="time">{{ c.last_time or '' }}</span>
                                 </div>
+                                {% if c.presence %}
+                                <div class="contact-presence{% if c.presence.online %} online{% endif %}"
+                                     title="{{ c.presence.detail }}">
+                                    <span class="contact-presence__dot"></span>
+                                    <span>{{ c.presence.detail }}</span>
+                                </div>
+                                {% endif %}
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div class="preview-line">
                                         {% if c.last_outgoing and c.last_tg_read is not none %}
@@ -5784,6 +5821,13 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const badge = (c.unread_count && c.unread_count > 0)
                 ? `<span class="badge-unread${c.muted ? ' muted' : ''}">${c.unread_count}</span>` : '';
             const marks = (c.pinned ? '📌' : '') + (c.muted ? '🔇' : '');
+            const presence = c.presence
+                ? `<div class="contact-presence${c.presence.online ? ' online' : ''}"
+                        title="${escapeHtml(c.presence.detail || c.presence.label || '')}">
+                       <span class="contact-presence__dot"></span>
+                       <span>${escapeHtml(c.presence.detail || c.presence.label || '')}</span>
+                   </div>`
+                : '';
             return `<div class="contact-row-wrap${c.pinned ? ' pinned' : ''}"
                 data-contact-id="${c.id}"
                 data-messengers="${escapeHtml((c.messengers || []).join(','))}"
@@ -5798,6 +5842,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                             <span class="name">${escapeHtml(c.display_name)}${creatorBadgeHtml(c)}<span class="status-marks">${marks}</span></span>
                             <span class="time">${escapeHtml(c.last_time || '')}</span>
                         </div>
+                        ${presence}
                         <div class="d-flex justify-content-between align-items-center">
                             <div class="preview-line">
                                 ${listTick(c)}
@@ -5847,7 +5892,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                           ? null : (c.last_tg_read ? 1 : 0),
                       c.unread_count, c.pinned ? 1 : 0, c.muted ? 1 : 0,
                       c.archived ? 1 : 0, c.is_creator ? 1 : 0,
-                      c.creator_title || '']));
+                       c.creator_title || '',
+                       c.presence ? (c.presence.online ? 1 : 0) : null,
+                       c.presence ? (c.presence.detail || '') : '']));
             if (sig !== lastSig) {
                 render(data.contacts);
                 lastSig = sig;

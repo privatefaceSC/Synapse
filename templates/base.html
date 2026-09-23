@@ -186,5 +186,32 @@
             });
         })();
     </script>
+    {% if session.get('user_id') %}
+    <script>
+        // Лёгкий heartbeat поддерживает точный статус «В сети» на всех
+        // страницах, в том числе там, где нет собственного polling.
+        (function() {
+            let timer = null;
+            function pingPresence() {
+                if (document.hidden || navigator.onLine === false) return;
+                fetch('/presence/ping', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    keepalive: true
+                }).catch(function() {});
+            }
+            function schedulePresence() {
+                if (timer) clearInterval(timer);
+                pingPresence();
+                timer = setInterval(pingPresence, 25000);
+            }
+            schedulePresence();
+            document.addEventListener('visibilitychange', function() {
+                if (!document.hidden) pingPresence();
+            });
+            window.addEventListener('online', pingPresence);
+        })();
+    </script>
+    {% endif %}
 </body>
 </html>

@@ -59,6 +59,33 @@
         font-size: .88rem;
     }
 
+    .live-presence {
+        display: inline-flex; align-items: center; gap: 7px;
+        margin-top: 7px; padding: 5px 10px; border-radius: 999px;
+        color: #a8b4c5; background: rgba(148,163,184,.13);
+        border: 1px solid rgba(148,163,184,.2); font-size: .78rem;
+        line-height: 1.25; transition: color .2s, background .2s, border-color .2s;
+    }
+    .live-presence__dot {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: #94a3b8; flex: 0 0 auto;
+    }
+    .live-presence.online {
+        color: #6ee7b7; background: rgba(16,185,129,.13);
+        border-color: rgba(52,211,153,.28);
+    }
+    .live-presence.online .live-presence__dot {
+        background: #34d399; box-shadow: 0 0 0 0 rgba(52,211,153,.5);
+        animation: admin-presence-pulse 1.9s ease-out infinite;
+    }
+    @keyframes admin-presence-pulse {
+        0% { box-shadow: 0 0 0 0 rgba(52,211,153,.5); }
+        65%, 100% { box-shadow: 0 0 0 7px rgba(52,211,153,0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .live-presence.online .live-presence__dot { animation: none; }
+    }
+
     .user-card__body {
         padding: 16px 18px 18px;
     }
@@ -183,6 +210,12 @@
 
                 <div class="user-card__title">
                     <div class="user-card__name">{{ s.user.display_name }}</div>
+                    <div class="live-presence{% if s.presence.online %} online{% endif %}"
+                         data-user-presence-id="{{ s.user.id }}"
+                         title="{{ s.presence.detail }}">
+                        <span class="live-presence__dot"></span>
+                        <span class="live-presence__text">{{ s.presence.detail }}</span>
+                    </div>
                     <div class="user-card__meta">
                         {{ s.user.email }}
                         {% if s.user.username %}
@@ -431,4 +464,32 @@
         <div class="alert alert-info">Пока никто не зарегистрировался.</div>
     {% endif %}
 </div>
+<script>
+    // Владелец видит изменения статуса без обновления всей тяжёлой страницы.
+    (function() {
+        async function refreshPresence() {
+            if (document.hidden || navigator.onLine === false) return;
+            try {
+                const response = await fetch('/users/presence.json', {
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) return;
+                const data = await response.json();
+                (data.users || []).forEach(function(item) {
+                    const badge = document.querySelector(
+                        '[data-user-presence-id="' + item.id + '"]');
+                    if (!badge || !item.presence) return;
+                    badge.classList.toggle('online', !!item.presence.online);
+                    badge.title = item.presence.detail || item.presence.label || '';
+                    const text = badge.querySelector('.live-presence__text');
+                    if (text) text.textContent = badge.title;
+                });
+            } catch (_error) {}
+        }
+        setInterval(refreshPresence, 10000);
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden) refreshPresence();
+        });
+    })();
+</script>
 {% endblock %}

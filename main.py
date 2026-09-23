@@ -47,6 +47,10 @@ _media_restore_slots = threading.BoundedSemaphore(_MEDIA_RESTORE_WORKERS)
 _media_restore_jobs = {}
 _media_restore_jobs_guard = threading.Lock()
 _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
+_PRESENCE_ONLINE_SECONDS = 75
+_PRESENCE_WRITE_INTERVAL_SECONDS = 20
+_PENDING_REPLY_LONG_POLL_SECONDS = 10.0
+_PENDING_REPLY_POLL_INTERVAL_SECONDS = 0.35
 
 
 def _media_restore_lock(key):
@@ -265,6 +269,32 @@ def _cached_tg_avatar_photo_id(contact):
     return candidates[0][1]
 
 
+def _user_presence(user, now=None):
+    """Компактное состояние присутствия для HTML и JSON."""
+    now = now or datetime.now()
+    last_seen = getattr(user, 'last_seen_at', None)
+    online = bool(
+        last_seen is not None
+        and last_seen >= now - timedelta(seconds=_PRESENCE_ONLINE_SECONDS)
+    )
+    if online:
+        detail = 'Сейчас на сайте'
+    elif last_seen is None:
+        detail = 'Ещё не заходил(а)'
+    elif last_seen.date() == now.date():
+        detail = f'Последний вход: сегодня в {last_seen:%H:%M}'
+    elif last_seen.date() == (now - timedelta(days=1)).date():
+        detail = f'Последний вход: вчера в {last_seen:%H:%M}'
+    else:
+        detail = f'Последний вход: {last_seen:%d.%m.%Y} в {last_seen:%H:%M}'
+    return {
+        'online': online,
+        'label': 'В сети' if online else 'Не в сети',
+        'detail': detail,
+        'last_seen_at_iso': _iso_dt(last_seen),
+    }
+
+
 def _enrich_with_last_message(db, contacts):
     from data.contacts import Contact, MessengerHandle
     from sqlalchemy import func
@@ -285,6 +315,19 @@ def _enrich_with_last_message(db, contacts):
     for handle in handles:
         handles_by_contact.setdefault(handle.contact_id, []).append(handle)
 
+    synapse_partner_ids = {
+        partner_id
+        for handle in handles
+        if handle.messenger_name == SYNAPSE_MESSENGER
+        for partner_id in [_synapse_partner_id(handle)]
+        if partner_id is not None
+    }
+    synapse_users = {
+        user.id: user
+        for user in (db.query(User)
+                     .filter(User.id.in_(synapse_partner_ids)).all())
+    } if synapse_partner_ids else {}
+
     for c in contacts:
         _avatar_for(c)
         contact_handles = handles_by_contact.get(c.id, [])
@@ -301,6 +344,14 @@ def _enrich_with_last_message(db, contacts):
         c.last_outgoing = False
         c.last_tg_read = None
         c.unread_count = 0
+        c.presence = None
+        for handle in contact_handles:
+            if handle.messenger_name != SYNAPSE_MESSENGER:
+                continue
+            partner = synapse_users.get(_synapse_partner_id(handle))
+            if partner is not None:
+                c.presence = _user_presence(partner)
+                break
 
     if contact_ids:
         ranked = (
@@ -1883,6 +1934,7 @@ def _admin_user_summary(db, user) -> dict:
             'color': user.avatar_color,
         },
         'telegram': _telegram_admin_status(user.id),
+        'presence': _user_presence(user),
         'devices': {
             'total': len(devices),
             'connected': bool(devices),
@@ -2795,6 +2847,40 @@ def _dm_load_conversation(db, me_id, partner, mark_read=False):
 
 def register_routes(app: Flask) -> None:
 
+    @app.before_request
+    def _record_web_presence():
+        """Пишем активность не чаще раза в 20 секунд на пользователя."""
+        user_id = session.get('user_id')
+        if not user_id or request.endpoint == 'static':
+            return None
+        now = datetime.now()
+        cutoff = now - timedelta(seconds=_PRESENCE_WRITE_INTERVAL_SECONDS)
+        db = get_db()
+        try:
+            changed = (db.query(User)
+                       .filter(User.id == user_id)
+                       .filter(or_(User.last_seen_at.is_(None),
+                                   User.last_seen_at < cutoff))
+                       .update({User.last_seen_at: now},
+                               synchronize_session=False))
+            if changed:
+                db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception('Не удалось обновить web presence пользователя %s',
+                             user_id)
+        return None
+
+    @app.route('/presence/ping', methods=['POST'])
+    def presence_ping():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        db = get_db()
+        user = db.query(User).filter(User.id == session['user_id']).first()
+        if user is None:
+            return jsonify({'error': 'not_found'}), 404
+        return jsonify({'ok': True, 'presence': _user_presence(user)})
+
     @app.route('/')
     def main_menu():
         if session.get('user_id'):
@@ -3185,6 +3271,19 @@ def register_routes(app: Flask) -> None:
         users = db.query(User).order_by(User.id.asc()).all()
         summaries = [_admin_user_summary(db, u) for u in users]
         return render_template('users.html', users=summaries)
+
+    @app.route('/users/presence.json')
+    def users_presence_json():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        if not _is_admin():
+            abort(403)
+        db = get_db()
+        users = db.query(User).order_by(User.id.asc()).all()
+        return jsonify({'users': [
+            {'id': user.id, 'presence': _user_presence(user)}
+            for user in users
+        ]})
 
     @app.route('/users/<int:user_id>/diagnostics.json')
     def user_diagnostics(user_id):
@@ -3595,6 +3694,7 @@ def register_routes(app: Flask) -> None:
                 'archived': bool(c.archived),
                 'is_creator': bool(getattr(c, 'is_creator', False)),
                 'creator_title': getattr(c, 'creator_title', ''),
+                'presence': getattr(c, 'presence', None),
             }
             for c in contacts
         ]})
@@ -6608,7 +6708,13 @@ def register_routes(app: Flask) -> None:
         """Android-клиент забирает отложенные ответы для своего пользователя.
         Атомарно помечает их `picked`, чтобы повторный поллинг не возвращал
         одно и то же. Дальше клиент пытается отправить ответ через `RemoteInput`
-        и отчитывается в `/api/replies/<id>/done`."""
+        и отчитывается в `/api/replies/<id>/done`.
+
+        Если очередь пуста, держим запрос открытым до 10 секунд. Старый APK
+        уже совместим с таким ответом: когда экран погашен, Android может
+        растянуть запуск следующего timer/coroutine, а активный HTTP-запрос
+        получает задание сразу и не добавляет к отправке лишние ~30 секунд.
+        """
         from data.pending_replies import (PendingReply, STATUS_PENDING,
                                           STATUS_PICKED)
         db = get_db()
@@ -6619,10 +6725,30 @@ def register_routes(app: Flask) -> None:
         device.last_seen_at = datetime.now()
         _expire_stale_pending_replies(db, device.user_id)
 
-        items = (db.query(PendingReply)
-                 .filter(PendingReply.user_id == device.user_id,
-                         PendingReply.status == STATUS_PENDING)
-                 .order_by(PendingReply.id.asc()).all())
+        # Сначала фиксируем last_seen и заканчиваем транзакцию, чтобы во время
+        # ожидания не держать read/write-lock SQLite. rollback между SELECT
+        # также гарантирует, что сессия увидит запись другого WSGI worker.
+        db.commit()
+        wait_seconds = 0.0 if app.testing else _PENDING_REPLY_LONG_POLL_SECONDS
+        try:
+            requested_wait = request.args.get('wait')
+            if requested_wait is not None:
+                wait_seconds = max(0.0, min(
+                    _PENDING_REPLY_LONG_POLL_SECONDS,
+                    float(requested_wait)))
+        except (TypeError, ValueError):
+            pass
+        deadline = time.monotonic() + wait_seconds
+        while True:
+            items = (db.query(PendingReply)
+                     .filter(PendingReply.user_id == device.user_id,
+                             PendingReply.status == STATUS_PENDING)
+                     .order_by(PendingReply.id.asc()).all())
+            if items or time.monotonic() >= deadline:
+                break
+            db.rollback()
+            time.sleep(min(_PENDING_REPLY_POLL_INTERVAL_SECONDS,
+                           max(0.0, deadline - time.monotonic())))
         now = datetime.now()
         out = []
         for it in items:

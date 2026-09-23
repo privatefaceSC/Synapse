@@ -27,6 +27,9 @@ class User(SqlAlchemyBase):
     preferred_lang = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     # Когда пользователь открывал страницу «Что вообще это за сайт?».
     about_seen_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
+    # Последняя активность в веб-интерфейсе Synapse. Обновляется редким
+    # heartbeat-запросом, чтобы показывать реальный онлайн и время входа.
+    last_seen_at = sqlalchemy.Column(sqlalchemy.DateTime, nullable=True)
     # Постоянная отметка создателя. Не зависит от username: username можно
     # менять, а статус должен оставаться привязанным к конкретному аккаунту.
     is_creator = sqlalchemy.Column(sqlalchemy.Boolean, default=False,
