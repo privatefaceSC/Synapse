@@ -177,7 +177,12 @@
                     <button class="btn btn-primary tg-btn">Подтвердить</button>
                 </div>
             </form>
-        {% elif tg.phone %}
+            <form method="post" action="/telegram/reset" class="mt-2">
+                <button class="btn btn-outline-secondary tg-btn w-100">
+                    Изменить номер
+                </button>
+            </form>
+        {% elif tg.awaiting_code %}
             <form method="post" action="/telegram/code">
                 <div class="mb-3">
                     <label class="form-label">Код из Telegram</label>
@@ -196,17 +201,29 @@
                     Код отправлен в приложение Telegram на номер {{ tg.phone }}.
                 {% endif %}
             </div>
-            <form method="post" action="/telegram/connect" class="mt-2">
-                <input type="hidden" name="phone" value="{{ tg.phone }}">
-                <button class="btn btn-outline-secondary tg-btn w-100">
-                    Отправить код ещё раз
+            {% if tg.resend_supported %}
+            <form method="post" action="/telegram/resend" class="mt-2">
+                <button id="tg-resend" class="btn btn-outline-secondary tg-btn w-100"
+                        data-seconds="{{ tg.resend_seconds }}"
+                        data-available-at="{{ tg.resend_available_at_ms }}"
+                        data-method="{{ tg.resend_method or 'другой способ' }}"
+                        {% if tg.resend_seconds %}disabled{% endif %}>
+                    {% if tg.resend_seconds %}
+                        Другой способ через {{ tg.resend_seconds }} сек.
+                    {% else %}
+                        Запросить {{ tg.resend_method or 'другой способ' }}
+                    {% endif %}
                 </button>
             </form>
-            <form method="post" action="/telegram/connect" class="mt-2">
-                <input type="hidden" name="phone" value="{{ tg.phone }}">
-                <input type="hidden" name="force_sms" value="1">
+            {% else %}
+            <div class="tg-note">
+                Telegram пока не предложил другой способ доставки. Не нажимайте
+                повторно много раз — это может временно заблокировать запросы.
+            </div>
+            {% endif %}
+            <form method="post" action="/telegram/reset" class="mt-2">
                 <button class="btn btn-outline-secondary tg-btn w-100">
-                    Попробовать SMS или звонок
+                    Изменить номер
                 </button>
             </form>
         {% else %}
@@ -214,7 +231,8 @@
                 <div class="mb-3">
                     <label class="form-label">Номер телефона</label>
                     <input type="tel" name="phone" class="form-control"
-                           placeholder="+79991234567" required autofocus>
+                           placeholder="+79991234567" value="{{ tg.phone or '' }}"
+                           required autofocus autocomplete="tel">
                 </div>
                 <div class="d-grid">
                     <button class="btn btn-primary tg-btn">Получить код</button>
@@ -223,4 +241,28 @@
         {% endif %}
     </div>
 </div>
+<script>
+(() => {
+    const btn = document.getElementById('tg-resend');
+    if (!btn) return;
+    const availableAt = Number(btn.dataset.availableAt || 0);
+    const method = btn.dataset.method || 'другой способ';
+    const render = () => {
+        const seconds = Math.max(0, Math.ceil(
+            (availableAt - Date.now()) / 1000));
+        if (seconds <= 0) {
+            btn.disabled = false;
+            btn.textContent = 'Запросить ' + method;
+            return true;
+        } else {
+            btn.textContent = 'Другой способ через ' + seconds + ' сек.';
+        }
+        return false;
+    };
+    if (render()) return;
+    const timer = setInterval(() => {
+        if (render()) clearInterval(timer);
+    }, 500);
+})();
+</script>
 {% endblock %}

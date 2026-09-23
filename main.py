@@ -902,6 +902,20 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
     register_routes(app)
 
     from data import telegram_bridge
+
+    @app.errorhandler(telegram_bridge.MediaStoreFullError)
+    def _media_store_full(error):
+        detail = (str(error) + '. Освободите место в медиа и повторите '
+                  'отправку.')
+        wants_json = (request.path.startswith('/api/')
+                      or request.path == '/add_media'
+                      or request.headers.get('X-Requested-With')
+                      == 'XMLHttpRequest')
+        if wants_json:
+            return jsonify({'error': 'storage_full',
+                            'detail': detail}), 507
+        return detail, 507
+
     telegram_bridge.start()
     return app
 
@@ -916,16 +930,43 @@ def _media_root() -> str:
     return os.environ.get('SKILLWOOD_MEDIA_ROOT') or os.path.join(os.getcwd(), 'media')
 
 
-def _store_media_bytes(owner_id: int, data: bytes, subdir: str | None = None):
+def _write_encrypted_media_path(full_path: str, data: bytes) -> None:
+    """Единая квотированная и атомарная запись media-файлов."""
+    from data import telegram_bridge
     from data.crypto import encrypt_bytes
 
+    encrypted = encrypt_bytes(data)
+    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+    try:
+        replacing_size = (os.path.getsize(full_path)
+                          if os.path.exists(full_path) else 0)
+    except OSError:
+        replacing_size = 0
+    reservation = telegram_bridge.reserve_media_write(
+        len(encrypted), replacing_size=replacing_size)
+    temp_path = full_path + '.tmp-' + uuid.uuid4().hex
+    committed = False
+    try:
+        with open(temp_path, 'wb') as f:
+            f.write(encrypted)
+        os.replace(temp_path, full_path)
+        committed = True
+    finally:
+        if not committed:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        telegram_bridge.finish_media_write(reservation, committed)
+
+
+def _store_media_bytes(owner_id: int, data: bytes, subdir: str | None = None):
     rel_dir = str(owner_id)
     if subdir:
         rel_dir = f"{rel_dir}/{subdir.strip('/')}"
-    os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)
     stored_path = f"{rel_dir}/{uuid.uuid4().hex}.enc"
-    with open(os.path.join(_media_root(), stored_path), 'wb') as f:
-        f.write(encrypt_bytes(data))
+    _write_encrypted_media_path(
+        os.path.join(_media_root(), stored_path), data)
     return stored_path
 
 
@@ -1214,16 +1255,17 @@ def _save_notification_avatar(user_id, encoded):
             or data.startswith(b'\xff\xd8\xff')):
         return None
 
-    from data.crypto import encrypt_bytes
-
     digest = hashlib.sha256(data).hexdigest()[:32]
     rel_dir = f"{user_id}/notification_avatars"
     rel_path = f"{rel_dir}/{digest}.enc"
     full_path = os.path.join(_media_root(), rel_path)
     if not os.path.exists(full_path):
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
-        with open(full_path, 'wb') as f:
-            f.write(encrypt_bytes(data))
+        try:
+            _write_encrypted_media_path(full_path, data)
+        except OSError:
+            # Аватар в Android payload опционален: нехватка места или сбой
+            # его записи не должны потерять само текстовое MAX-сообщение.
+            return None
     return rel_path
 
 
@@ -2778,7 +2820,6 @@ def register_routes(app: Flask) -> None:
         user_id = session['user_id']
 
         if request.method == 'POST':
-            from data.crypto import encrypt_bytes
             upload = request.files.get('avatar')
             if upload is None or not upload.filename:
                 return redirect('/home')
@@ -2787,9 +2828,7 @@ def register_routes(app: Flask) -> None:
             if not data or len(data) > 5 * 1024 * 1024 \
                     or not mime.startswith('image/'):
                 return redirect('/home')
-            os.makedirs(os.path.join(_media_root(), str(user_id)), exist_ok=True)
-            with open(_avatar_file(user_id), 'wb') as f:
-                f.write(encrypt_bytes(data))
+            _write_encrypted_media_path(_avatar_file(user_id), data)
             with open(_avatar_mime_file(user_id), 'w', encoding='utf-8') as f:
                 f.write(mime)
             return redirect('/home')
@@ -2927,15 +2966,63 @@ def register_routes(app: Flask) -> None:
         from data import telegram_bridge
         user_id = session['user_id']
         phone = (request.form.get('phone') or '').strip()
-        force_sms = request.form.get('force_sms') == '1'
         if phone:
             try:
-                telegram_bridge.request_code(phone, user_id=user_id,
-                                             force_sms=force_sms)
-            except Exception as exc:  # noqa: BLE001
+                telegram_bridge.request_code(phone, user_id=user_id)
+            except telegram_bridge.TelegramAuthError as exc:
                 return render_template('telegram.html',
-                                       tg=telegram_bridge.status(user_id),
+                                       tg=telegram_bridge.status(
+                                           user_id, refresh=False),
                                        error=str(exc))
+            except Exception:  # noqa: BLE001
+                app.logger.exception('Unexpected Telegram connect error')
+                return render_template(
+                    'telegram.html',
+                    tg=telegram_bridge.status(user_id, refresh=False),
+                    error='Не удалось связаться с Telegram. Попробуйте позже.')
+        return redirect('/telegram')
+
+    @app.route('/telegram/resend', methods=['POST'])
+    def telegram_resend():
+        if not session.get('user_id'):
+            return redirect('/login')
+        from data import telegram_bridge
+        user_id = session['user_id']
+        try:
+            telegram_bridge.resend_code(user_id=user_id)
+        except telegram_bridge.TelegramAuthError as exc:
+            return render_template(
+                'telegram.html',
+                tg=telegram_bridge.status(user_id, refresh=False),
+                error=str(exc))
+        except Exception:  # noqa: BLE001
+            app.logger.exception('Unexpected Telegram resend error')
+            return render_template(
+                'telegram.html',
+                tg=telegram_bridge.status(user_id, refresh=False),
+                error='Не удалось запросить новый способ доставки. '
+                      'Попробуйте позже.')
+        return redirect('/telegram')
+
+    @app.route('/telegram/reset', methods=['POST'])
+    def telegram_reset():
+        if not session.get('user_id'):
+            return redirect('/login')
+        from data import telegram_bridge
+        user_id = session['user_id']
+        try:
+            telegram_bridge.reset_login(user_id=user_id)
+        except telegram_bridge.TelegramAuthError as exc:
+            return render_template(
+                'telegram.html',
+                tg=telegram_bridge.status(user_id, refresh=False),
+                error=str(exc))
+        except Exception:  # noqa: BLE001
+            app.logger.exception('Unexpected Telegram reset error')
+            return render_template(
+                'telegram.html',
+                tg=telegram_bridge.status(user_id, refresh=False),
+                error='Не удалось сбросить попытку входа. Попробуйте позже.')
         return redirect('/telegram')
 
     @app.route('/telegram/code', methods=['POST'])
@@ -2948,10 +3035,17 @@ def register_routes(app: Flask) -> None:
         if code:
             try:
                 telegram_bridge.submit_code(code, user_id=user_id)
-            except Exception as exc:  # noqa: BLE001
+            except telegram_bridge.TelegramAuthError as exc:
                 return render_template('telegram.html',
-                                       tg=telegram_bridge.status(user_id),
+                                       tg=telegram_bridge.status(
+                                           user_id, refresh=False),
                                        error=str(exc))
+            except Exception:  # noqa: BLE001
+                app.logger.exception('Unexpected Telegram code error')
+                return render_template(
+                    'telegram.html',
+                    tg=telegram_bridge.status(user_id, refresh=False),
+                    error='Не удалось проверить код. Попробуйте позже.')
         return redirect('/telegram')
 
     @app.route('/telegram/password', methods=['POST'])
@@ -2964,10 +3058,17 @@ def register_routes(app: Flask) -> None:
         if password:
             try:
                 telegram_bridge.submit_password(password, user_id=user_id)
-            except Exception as exc:  # noqa: BLE001
+            except telegram_bridge.TelegramAuthError as exc:
                 return render_template('telegram.html',
-                                       tg=telegram_bridge.status(user_id),
+                                       tg=telegram_bridge.status(
+                                           user_id, refresh=False),
                                        error=str(exc))
+            except Exception:  # noqa: BLE001
+                app.logger.exception('Unexpected Telegram password error')
+                return render_template(
+                    'telegram.html',
+                    tg=telegram_bridge.status(user_id, refresh=False),
+                    error='Не удалось проверить пароль. Попробуйте позже.')
         return redirect('/telegram')
 
     @app.route('/telegram/logout', methods=['POST'])
@@ -4302,7 +4403,7 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return 'Unauthorized', 401
         from data.contacts import Contact, MessengerHandle
-        from data.crypto import encrypt_bytes, decrypt_bytes
+        from data.crypto import decrypt_bytes
         from data import telegram_bridge
         db = get_db()
         user_id = session['user_id']
@@ -4326,9 +4427,7 @@ def register_routes(app: Flask) -> None:
                 return 'Not Found', 404
             if not data:
                 return 'Not Found', 404
-            os.makedirs(os.path.dirname(cache_full), exist_ok=True)
-            with open(cache_full, 'wb') as f:
-                f.write(encrypt_bytes(data))
+            _write_encrypted_media_path(cache_full, data)
         with open(cache_full, 'rb') as f:
             raw = decrypt_bytes(f.read())
         return Response(raw, mimetype='image/jpeg')
@@ -6100,6 +6199,29 @@ def register_routes(app: Flask) -> None:
             return None
         return db.query(Device).filter(Device.token_hash == hash_token(token)).first()
 
+    def _expire_stale_pending_replies(db, user_id):
+        """Отменяет только задания, которые Android ещё не забрал.
+
+        ``picked`` уже могло уйти через RemoteInput, даже если подтверждение
+        задержалось. Сервер не умеет отменить такую задачу и не должен ложно
+        помечать её неотправленной — иначе ручной повтор создаст дубль.
+        """
+        from data.pending_replies import (PendingReply, STATUS_EXPIRED,
+                                          STATUS_PENDING)
+        now = datetime.now()
+        queue_cutoff = now - timedelta(seconds=180)
+        changed = 0
+        changed += (db.query(PendingReply)
+                    .filter(PendingReply.user_id == user_id,
+                            PendingReply.status == STATUS_PENDING,
+                            PendingReply.created_at < queue_cutoff)
+                    .update({PendingReply.status: STATUS_EXPIRED,
+                             PendingReply.error: 'device_timeout'},
+                            synchronize_session=False))
+        if changed:
+            db.commit()
+        return changed
+
     @app.route('/api/me', methods=['GET'])
     def api_me():
         db = get_db()
@@ -6126,6 +6248,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'unauthorized'}), 401
         device.last_seen_ip = request.remote_addr
         device.last_seen_at = datetime.now()
+        _expire_stale_pending_replies(db, device.user_id)
 
         items = (db.query(PendingReply)
                  .filter(PendingReply.user_id == device.user_id,
@@ -6134,9 +6257,17 @@ def register_routes(app: Flask) -> None:
         now = datetime.now()
         out = []
         for it in items:
-            it.status = STATUS_PICKED
-            it.picked_up_at = now
-            it.device_id = device.id
+            # UPDATE ... WHERE status=pending делает claim безопасным даже
+            # если два привязанных устройства опросили очередь одновременно.
+            claimed = (db.query(PendingReply)
+                       .filter(PendingReply.id == it.id,
+                               PendingReply.status == STATUS_PENDING)
+                       .update({PendingReply.status: STATUS_PICKED,
+                                PendingReply.picked_up_at: now,
+                                PendingReply.device_id: device.id},
+                               synchronize_session=False))
+            if claimed != 1:
+                continue
             out.append({
                 'id': it.id,
                 'package_name': it.package_name,
@@ -6151,8 +6282,9 @@ def register_routes(app: Flask) -> None:
         """Android-клиент отчитывается об отправке. На успехе создаём
         запись `Messages` (исходящее), и она проявляется в ленте веб-панели."""
         from data.contacts import MessengerHandle
-        from data.pending_replies import (PendingReply, STATUS_SENT,
-                                          STATUS_FAILED)
+        from data.pending_replies import (PendingReply, STATUS_EXPIRED,
+                                          STATUS_FAILED, STATUS_PICKED,
+                                          STATUS_SENT)
         db = get_db()
         device = _device_from_bearer(db)
         if device is None:
@@ -6164,33 +6296,75 @@ def register_routes(app: Flask) -> None:
         if pr is None:
             return jsonify({'error': 'not_found'}), 404
 
+        if pr.status == STATUS_SENT:
+            return jsonify({'ok': True, 'duplicate': True})
+        if pr.status in (STATUS_FAILED, STATUS_EXPIRED):
+            return jsonify({'error': 'reply_already_finished',
+                            'status': pr.status}), 409
+        if pr.status != STATUS_PICKED:
+            return jsonify({'error': 'reply_not_picked'}), 409
+
         body = request.get_json(silent=True) or {}
         ok = bool(body.get('ok'))
         error = body.get('error') or None
         now = datetime.now()
 
         if ok:
+            # Единственный победитель атомарно переводит picked -> sent.
+            # Повторный/параллельный callback не сможет создать второй
+            # Messages даже если оба запроса успели прочитать старый статус.
+            claimed = (db.query(PendingReply)
+                       .filter(PendingReply.id == pr.id,
+                               PendingReply.user_id == device.user_id,
+                               PendingReply.status == STATUS_PICKED)
+                       .update({PendingReply.status: STATUS_SENT,
+                                PendingReply.sent_at: now,
+                                PendingReply.error: None},
+                               synchronize_session=False))
+            if claimed != 1:
+                db.rollback()
+                current = db.query(PendingReply).filter(
+                    PendingReply.id == reply_id,
+                    PendingReply.user_id == device.user_id).first()
+                if current is not None and current.status == STATUS_SENT:
+                    return jsonify({'ok': True, 'duplicate': True})
+                return jsonify({'error': 'reply_already_finished',
+                                'status': (current.status
+                                           if current is not None
+                                           else 'missing')}), 409
             handle = db.query(MessengerHandle).filter(
                 MessengerHandle.id == pr.handle_id).first()
-            msg = Messages(
-                sender='Вы',
-                text=pr.text,
-                messenger_name=handle.messenger_name if handle else '',
-                time=now.strftime('%H:%M'),
-                user_id=pr.user_id,
-                handle_id=pr.handle_id,
-                created_at=now,
-                outgoing=True,
-                reply_to_message_id=pr.reply_to_message_id,
-                notification_dedup_key=pr.client_send_key,
-            )
-            db.add(msg)
-            pr.status = STATUS_SENT
-            pr.sent_at = now
-            pr.error = None
+            existing_msg = None
+            if pr.client_send_key:
+                existing_msg = db.query(Messages).filter(
+                    Messages.user_id == pr.user_id,
+                    Messages.notification_dedup_key
+                    == pr.client_send_key).first()
+            if existing_msg is None:
+                msg = Messages(
+                    sender='Вы',
+                    text=pr.text,
+                    messenger_name=handle.messenger_name if handle else '',
+                    time=now.strftime('%H:%M'),
+                    user_id=pr.user_id,
+                    handle_id=pr.handle_id,
+                    created_at=now,
+                    outgoing=True,
+                    reply_to_message_id=pr.reply_to_message_id,
+                    notification_dedup_key=pr.client_send_key,
+                )
+                db.add(msg)
         else:
-            pr.status = STATUS_FAILED
-            pr.error = (error or '')[:200]
+            claimed = (db.query(PendingReply)
+                       .filter(PendingReply.id == pr.id,
+                               PendingReply.user_id == device.user_id,
+                               PendingReply.status == STATUS_PICKED)
+                       .update({PendingReply.status: STATUS_FAILED,
+                                PendingReply.error: (error or '')[:200]},
+                               synchronize_session=False))
+            if claimed != 1:
+                db.rollback()
+                return jsonify({'error': 'reply_already_finished'}), 409
 
         db.commit()
         return jsonify({'ok': True})
@@ -6202,6 +6376,7 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'unauthorized'}), 401
         from data.pending_replies import PendingReply
         db = get_db()
+        _expire_stale_pending_replies(db, session['user_id'])
         pr = db.query(PendingReply).filter(
             PendingReply.id == reply_id,
             PendingReply.user_id == session['user_id']).first()
@@ -6384,7 +6559,6 @@ def register_routes(app: Flask) -> None:
 
         from data.attachments import Attachment
         from data.contacts import record_message
-        from data.crypto import encrypt_bytes
 
         sender = request.form.get('sender')
         messenger_name = request.form.get('messenger_name')
@@ -6443,12 +6617,7 @@ def register_routes(app: Flask) -> None:
         if msg is None:
             return 'OK', 200
 
-        rel_dir = str(user_id)
-        os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)
-        stored_name = uuid.uuid4().hex + '.enc'
-        stored_path = f"{rel_dir}/{stored_name}"
-        with open(os.path.join(_media_root(), stored_path), 'wb') as f:
-            f.write(encrypt_bytes(data))
+        stored_path = _store_media_bytes(user_id, data)
 
         att = Attachment(
             user_id=user_id,

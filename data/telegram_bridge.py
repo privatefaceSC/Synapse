@@ -14,11 +14,20 @@
 
 import asyncio
 import base64
+from concurrent.futures import TimeoutError as FutureTimeoutError
+from dataclasses import dataclass
 import hashlib
 import json
+import logging
+import math
 import os
+import re
 import threading
 import time
+import uuid
+
+
+logger = logging.getLogger(__name__)
 
 _loop = None
 _thread = None
@@ -26,7 +35,16 @@ _client = None
 _clients = {}
 _handler_registered = False
 _handler_registered_users = set()
-_refresh_task = None
+_refresh_task = None  # legacy alias for the owner account
+_refresh_tasks = {}
+_startup_tasks = {}
+_auth_locks = {}
+_client_locks = {}
+_handler_locks = {}
+_sync_locks = {}
+_recent_sync_futures = {}
+_lifecycle_generation = {}
+_auth_retry_after = {}
 _file_send_semaphore = None
 _file_send_semaphore_loop = None
 _pending_file_sends = 0
@@ -54,10 +72,18 @@ _recent_self_sent_ids = []
 _typing = {}
 _recent_sync_at_by_user = {}
 _recent_sync_inflight_users = set()
-_RECENT_SYNC_INTERVAL = 45
-_RECENT_SYNC_DIALOG_LIMIT = 20
-_RECENT_SYNC_MESSAGE_LIMIT = 5
+_RECENT_SYNC_INTERVAL = 10
+_RECENT_SYNC_DIALOG_LIMIT = 12
+_RECENT_SYNC_MESSAGE_LIMIT = 8
 _DEFAULT_MEDIA_MAX_MB = 20
+_DEFAULT_MEDIA_STORE_MAX_MB = 650
+_DEFAULT_CATCHUP_IMAGE_MAX_MB = 8
+_CATCHUP_MEDIA_MAX_AGE_SECONDS = 15 * 60
+# [последний расчёт monotonic, bytes, поколение записей]
+_media_usage_cache = [0.0, 0, 0]
+_media_usage_lock = threading.Lock()
+_media_reservation_lock = threading.Lock()
+_media_reserved_bytes = 0
 # Результат проверки «является ли megagroup группой комментариев канала».
 # Отрицательный ответ кэшируем ненадолго: связь группы с каналом может
 # появиться позже, но делать GetFullChannel на каждое входящее слишком дорого.
@@ -67,6 +93,9 @@ _STATE_TEMPLATE = {
     "phone": None,
     "phone_code_hash": None,
     "code_hint": None,
+    "resend_available_at": None,
+    "resend_supported": False,
+    "resend_method": None,
     "authorized": False,
     "needs_password": False,
     "error": None,
@@ -238,6 +267,176 @@ def _media_max_bytes():
     return max(1, mb) * 1024 * 1024
 
 
+def _media_store_max_bytes():
+    """Общий предел media/, чтобы вложения не заполняли квоту хостинга.
+
+    SKILLWOOD_MEDIA_STORE_MAX_MB — новое имя; Telegram-prefixed вариант
+    оставлен как совместимый fallback. Ноль отключает общий предел.
+    """
+    try:
+        raw = os.environ.get(
+            "SKILLWOOD_MEDIA_STORE_MAX_MB",
+            os.environ.get("TELEGRAM_MEDIA_STORE_MAX_MB",
+                           str(_DEFAULT_MEDIA_STORE_MAX_MB)))
+        mb = int(raw)
+    except ValueError:
+        mb = _DEFAULT_MEDIA_STORE_MAX_MB
+    return max(0, mb) * 1024 * 1024
+
+
+def _media_store_usage_bytes(force=False):
+    """Размер media/ с коротким кэшем; вызывается только перед загрузкой."""
+    now = time.monotonic()
+    if not force and now - _media_usage_cache[0] < 30:
+        return _media_usage_cache[1]
+    with _media_usage_lock:
+        now = time.monotonic()
+        if not force and now - _media_usage_cache[0] < 30:
+            return _media_usage_cache[1]
+        # Если во время обхода кто-то сохранил файл, поколение изменится.
+        # Повторяем один раз, не блокируя event-loop на threading.Lock.
+        total = 0
+        for _attempt in range(2):
+            generation = _media_usage_cache[2]
+            total = 0
+            root = _media_root()
+            try:
+                for base, _dirs, files in os.walk(root):
+                    for name in files:
+                        try:
+                            total += os.path.getsize(os.path.join(base, name))
+                        except OSError:
+                            continue
+            except OSError:
+                total = 0
+            if generation == _media_usage_cache[2]:
+                _media_usage_cache[0] = time.monotonic()
+                _media_usage_cache[1] = total
+                return total
+        _media_usage_cache[0] = 0.0
+        return max(total, _media_usage_cache[1])
+
+
+def _invalidate_media_usage_cache():
+    _media_usage_cache[0] = 0.0
+    _media_usage_cache[2] += 1
+
+
+def _note_media_usage_delta(size):
+    """Обновляет уже посчитанный кэш без повторного обхода всего media/."""
+    _media_usage_cache[2] += 1
+    if _media_usage_cache[0]:
+        _media_usage_cache[1] += max(0, int(size or 0))
+        _media_usage_cache[0] = time.monotonic()
+
+
+def _encrypted_size_estimate(raw_size):
+    """Fernet хранит payload в base64 и добавляет служебные поля."""
+    raw_size = max(0, int(raw_size or 0))
+    return ((raw_size + 96) * 4 // 3) + 256
+
+
+def _media_store_has_capacity(incoming_size=0):
+    limit = _media_store_max_bytes()
+    if limit <= 0:
+        return True
+    return _media_store_usage_bytes() + max(0, int(incoming_size or 0)) <= limit
+
+
+class MediaStoreFullError(OSError):
+    """Безопасный отказ записи до того, как квота уронит SQLite/WSGI."""
+
+
+@dataclass
+class _MediaReservation:
+    size: int
+    replacing_size: int = 0
+    active: bool = True
+
+
+def reserve_media_write(size, replacing_size=0):
+    """Атомарно резервирует место для любого writer в этом процессе."""
+    global _media_reserved_bytes
+    size = max(0, int(size or 0))
+    replacing_size = max(0, int(replacing_size or 0))
+    limit = _media_store_max_bytes()
+    with _media_reservation_lock:
+        growth = max(0, size - replacing_size)
+        if (limit > 0 and _media_store_usage_bytes()
+                + _media_reserved_bytes + growth > limit):
+            limit_mb = round(limit / 1024 / 1024)
+            raise MediaStoreFullError(
+                f"Хранилище достигло безопасного лимита {limit_mb} МБ")
+        _media_reserved_bytes += growth
+    return _MediaReservation(size=size, replacing_size=replacing_size)
+
+
+def finish_media_write(reservation, committed):
+    """Освобождает reservation и обновляет общий кэш после записи."""
+    global _media_reserved_bytes
+    if reservation is None or not reservation.active:
+        return
+    growth = max(0, reservation.size - reservation.replacing_size)
+    with _media_reservation_lock:
+        if committed:
+            # Между reserve и finish другой writer мог пересчитать os.walk
+            # уже вместе с новым файлом. Прибавление delta тогда посчитает
+            # его дважды и ложно объявит хранилище заполненным. Инвалидация
+            # дешевле и безопаснее; следующий reserve получит точный размер.
+            _invalidate_media_usage_cache()
+        _media_reserved_bytes = max(0, _media_reserved_bytes - growth)
+        reservation.active = False
+
+
+async def _reserve_media_write_async(size, replacing_size=0):
+    """Резервирует место вне event-loop и не теряет reservation при cancel."""
+    task = asyncio.create_task(asyncio.to_thread(
+        reserve_media_write, size, replacing_size))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # shield оставляет worker жить. Когда он закончит, обязательно снимем
+        # возможную reservation; иначе один logout способен ложно заполнить
+        # хранилище до следующего перезапуска WSGI.
+        def _release(done):
+            try:
+                reservation = done.result()
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                return
+            finish_media_write(reservation, False)
+
+        task.add_done_callback(_release)
+        raise
+
+
+def _catchup_media_allowed(msg, kind):
+    """В догонке автоматически берём только свежие небольшие фото.
+
+    Видео и документы остаются ленивыми: иначе один reconnect снова заполнит
+    ограниченную квоту AlwaysData. Live-события используют обычный лимит.
+    """
+    if kind != "image":
+        return False
+    msg_date = getattr(msg, "date", None)
+    if msg_date is None:
+        return False
+    try:
+        age = time.time() - msg_date.timestamp()
+    except (AttributeError, OSError, OverflowError, ValueError):
+        return False
+    if age < -300 or age > _CATCHUP_MEDIA_MAX_AGE_SECONDS:
+        return False
+    size = getattr(getattr(msg, "file", None), "size", None) or 0
+    try:
+        catchup_mb = int(os.environ.get(
+            "TELEGRAM_CATCHUP_IMAGE_MAX_MB",
+            str(_DEFAULT_CATCHUP_IMAGE_MAX_MB)))
+    except ValueError:
+        catchup_mb = _DEFAULT_CATCHUP_IMAGE_MAX_MB
+    catchup_limit = max(1, catchup_mb) * 1024 * 1024
+    return (not size or size <= min(catchup_limit, _media_max_bytes()))
+
+
 def is_configured() -> bool:
     aid, ah = _env_api()
     return bool(aid and ah)
@@ -268,32 +467,70 @@ def _ensure_loop():
 def _call(coro, timeout=60):
     _ensure_loop()
     fut = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return fut.result(timeout=timeout)
+    try:
+        return fut.result(timeout=timeout)
+    except FutureTimeoutError:
+        # Иначе HTTP-запрос уже вернул ошибку, а coroutine позже всё равно
+        # выполнит отправку/сброс входа и неожиданно изменит состояние.
+        fut.cancel()
+        raise
+
+
+def _async_lock_for(store, owner):
+    owner = _normalize_user_id(owner)
+    lock = store.get(owner)
+    if lock is None:
+        lock = asyncio.Lock()
+        store[owner] = lock
+    return lock
+
+
+def _client_lock_for(owner):
+    return _async_lock_for(_client_locks, owner)
+
+
+def _handler_lock_for(owner):
+    return _async_lock_for(_handler_locks, owner)
+
+
+def _sync_lock_for(owner):
+    return _async_lock_for(_sync_locks, owner)
+
+
+def _lifecycle_token(owner):
+    return int(_lifecycle_generation.get(_normalize_user_id(owner), 0))
+
+
+def _bump_lifecycle(owner):
+    owner = _normalize_user_id(owner)
+    _lifecycle_generation[owner] = _lifecycle_token(owner) + 1
+    return _lifecycle_generation[owner]
 
 
 async def _get_client(user_id=None):
     global _client
     user_id = _normalize_user_id(user_id)
-    if user_id in _clients:
-        client = _clients[user_id]
-        try:
-            is_connected = client.is_connected()
-        except Exception:  # noqa: BLE001
-            is_connected = True
-        if not is_connected:
-            await client.connect()
+    async with _client_lock_for(user_id):
+        if user_id in _clients:
+            client = _clients[user_id]
+            try:
+                is_connected = client.is_connected()
+            except Exception:  # noqa: BLE001
+                is_connected = True
+            if not is_connected:
+                await client.connect()
+            return client
+        from telethon import TelegramClient
+        aid, ah = _env_api()
+        # connection_retries поменьше — без VPN серверы Telegram недоступны,
+        # нет смысла долго долбиться (по умолчанию 5 попыток).
+        client = TelegramClient(_session_path(user_id), aid, ah,
+                                connection_retries=3)
+        await client.connect()
+        _clients[user_id] = client
+        if user_id == _owner_user_id():
+            _client = client
         return client
-    from telethon import TelegramClient
-    aid, ah = _env_api()
-    # connection_retries поменьше — без VPN серверы Telegram недоступны,
-    # нет смысла долго долбиться (по умолчанию 5 попыток).
-    client = TelegramClient(_session_path(user_id), aid, ah,
-                            connection_retries=3)
-    await client.connect()
-    _clients[user_id] = client
-    if user_id == _owner_user_id():
-        _client = client
-    return client
 
 
 def _sender_name(sender) -> str:
@@ -413,8 +650,6 @@ def _sticker_pack_meta_from_message(msg, data=None):
 def _save_attachment(db, user_id, message_id, kind, data, msg):
     """Шифрует и кладёт медиа в media/<user_id>/, создаёт Attachment.
     Хранилище и шифрование — те же, что у Android-клиента."""
-    import uuid
-
     from data.attachments import Attachment
     from data.crypto import encrypt_bytes
 
@@ -422,14 +657,40 @@ def _save_attachment(db, user_id, message_id, kind, data, msg):
                 .filter(Attachment.user_id == user_id,
                         Attachment.message_id == message_id).first())
     if existing is not None:
-        return existing
+        existing_full = os.path.join(_media_root(), existing.stored_path)
+        if os.path.exists(existing_full):
+            return existing
+        # Запись могла остаться после аварии диска/ручной очистки. Этот метод
+        # вызывается только когда Telegram снова реально отдал байты, поэтому
+        # заменяем битую ссылку, не создавая второе сообщение.
+        db.delete(existing)
+        db.flush()
 
     root = _media_root()
     rel_dir = str(user_id)
     os.makedirs(os.path.join(root, rel_dir), exist_ok=True)
     stored_path = f"{rel_dir}/{uuid.uuid4().hex}.enc"
-    with open(os.path.join(root, stored_path), "wb") as f:
-        f.write(encrypt_bytes(data))
+    encrypted = encrypt_bytes(data)
+    try:
+        reservation = reserve_media_write(len(encrypted))
+    except MediaStoreFullError as exc:
+        _state_for(user_id)["last_media_skip"] = str(exc)
+        return None
+    committed = False
+    full_path = os.path.join(root, stored_path)
+    temp_path = full_path + ".tmp-" + uuid.uuid4().hex
+    try:
+        with open(temp_path, "wb") as f:
+            f.write(encrypted)
+        os.replace(temp_path, full_path)
+        committed = True
+    finally:
+        if not committed:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        finish_media_write(reservation, committed)
 
     file_obj = getattr(msg, "file", None)
     pack_key = pack_title = item_key = None
@@ -465,19 +726,34 @@ async def _download_media_payload(msg, kind, user_id=None):
         state["last_media_skip"] = (
             f"{kind}: {size_mb} МБ больше лимита {limit_mb} МБ")
         return None, None
+    if not await asyncio.to_thread(
+            _media_store_has_capacity, _encrypted_size_estimate(size)):
+        limit_mb = round(_media_store_max_bytes() / 1024 / 1024)
+        state["last_media_skip"] = (
+            f"{kind}: хранилище достигло безопасного лимита {limit_mb} МБ")
+        return None, None
     try:
         data = await msg.download_media(file=bytes)
     except Exception as exc:  # noqa: BLE001
         state["error"] = f"download: {exc}"
+        logger.exception("Telegram media download failed for user_id=%s",
+                         _normalize_user_id(user_id))
         return None, None
     if data is None:
         state["last_media_skip"] = f"{kind}: Telethon не вернул данные"
+        return None, None
+    if not await asyncio.to_thread(
+            _media_store_has_capacity, _encrypted_size_estimate(len(data))):
+        limit_mb = round(_media_store_max_bytes() / 1024 / 1024)
+        state["last_media_skip"] = (
+            f"{kind}: хранилище достигло безопасного лимита {limit_mb} МБ")
         return None, None
     state["last_media_skip"] = None
     return kind, data
 
 
-async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
+async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None,
+                              expected_lifecycle=None):
     """Лениво скачивает фото профиля чата и сохраняет его контакту.
     Качает только если у контакта аватара ещё нет или файл был удалён."""
     from data import db_sessions
@@ -485,6 +761,10 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
     from data.crypto import encrypt_bytes
 
     owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
     db = db_sessions.create_session()
     try:
         handle = (db.query(MessengerHandle)
@@ -509,6 +789,8 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
         if client is None:
             client = await _get_client(owner)
         photo = await client.download_profile_photo(chat, file=bytes)
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return
         if not photo:
             if had_stale_path:
                 db.commit()
@@ -517,15 +799,51 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None):
         rel_dir = f"{owner}/tg_avatars"
         os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)
         rel_path = f"{rel_dir}/{contact_id}.enc"
-        with open(os.path.join(_media_root(), rel_path), "wb") as f:
-            f.write(encrypt_bytes(photo))
-        contact.avatar_path = rel_path
-        db.commit()
+        encrypted = encrypt_bytes(photo)
+        full_path = os.path.join(_media_root(), rel_path)
+        try:
+            replacing_size = (os.path.getsize(full_path)
+                              if os.path.exists(full_path) else 0)
+        except OSError:
+            replacing_size = 0
+        try:
+            # Первый reserve после рестарта считает весь media/. Не держим
+            # из-за этого Telegram event-loop и приём новых сообщений.
+            reservation = await _reserve_media_write_async(
+                len(encrypted), replacing_size)
+        except MediaStoreFullError:
+            return
+        if _lifecycle_token(owner) != expected_lifecycle:
+            finish_media_write(reservation, False)
+            return
+        committed = False
+        temp_path = full_path + ".tmp-" + uuid.uuid4().hex
+        try:
+            with open(temp_path, "wb") as f:
+                f.write(encrypted)
+            os.replace(temp_path, full_path)
+            committed = True
+        finally:
+            if not committed:
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+            finish_media_write(reservation, committed)
+        if _lifecycle_token(owner) == expected_lifecycle:
+            contact.avatar_path = rel_path
+            db.commit()
     finally:
         db.close()
 
 
-async def _handle_message(event, user_id=None, client=None):
+async def _handle_message(event, user_id=None, client=None,
+                          expected_lifecycle=None):
+    owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
     # Пропускаем чаты с выключенными уведомлениями. Архив Telegram не
     # отбрасываем: такие сообщения попадут в локальный раздел «Архив».
     if event.chat_id in _skip_chat_ids:
@@ -537,6 +855,18 @@ async def _handle_message(event, user_id=None, client=None):
         return
     msg = event.message
     is_out = bool(getattr(msg, "out", False))
+    kind = _media_kind(msg)
+    preloaded_media = None
+
+    # Одноразовое фото важно забрать до сетевых запросов метаданных чата:
+    # после открытия в Telegram оно может исчезнуть. Обычные фото/файлы
+    # остаются на прежнем ленивом пути ниже.
+    media = getattr(msg, "media", None)
+    if kind is not None and getattr(media, "ttl_seconds", None):
+        loaded_kind, loaded_data = await _download_media_payload(
+            msg, kind, user_id=user_id)
+        if loaded_kind is not None and loaded_data is not None:
+            preloaded_media = (loaded_kind, loaded_data)
 
     # Telegram присылает комментарии как обычные сообщения связанной
     # megagroup. Пользователь мог впервые открыть комментарии в оригинальном
@@ -544,6 +874,8 @@ async def _handle_message(event, user_id=None, client=None):
     # Определяем её до любых запросов к SQLite и до Web Push: это не даёт
     # шквалу комментариев подвесить сайт.
     chat = await event.get_chat()
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
     if await _is_linked_discussion_group(
             chat, event.chat_id, user_id=user_id, client=client):
         return
@@ -554,6 +886,7 @@ async def _handle_message(event, user_id=None, client=None):
     tg_message_id_for_dupe = getattr(msg, "id", None)
     if tg_message_id_for_dupe is not None:
         from data import db_sessions
+        from data.attachments import Attachment
         from data.contacts import MessengerHandle
         from data.users import Messages as _Messages
         db = db_sessions.create_session()
@@ -573,7 +906,21 @@ async def _handle_message(event, user_id=None, client=None):
                 # видимое отправленное сообщение и сохранит стабильный id.
                 if (exists is not None
                         and exists.delivery_status != 'scheduled'):
-                    return
+                    if kind is None:
+                        return
+                    attachments = db.query(Attachment).filter(
+                        Attachment.user_id == _normalize_user_id(user_id),
+                        Attachment.message_id == exists.id).all()
+                    if any(
+                            att.stored_path and os.path.exists(os.path.join(
+                                _media_root(), att.stored_path))
+                            for att in attachments):
+                        return
+                    # Разрешаем repair только свежему фото. Старые файлы могли
+                    # быть удалены владельцем специально при очистке квоты;
+                    # catch_up не должен молча скачивать их заново.
+                    if not _catchup_media_allowed(msg, kind):
+                        return
         finally:
             db.close()
 
@@ -600,7 +947,6 @@ async def _handle_message(event, user_id=None, client=None):
         author = chat_key
         author_tg_chat_id = getattr(event, "sender_id", None)
 
-    kind = _media_kind(msg)
     text = msg.message or ""
     if not text and kind is None:
         # Ни текста, ни понятного вложения (например системное событие).
@@ -618,14 +964,18 @@ async def _handle_message(event, user_id=None, client=None):
     await _persist_telegram_message(msg, event.chat_id, chat, chat_key,
                                     chat_type, is_out, author, kind, text,
                                     author_tg_chat_id=author_tg_chat_id,
-                                    user_id=user_id, client=client)
+                                    user_id=user_id, client=client,
+                                    preloaded_media=preloaded_media,
+                                    expected_lifecycle=expected_lifecycle)
 
 
 async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                     is_out, author, kind, text,
                                     author_tg_chat_id=None, user_id=None,
                                     client=None, archived=None, muted=None,
-                                    download_media=True):
+                                    download_media=True, notify=True,
+                                    preloaded_media=None,
+                                    expected_lifecycle=None):
     """Скачивает медиа (если есть), пишет запись в БД и тянет аватар чата.
     Вынесено из `_handle_message`, чтобы тем же кодом сохранять и сообщения,
     созданные синхронно прямо из веб-панели (forward / send) — иначе UI ждёт
@@ -633,9 +983,20 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     # Скачиваем медиа, если оно есть и не слишком большое. Для catch-up
     # синхронизации истории медиа не тянем автоматически, чтобы после
     # временного обрыва мост не забивал квоту пачкой старых видео/файлов.
+    owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
+    was_known = _telegram_message_exists(
+        owner, chat_id, getattr(msg, "id", None))
     data = None
-    if download_media:
+    if preloaded_media is not None:
+        kind, data = preloaded_media
+    elif download_media:
         kind, data = await _download_media_payload(msg, kind, user_id=user_id)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
 
     # send_file мог завершиться, пока handler ждал download_media. Проверяем
     # точный id повторно прямо перед записью в БД.
@@ -708,12 +1069,14 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
         except Exception:  # noqa: BLE001
             text_html = None
 
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
+
     from data import db_sessions
     from data.contacts import record_message
     db = db_sessions.create_session()
     notify_message_id = None
     try:
-        owner = _normalize_user_id(user_id)
         message = record_message(db, owner, "Telegram", chat_key, text,
                                  tg_chat_id=chat_id, author=author,
                                  outgoing=is_out, tg_chat_type=chat_type,
@@ -729,7 +1092,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  text_html=text_html,
                                  archived=archived,
                                  muted=muted)
-        if message is not None:
+        if message is not None and not was_known:
             notify_message_id = message.id
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
         if message is not None and data is not None and kind is not None:
@@ -737,7 +1100,8 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     finally:
         db.close()
 
-    if notify_message_id is not None:
+    if (_lifecycle_token(owner) == expected_lifecycle
+            and notify and notify_message_id is not None):
         try:
             from data import webpush
             await asyncio.to_thread(webpush.notify_message, notify_message_id)
@@ -745,9 +1109,12 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
             _state_for(user_id)["error"] = f"webpush: {exc}"
 
     # Фото профиля собеседника/группы — лениво, один раз.
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
     try:
-        await _maybe_fetch_avatar(chat, chat_id, user_id=user_id,
-                                  client=client)
+        await _maybe_fetch_avatar(
+            chat, chat_id, user_id=user_id, client=client,
+            expected_lifecycle=expected_lifecycle)
     except Exception as exc:  # noqa: BLE001
         _state_for(user_id)["error"] = f"avatar: {exc}"
 
@@ -829,10 +1196,12 @@ def _archive_handle_types_for_peer(peer):
     return None
 
 
-def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
+def _telegram_message_state(user_id, chat_id, tg_message_id):
+    """Возвращает (message_id, has_live_attachment) для Telegram-id."""
     if tg_message_id is None:
-        return False
+        return None, False
     from data import db_sessions
+    from data.attachments import Attachment
     from data.contacts import MessengerHandle
     from data.users import Messages as _Messages
 
@@ -844,17 +1213,82 @@ def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
             MessengerHandle.messenger_name == "Telegram",
             MessengerHandle.tg_chat_id == chat_id).all()]
         if not handle_ids:
-            return False
-        return db.query(_Messages.id).filter(
+            return None, False
+        message = db.query(_Messages).filter(
             _Messages.user_id == owner,
             _Messages.tg_message_id == int(tg_message_id),
-            _Messages.handle_id.in_(handle_ids)).first() is not None
+            _Messages.handle_id.in_(handle_ids)).first()
+        if message is None:
+            return None, False
+        attachments = db.query(Attachment).filter(
+            Attachment.user_id == owner,
+            Attachment.message_id == message.id).all()
+        has_live = any(
+            att.stored_path
+            and os.path.exists(os.path.join(_media_root(), att.stored_path))
+            for att in attachments
+        )
+        return message.id, has_live
+    finally:
+        db.close()
+
+
+def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
+    message_id, _has_live_attachment = _telegram_message_state(
+        user_id, chat_id, tg_message_id)
+    return message_id is not None
+
+
+async def _repair_telegram_photo(message_id, msg, user_id=None,
+                                 expected_lifecycle=None):
+    """Докачивает файл к существующей текстовой заглушке без нового push."""
+    owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return False
+    kind, data = await _download_media_payload(msg, "image", user_id=user_id)
+    if (kind is None or data is None
+            or _lifecycle_token(owner) != expected_lifecycle):
+        return False
+    from data import db_sessions
+    from data.users import Messages as _Messages
+
+    db = db_sessions.create_session()
+    try:
+        message = db.query(_Messages).filter(
+            _Messages.id == int(message_id),
+            _Messages.user_id == owner).first()
+        if message is None:
+            return False
+        return _save_attachment(
+            db, owner, message.id, kind, data, msg) is not None
     finally:
         db.close()
 
 
 async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
                                message_limit=None):
+    """Сериализует ограниченную догонку одного Telegram-аккаунта."""
+    owner = _normalize_user_id(user_id)
+    lock = _sync_lock_for(owner)
+    # Startup, reconnect и UI могут попросить догонку одновременно. Второй
+    # полный проход не нужен: уже запущенный увидит тот же свежий хвост.
+    if lock.locked():
+        return 0
+    expected_lifecycle = _lifecycle_token(owner)
+    async with lock:
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return 0
+        return await _sync_recent_dialogs_once(
+            owner, client=client, dialog_limit=dialog_limit,
+            message_limit=message_limit,
+            expected_lifecycle=expected_lifecycle)
+
+
+async def _sync_recent_dialogs_once(user_id=None, client=None,
+                                    dialog_limit=None, message_limit=None,
+                                    expected_lifecycle=None):
     """Best-effort catch-up последних Telegram-сообщений.
 
     Live NewMessage обычно ловит входящие/исходящие сразу. Но после рестарта,
@@ -863,10 +1297,18 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
     диалогов и сохраняет только те tg_message_id, которых ещё нет в БД.
     """
     owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
     if client is None:
         client = await _get_client(owner)
     if not await client.is_user_authorized():
         return 0
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return 0
+    # После рестарта WSGI пользователь мог попасть сюда раньше startup-задачи.
+    # Идемпотентно возвращаем live handler, чтобы следующие сообщения шли
+    # сразу, а не продолжали жить только на десятисекундной догонке.
+    await _activate(owner, client=client)
 
     dialog_limit = int(dialog_limit or _RECENT_SYNC_DIALOG_LIMIT)
     message_limit = int(message_limit or _RECENT_SYNC_MESSAGE_LIMIT)
@@ -874,6 +1316,8 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
     seen_dialogs = 0
     archive_states = []
     async for dialog in client.iter_dialogs(limit=dialog_limit):
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return saved
         if seen_dialogs >= dialog_limit:
             break
         seen_dialogs += 1
@@ -906,12 +1350,21 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
 
         async for msg in client.iter_messages(chat or chat_id,
                                               limit=message_limit):
+            if _lifecycle_token(owner) != expected_lifecycle:
+                return saved
             tg_id = getattr(msg, "id", None)
             if tg_id is None:
                 continue
-            if _telegram_message_exists(owner, chat_id, tg_id):
-                continue
             kind = _media_kind(msg)
+            existing_id, has_live_attachment = _telegram_message_state(
+                owner, chat_id, tg_id)
+            if existing_id is not None:
+                if (kind == "image" and not has_live_attachment
+                        and _catchup_media_allowed(msg, kind)):
+                    await _repair_telegram_photo(
+                        existing_id, msg, user_id=owner,
+                        expected_lifecycle=expected_lifecycle)
+                continue
             text = getattr(msg, "message", None) or ""
             if not text and kind is None:
                 continue
@@ -935,7 +1388,9 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
                 is_out, author, kind, text,
                 author_tg_chat_id=author_tg_chat_id,
                 user_id=owner, client=client,
-                download_media=False)
+                download_media=_catchup_media_allowed(msg, kind),
+                notify=False,
+                expected_lifecycle=expected_lifecycle)
             saved += 1
         # Статус архива приходит от самого Dialog, а не вычисляется по
         # числовым вариантам ID сообщения. Так входящее сообщение само по
@@ -949,7 +1404,8 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
             _apply_telegram_forum_state(
                 owner, chat_id, bool(getattr(chat, 'forum', False)),
                 allowed_types=archive_handle_types)
-    _apply_telegram_archive_snapshot(owner, archive_states)
+    if _lifecycle_token(owner) == expected_lifecycle:
+        _apply_telegram_archive_snapshot(owner, archive_states)
     return saved
 
 
@@ -984,33 +1440,63 @@ def sync_recent(user_id=None, wait=False):
         return None
     _recent_sync_inflight_users.add(owner)
     _ensure_loop()
-    asyncio.run_coroutine_threadsafe(_safe_sync_recent_dialogs(owner), _loop)
+    future = asyncio.run_coroutine_threadsafe(
+        _safe_sync_recent_dialogs(owner), _loop)
+    _recent_sync_futures[owner] = future
+
+    def _forget(done_future):
+        if _recent_sync_futures.get(owner) is done_future:
+            _recent_sync_futures.pop(owner, None)
+
+    future.add_done_callback(_forget)
     return None
 
 
 async def _register_handler(user_id=None, client=None):
+    """Регистрирует ровно один набор callbacks на пользователя/процесс."""
+    owner = _normalize_user_id(user_id)
+    async with _handler_lock_for(owner):
+        if owner in _handler_registered_users:
+            return
+        token = _lifecycle_token(owner)
+        return await _register_handler_unlocked(
+            owner, client=client, registration_token=token)
+
+
+async def _register_handler_unlocked(user_id=None, client=None,
+                                     registration_token=None):
     global _handler_registered
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
-    if owner in _handler_registered_users:
-        return
+    if registration_token is None:
+        registration_token = _lifecycle_token(owner)
     from telethon import events
     if client is None:
         client = await _get_client(owner)
+    if _lifecycle_token(owner) != registration_token:
+        return
 
     # Без incoming=True — ловим и входящие, и исходящие (мои ответы
     # с любого устройства Telegram тоже попадают в ленту).
     @client.on(events.NewMessage())
     async def _on_new(event):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
-            await _handle_message(event, user_id=owner, client=client)
+            await _handle_message(
+                event, user_id=owner, client=client,
+                expected_lifecycle=registration_token)
         except Exception as exc:  # noqa: BLE001
             state["error"] = f"incoming: {exc}"
+            logger.exception("Telegram live handler failed for user_id=%s",
+                             owner)
 
     # Событие «печатает…» + смена онлайн-статуса. UserUpdate приходит и на
     # то, и на другое — какие именно поля выставлены, зависит от Telegram.
     @client.on(events.UserUpdate())
     async def _on_user_update(event):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             if getattr(event, "typing", False):
                 chat_id = int(event.chat_id)
@@ -1048,6 +1534,8 @@ async def _register_handler(user_id=None, client=None):
 
     @client.on(events.Raw([UpdateReadHistoryOutbox, UpdateReadChannelOutbox]))
     async def _on_read_outbox(update):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             await _handle_read_outbox(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
@@ -1058,6 +1546,8 @@ async def _register_handler(user_id=None, client=None):
     # вместо текста показывается «🗑 Сообщение удалено».
     @client.on(events.MessageDeleted())
     async def _on_deleted(event):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             await _handle_deleted(event, user_id=owner)
         except Exception as exc:  # noqa: BLE001
@@ -1070,6 +1560,8 @@ async def _register_handler(user_id=None, client=None):
 
     @client.on(events.Raw([UpdateMessageReactions]))
     async def _on_reactions(update):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             await _handle_reactions(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
@@ -1081,6 +1573,8 @@ async def _register_handler(user_id=None, client=None):
 
     @client.on(events.Raw([UpdateNotifySettings]))
     async def _on_notify_settings(update):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             await _handle_notify_settings_update(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
@@ -1092,6 +1586,8 @@ async def _register_handler(user_id=None, client=None):
 
     @client.on(events.Raw([UpdateFolderPeers]))
     async def _on_folder_peers(update):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             await _handle_folder_peers_update(update, user_id=owner)
         except Exception as exc:  # noqa: BLE001
@@ -1103,13 +1599,16 @@ async def _register_handler(user_id=None, client=None):
     # человек хотел сказать изначально.
     @client.on(events.MessageEdited())
     async def _on_edited(event):
+        if _lifecycle_token(owner) != registration_token:
+            return
         try:
             await _handle_edited(event, user_id=owner)
         except Exception as exc:  # noqa: BLE001
             state["error"] = f"edited: {exc}"
 
-    _handler_registered_users.add(owner)
-    _handler_registered = True
+    if _lifecycle_token(owner) == registration_token:
+        _handler_registered_users.add(owner)
+        _handler_registered = True
 
 
 async def _handle_reactions(update, user_id=None):
@@ -1268,8 +1767,8 @@ async def _handle_edited(event, user_id=None):
             saved_kind, data = await _download_media_payload(
                 msg, new_kind, user_id=user_id)
             if saved_kind is not None and data is not None:
-                _save_attachment(db, owner, target.id, saved_kind, data, msg)
-                target_has_media = True
+                target_has_media = _save_attachment(
+                    db, owner, target.id, saved_kind, data, msg) is not None
         if is_media_placeholder(old_text) and target_has_media:
             target.text = new_text
             db.commit()
@@ -1884,15 +2383,38 @@ async def _chat_archived_by_telegram(chat_id, user_id=None, client=None):
     return cid in ids
 
 
-async def _periodic_refresh(user_id=None):
-    """Раз в 5 минут обновляет кэш фильтрации (чаты мьютят/архивируют
-    уже после старта моста)."""
+async def _periodic_refresh(user_id=None, expected_lifecycle=None):
+    """Поддерживает live-поток и раз в 5 минут обновляет mute/archive.
+
+    Нативный ``client.catch_up()`` здесь намеренно не используется: его
+    события проходят обычный live-handler и могут разом скачать старые
+    видео/файлы и отправить повторные Web Push. После реального reconnect
+    запускаем нашу ограниченную догонку свежих сообщений без уведомлений.
+    """
+    owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    next_filter_refresh = time.monotonic() + 300
     while True:
-        await asyncio.sleep(300)
+        await asyncio.sleep(10)
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return
         try:
-            await _refresh_filter_cache(user_id)
+            current = _clients.get(owner)
+            was_connected = bool(current and current.is_connected())
+            client = await _get_client(owner)
+            if not await client.is_user_authorized():
+                continue
+            await _register_handler(owner, client=client)
+            if not was_connected:
+                await _sync_recent_dialogs(owner, client=client)
+            if time.monotonic() >= next_filter_refresh:
+                await _refresh_filter_cache(owner, client=client)
+                next_filter_refresh = time.monotonic() + 300
         except Exception as exc:  # noqa: BLE001
-            _state_for(user_id)["error"] = f"filter: {exc}"
+            _state_for(owner)["error"] = f"telegram reconnect: {exc}"
+            logger.exception("Telegram maintenance failed for user_id=%s",
+                             owner)
 
 
 async def _activate(user_id=None, client=None):
@@ -1900,30 +2422,55 @@ async def _activate(user_id=None, client=None):
     кэш фильтрации и запускает периодическое обновление."""
     global _refresh_task
     owner = _normalize_user_id(user_id)
+    expected_lifecycle = _lifecycle_token(owner)
     state = _state_for(owner)
     if client is None:
         client = await _get_client(owner)
+    newly_registered = owner not in _handler_registered_users
     await _register_handler(owner, client=client)
-    try:
-        await _refresh_filter_cache(owner, client=client)
-    except Exception as exc:  # noqa: BLE001
-        state["error"] = f"filter: {exc}"
-    if _refresh_task is None:
-        _refresh_task = asyncio.ensure_future(_periodic_refresh(owner))
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
+    if newly_registered:
+        try:
+            await _refresh_filter_cache(owner, client=client)
+        except Exception as exc:  # noqa: BLE001
+            state["error"] = f"filter: {exc}"
+    task = _refresh_tasks.get(owner)
+    if task is None or task.done():
+        task = asyncio.ensure_future(_periodic_refresh(
+            owner, expected_lifecycle=expected_lifecycle))
+        _refresh_tasks[owner] = task
+        if owner == _owner_user_id():
+            _refresh_task = task
 
 
-async def _startup(user_id=None):
+async def _startup(user_id=None, expected_lifecycle=None):
     # Подгружаем известные discussion-группы каналов из БД, чтобы
     # события о новых комментариях (приходящие сразу после старта моста)
     # не успели породить «призрачный» Contact.
     _ensure_discussion_groups_loaded()
     owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
     state = _state_for(owner)
-    client = await _get_client(owner)
-    if await client.is_user_authorized():
-        state["authorized"] = True
-        if owner not in _handler_registered_users:
-            await _activate(owner, client=client)
+    authorized = False
+    async with _auth_lock_for(owner):
+        client = await _get_client(owner)
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return
+        authorized = await client.is_user_authorized()
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return
+        if authorized:
+            state["authorized"] = True
+            if owner not in _handler_registered_users:
+                await _activate(owner, client=client)
+    if authorized:
+        # Ограниченная догонка: максимум несколько свежих сообщений,
+        # только небольшие фото и без Web Push за уже прошедшую историю.
+        await _sync_recent_dialogs(owner, client=client)
 
 
 def _quiet_telethon_logging():
@@ -1934,22 +2481,36 @@ def _quiet_telethon_logging():
     logging.getLogger("telethon").setLevel(logging.CRITICAL)
 
 
-async def _safe_startup(user_id=None):
-    try:
-        await _startup(user_id)
-    except Exception as exc:  # noqa: BLE001
-        _state_for(user_id)["error"] = str(exc)
+async def _safe_startup(user_id=None, expected_lifecycle=None):
+    owner = _normalize_user_id(user_id)
+    if expected_lifecycle is None:
+        expected_lifecycle = _lifecycle_token(owner)
+    delay = 5
+    while True:
+        if _lifecycle_token(owner) != expected_lifecycle:
+            return
+        try:
+            await _startup(owner, expected_lifecycle=expected_lifecycle)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _state_for(owner)["error"] = f"startup: {exc}"
+            logger.exception("Telegram startup failed for user_id=%s", owner)
+            await asyncio.sleep(delay)
+            delay = min(120, delay * 3)
 
 
 async def _refresh_status(user_id=None):
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
-    client = await _get_client(owner)
-    if await client.is_user_authorized():
-        state["authorized"] = True
-        await _activate(owner, client=client)
-    else:
-        state["authorized"] = False
+    async with _auth_lock_for(owner):
+        client = await _get_client(owner)
+        if await client.is_user_authorized():
+            state["authorized"] = True
+            await _activate(owner, client=client)
+        else:
+            state["authorized"] = False
     return state
 
 
@@ -1964,86 +2525,436 @@ def start(user_id=None):
         return
     _quiet_telethon_logging()
     _ensure_loop()
-    asyncio.run_coroutine_threadsafe(_safe_startup(user_id), _loop)
+    owners = {_normalize_user_id(user_id)} if user_id is not None else {
+        _owner_user_id()
+    }
+    if user_id is None:
+        session_dir = os.path.join(os.getcwd(), "db", "tg_sessions")
+        try:
+            for name in os.listdir(session_dir):
+                match = re.fullmatch(r"user_(\d+)\.session", name)
+                if match:
+                    owners.add(int(match.group(1)))
+        except OSError:
+            pass
+    for owner in owners:
+        task = _startup_tasks.get(owner)
+        if task is None or task.done():
+            expected_lifecycle = _lifecycle_token(owner)
+            _startup_tasks[owner] = asyncio.run_coroutine_threadsafe(
+                _safe_startup(owner, expected_lifecycle=expected_lifecycle),
+                _loop)
+
+
+class TelegramAuthError(RuntimeError):
+    """Безопасная русская ошибка, которую можно показать в интерфейсе."""
+
+
+def _auth_lock_for(owner):
+    lock = _auth_locks.get(owner)
+    if lock is None:
+        lock = asyncio.Lock()
+        _auth_locks[owner] = lock
+    return lock
+
+
+def _auth_retry_key(owner, phone):
+    return _normalize_user_id(owner), str(phone or "")
+
+
+def _auth_retry_seconds(owner, phone):
+    deadline = float(_auth_retry_after.get(
+        _auth_retry_key(owner, phone), 0) or 0)
+    wait = max(0, math.ceil(deadline - time.time()))
+    if wait <= 0:
+        _auth_retry_after.pop(_auth_retry_key(owner, phone), None)
+    return wait
+
+
+def _set_auth_retry(owner, phone, seconds):
+    if not phone:
+        return
+    try:
+        seconds = max(0, int(seconds or 0))
+    except (TypeError, ValueError):
+        seconds = 0
+    if seconds <= 0:
+        return
+    key = _auth_retry_key(owner, phone)
+    _auth_retry_after[key] = max(
+        float(_auth_retry_after.get(key, 0) or 0), time.time() + seconds)
+
+
+def _normalize_phone(phone):
+    raw = (phone or "").strip()
+    digits = re.sub(r"\D", "", raw)
+    if digits.startswith("00"):
+        digits = digits[2:]
+    if len(digits) == 11 and digits.startswith("8"):
+        digits = "7" + digits[1:]
+    if len(digits) < 7 or len(digits) > 15:
+        raise TelegramAuthError(
+            "Проверьте номер телефона. Используйте международный формат, "
+            "например +79991234567.")
+    return "+" + digits
+
+
+def _auth_error_message(exc):
+    name = exc.__class__.__name__
+    seconds = getattr(exc, "seconds", None)
+    if name == "FloodWaitError":
+        wait = f" Подождите {int(seconds)} сек." if seconds else ""
+        return "Telegram временно ограничил повторные запросы." + wait
+    messages = {
+        "SendCodeUnavailableError": (
+            "Telegram уже использовал все доступные способы доставки кода "
+            "для этой попытки. Подождите и попробуйте позже либо измените номер."),
+        "PhoneNumberFloodError": (
+            "Для этого номера было слишком много попыток входа. "
+            "Подождите и попробуйте позже."),
+        "PhoneNumberInvalidError": (
+            "Telegram не распознал номер. Проверьте международный формат."),
+        "PhoneNumberBannedError": "Этот номер заблокирован Telegram.",
+        "PhoneCodeInvalidError": "Неверный код Telegram. Проверьте и введите снова.",
+        "PhoneCodeExpiredError": (
+            "Срок действия кода истёк. Запросите новый код или измените номер."),
+        "PhoneCodeEmptyError": "Введите код из Telegram.",
+        "PhoneCodeHashEmptyError": (
+            "Попытка входа устарела. Измените номер и запросите код заново."),
+        "PasswordHashInvalidError": "Неверный пароль двухфакторной защиты.",
+        "PhonePasswordFloodError": (
+            "Слишком много попыток ввода пароля. Попробуйте позже."),
+        "ApiIdInvalidError": "Ключи Telegram API на сервере настроены неверно.",
+    }
+    if name in messages:
+        return messages[name]
+    if isinstance(exc, (TimeoutError, ConnectionError, OSError)):
+        return "Не удалось связаться с Telegram. Попробуйте ещё раз чуть позже."
+    return "Telegram не смог выполнить запрос. Попробуйте позже или измените номер."
+
+
+def _raise_auth_error(action, owner, exc, phone=None):
+    logger.warning("Telegram auth %s failed for user_id=%s: %s",
+                   action, owner, exc.__class__.__name__)
+    state = _state_for(owner)
+    phone = phone or state.get("phone")
+    name = exc.__class__.__name__
+    seconds = getattr(exc, "seconds", None)
+    if seconds:
+        state["resend_available_at"] = max(
+            float(state.get("resend_available_at") or 0),
+            time.time() + int(seconds))
+        _set_auth_retry(owner, phone, seconds)
+    if name == "SendCodeUnavailableError":
+        state["resend_supported"] = False
+        state["resend_available_at"] = None
+        _set_auth_retry(owner, phone, 300)
+    elif name == "PhoneNumberFloodError":
+        state["resend_supported"] = False
+        state["resend_available_at"] = None
+        _set_auth_retry(owner, phone, 900)
+    elif name in ("PhoneCodeExpiredError", "PhoneCodeHashEmptyError"):
+        _clear_pending_code(state, keep_phone=True)
+        _set_auth_retry(owner, phone, 10)
+    raise TelegramAuthError(_auth_error_message(exc)) from None
+
+
+def _sent_code_method(sent):
+    next_type = getattr(sent, "next_type", None)
+    type_name = next_type.__class__.__name__ if next_type is not None else ""
+    if "Sms" in type_name:
+        return "SMS"
+    if "Call" in type_name or "FlashCall" in type_name:
+        return "звонок"
+    if type_name:
+        return "другой способ Telegram"
+    return None
+
+
+def _remember_sent_code(state, phone, sent):
+    phone_code_hash = getattr(sent, "phone_code_hash", None)
+    if not phone_code_hash:
+        raise TelegramAuthError(
+            "Telegram не создал новую попытку входа. Измените номер и "
+            "запросите код заново.")
+    timeout = getattr(sent, "timeout", None)
+    try:
+        timeout = max(0, int(timeout if timeout is not None else 60))
+    except (TypeError, ValueError):
+        timeout = 60
+    method = _sent_code_method(sent)
+    state.update({
+        "phone": phone,
+        "phone_code_hash": phone_code_hash,
+        "code_hint": _sent_code_hint(sent),
+        "resend_available_at": time.time() + timeout if method else None,
+        "resend_supported": bool(method),
+        "resend_method": method,
+        "needs_password": False,
+        "error": None,
+    })
+    return timeout
+
+
+def _clear_pending_code(state, keep_phone=True):
+    phone = state.get("phone") if keep_phone else None
+    state.update({
+        "phone": phone,
+        "phone_code_hash": None,
+        "code_hint": None,
+        "resend_available_at": None,
+        "resend_supported": False,
+        "resend_method": None,
+        "needs_password": False,
+    })
 
 
 async def _request_code(phone, user_id=None, force_sms=False):
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
-    client = await _get_client(owner)
-    if await client.is_user_authorized():
-        state["authorized"] = True
-        return
-    sent = await client.send_code_request(phone, force_sms=bool(force_sms))
-    state["phone"] = phone
-    state["phone_code_hash"] = sent.phone_code_hash
-    state["code_hint"] = _sent_code_hint(sent)
-    state["needs_password"] = False
-    state["error"] = None
+    async with _auth_lock_for(owner):
+        wait = _auth_retry_seconds(owner, phone)
+        if wait > 0:
+            raise TelegramAuthError(
+                f"Новый код для этого номера можно запросить через {wait} сек.")
+        if state.get("phone_code_hash"):
+            raise TelegramAuthError(
+                "Код уже запрошен. Введите его или нажмите «Изменить номер».")
+        client = await _get_client(owner)
+        if await client.is_user_authorized():
+            state["authorized"] = True
+            return
+        try:
+            # force_sms в новых Telethon не работает; способ выбирает Telegram.
+            sent = await client.send_code_request(phone)
+            if (not getattr(sent, "phone_code_hash", None)
+                    and await client.is_user_authorized()):
+                state["phone"] = phone
+                state["authorized"] = True
+                _clear_pending_code(state, keep_phone=True)
+                await _activate(owner, client=client)
+                return
+            timeout = _remember_sent_code(state, phone, sent)
+            _set_auth_retry(owner, phone, timeout)
+        except TelegramAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _raise_auth_error("request_code", owner, exc, phone=phone)
 
 
 def request_code(phone, user_id=None, force_sms=False):
-    _call(_request_code(phone.strip(), user_id=user_id,
-                        force_sms=force_sms))
+    normalized = _normalize_phone(phone)
+    owner = _normalize_user_id(user_id)
+    try:
+        _call(_request_code(normalized, user_id=owner,
+                            force_sms=False))
+    except TelegramAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _raise_auth_error("request_code", owner, exc)
+
+
+async def _resend_code(user_id=None):
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    async with _auth_lock_for(owner):
+        phone = state.get("phone")
+        phone_code_hash = state.get("phone_code_hash")
+        if not phone or not phone_code_hash:
+            raise TelegramAuthError(
+                "Сначала укажите номер и запросите код Telegram.")
+        if not state.get("resend_supported"):
+            raise TelegramAuthError(
+                "Telegram пока не предложил другой способ доставки. "
+                "Текущий код ещё можно ввести.")
+        wait = math.ceil(float(state.get("resend_available_at") or 0)
+                         - time.time())
+        wait = max(wait, _auth_retry_seconds(owner, phone))
+        if wait > 0:
+            raise TelegramAuthError(
+                f"Новый способ доставки станет доступен через {wait} сек.")
+        client = await _get_client(owner)
+        try:
+            from telethon.tl.functions.auth import ResendCodeRequest
+            sent = await client(ResendCodeRequest(phone, phone_code_hash))
+            if (not getattr(sent, "phone_code_hash", None)
+                    and await client.is_user_authorized()):
+                state["authorized"] = True
+                _clear_pending_code(state, keep_phone=True)
+                await _activate(owner, client=client)
+                return
+            timeout = _remember_sent_code(state, phone, sent)
+            _set_auth_retry(owner, phone, timeout)
+        except TelegramAuthError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            _raise_auth_error("resend_code", owner, exc, phone=phone)
+
+
+def resend_code(user_id=None):
+    owner = _normalize_user_id(user_id)
+    try:
+        _call(_resend_code(user_id=owner))
+    except TelegramAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _raise_auth_error("resend_code", owner, exc)
 
 
 async def _submit_code(code, user_id=None):
     from telethon.errors import SessionPasswordNeededError
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
-    client = await _get_client(owner)
-    try:
-        await client.sign_in(
-            state["phone"], code,
-            phone_code_hash=state["phone_code_hash"])
-    except SessionPasswordNeededError:
-        state["needs_password"] = True
-        return
-    state["authorized"] = True
-    state["needs_password"] = False
-    await _activate(owner, client=client)
+    async with _auth_lock_for(owner):
+        if not state.get("phone") or not state.get("phone_code_hash"):
+            raise TelegramAuthError(
+                "Попытка входа устарела. Укажите номер и запросите новый код.")
+        client = await _get_client(owner)
+        try:
+            await client.sign_in(
+                state["phone"], code,
+                phone_code_hash=state["phone_code_hash"])
+        except SessionPasswordNeededError:
+            state["needs_password"] = True
+            return
+        except Exception as exc:  # noqa: BLE001
+            _raise_auth_error("submit_code", owner, exc)
+        state["authorized"] = True
+        _clear_pending_code(state, keep_phone=True)
+        await _activate(owner, client=client)
 
 
 def submit_code(code, user_id=None):
-    _call(_submit_code(code.strip(), user_id=user_id))
+    try:
+        _call(_submit_code(code.strip(), user_id=user_id))
+    except TelegramAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _raise_auth_error("submit_code", _normalize_user_id(user_id), exc)
 
 
 async def _submit_password(password, user_id=None):
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
-    client = await _get_client(owner)
-    await client.sign_in(password=password)
-    state["authorized"] = True
-    state["needs_password"] = False
-    await _activate(owner, client=client)
+    async with _auth_lock_for(owner):
+        if not state.get("needs_password"):
+            raise TelegramAuthError(
+                "Сейчас Telegram не ожидает пароль двухфакторной защиты.")
+        client = await _get_client(owner)
+        try:
+            await client.sign_in(password=password)
+        except Exception as exc:  # noqa: BLE001
+            _raise_auth_error("submit_password", owner, exc)
+        state["authorized"] = True
+        _clear_pending_code(state, keep_phone=True)
+        await _activate(owner, client=client)
 
 
 def submit_password(password, user_id=None):
-    _call(_submit_password(password, user_id=user_id))
+    try:
+        _call(_submit_password(password, user_id=user_id))
+    except TelegramAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _raise_auth_error("submit_password", _normalize_user_id(user_id), exc)
+
+
+async def _reset_login(user_id=None):
+    """Отменяет только незавершённый вход и позволяет исправить номер."""
+    global _client, _handler_registered, _refresh_task
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    # Startup может ждать сеть, удерживая auth-lock. Отменяем его ДО входа
+    # в lock, иначе reset сам не сможет дойти до cancel и зависнет по timeout.
+    startup = _startup_tasks.pop(owner, None)
+    if startup is not None and not startup.done():
+        startup.cancel()
+    async with _auth_lock_for(owner):
+        client = _clients.get(owner)
+        if client is not None and await client.is_user_authorized():
+            raise TelegramAuthError(
+                "Telegram уже подключён. Для смены аккаунта сначала отключите его.")
+        refresh_task = _refresh_tasks.pop(owner, None)
+        if refresh_task is not None:
+            refresh_task.cancel()
+        sync_future = _recent_sync_futures.pop(owner, None)
+        if sync_future is not None and not sync_future.done():
+            sync_future.cancel()
+        _recent_sync_inflight_users.discard(owner)
+        _bump_lifecycle(owner)
+        async with _handler_lock_for(owner):
+            _handler_registered_users.discard(owner)
+            _handler_registered = bool(_handler_registered_users)
+        phone = state.get("phone")
+        phone_code_hash = state.get("phone_code_hash")
+        async with _client_lock_for(owner):
+            client = _clients.get(owner)
+            if client is not None and phone and phone_code_hash:
+                try:
+                    from telethon.tl.functions.auth import CancelCodeRequest
+                    await client(CancelCodeRequest(phone, phone_code_hash))
+                except Exception:  # noqa: BLE001
+                    # Код мог уже истечь — локальный сброс всё равно нужен.
+                    pass
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:  # noqa: BLE001
+                    pass
+            _clients.pop(owner, None)
+        if owner == _owner_user_id():
+            _client = None
+            _refresh_task = None
+        _clear_pending_code(state, keep_phone=True)
+        state["authorized"] = False
+        state["error"] = None
+
+
+def reset_login(user_id=None):
+    try:
+        _call(_reset_login(user_id=user_id))
+    except TelegramAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _raise_auth_error("reset_login", _normalize_user_id(user_id), exc)
 
 
 async def _logout(user_id=None):
     global _client, _handler_registered, _refresh_task, _skip_chat_ids
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
-    if _refresh_task is not None:
-        _refresh_task.cancel()
-        _refresh_task = None
-    client = _clients.pop(owner, None)
-    if client is not None:
-        try:
-            await client.log_out()
-        except Exception:  # noqa: BLE001
-            pass
-    if owner == _owner_user_id():
-        _client = None
-        _state.update({"authorized": False, "needs_password": False,
-                       "phone": None, "phone_code_hash": None, "error": None,
-                       "last_media_skip": None})
-    _handler_registered = False
-    _handler_registered_users.discard(owner)
-    _skip_chat_ids = set()
-    state.update(dict(_STATE_TEMPLATE))
+    startup = _startup_tasks.pop(owner, None)
+    if startup is not None and not startup.done():
+        startup.cancel()
+    sync_future = _recent_sync_futures.pop(owner, None)
+    if sync_future is not None and not sync_future.done():
+        sync_future.cancel()
+    _recent_sync_inflight_users.discard(owner)
+    async with _auth_lock_for(owner):
+        # Меняем поколение только когда logout действительно получил lock.
+        # Иначе HTTP-timeout мог отменить logout, оставив авторизованный
+        # аккаунт со всеми прежними handlers уже навсегда неактивными.
+        _bump_lifecycle(owner)
+        refresh_task = _refresh_tasks.pop(owner, None)
+        if refresh_task is not None:
+            refresh_task.cancel()
+        async with _handler_lock_for(owner):
+            _handler_registered_users.discard(owner)
+            _handler_registered = bool(_handler_registered_users)
+        async with _client_lock_for(owner):
+            client = _clients.pop(owner, None)
+            if client is not None:
+                try:
+                    await client.log_out()
+                except Exception:  # noqa: BLE001
+                    pass
+        if owner == _owner_user_id():
+            _client = None
+            _refresh_task = None
+        _skip_chat_ids = set()
+        state.update(dict(_STATE_TEMPLATE))
+        if owner == _owner_user_id():
+            _state.update(dict(_STATE_TEMPLATE))
 
 
 def logout(user_id=None):
@@ -3254,21 +4165,37 @@ def send_reaction(chat_id, message_id, emoji, user_id=None):
     _call(_send_reaction(chat_id, message_id, emoji, user_id=user_id))
 
 
-def status(user_id=None) -> dict:
-    if is_configured() and telethon_available():
+def status(user_id=None, refresh=True) -> dict:
+    if refresh and is_configured() and telethon_available():
         try:
             _call(_refresh_status(user_id), timeout=10)
         except Exception as exc:  # noqa: BLE001
-            _state_for(user_id)["error"] = str(exc)
+            _state_for(user_id)["error"] = (
+                "Не удалось обновить соединение с Telegram. "
+                "Попробуйте ещё раз чуть позже.")
+            logger.warning("Telegram status refresh failed for user_id=%s: %s",
+                           _normalize_user_id(user_id),
+                           exc.__class__.__name__)
     state = _state_for(user_id)
+    resend_available_at = float(state.get("resend_available_at") or 0)
+    resend_seconds = max(0, math.ceil(resend_available_at - time.time()))
     return {
         "available": telethon_available(),
         "configured": is_configured(),
         "authorized": state["authorized"],
         "needs_password": state["needs_password"],
         "phone": state["phone"],
+        "awaiting_code": bool(state.get("phone_code_hash")),
         "code_hint": state["code_hint"],
-        "error": state["error"],
+        "resend_supported": bool(state.get("resend_supported")),
+        "resend_method": state.get("resend_method"),
+        "resend_seconds": resend_seconds,
+        "resend_available_at_ms": int(resend_available_at * 1000),
+        # В state/log остаётся техническая причина, но в HTML не выводим
+        # внутренние английские исключения Telethon/SQLite.
+        "error": ("Telegram временно недоступен. Мост автоматически "
+                  "попробует подключиться снова."
+                  if state["error"] else None),
         "last_media_skip": state["last_media_skip"],
         "skip_muted": _skip_muted(),
         "skip_archived": _skip_archived(),

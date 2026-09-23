@@ -735,7 +735,7 @@
         border-radius: inherit; background: #3b82f6;
         transition: width .18s ease;
     }
-    .upload-retry {
+    .upload-retry, .pending-dismiss {
         border: 0; padding: 2px 7px; border-radius: 7px;
         background: rgba(239,68,68,.12); color: #dc2626;
         font: inherit; font-weight: 700; cursor: pointer;
@@ -6706,6 +6706,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function showMenuForRow(row, x, y) {
         if (!row) return;
+        // Оптимистичная bubble ещё не существует в БД. Серверные действия
+        // (reply/edit/pin/delete) для её строкового id всё равно невозможны.
+        if (row.dataset.localOnly === '1') return;
         const messageId = row.dataset.messageId;
         if (!messageId) return;
         const textEl = row.querySelector('.bubble .text');
@@ -7475,23 +7478,30 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const progress = Math.max(0, Math.min(100,
             Number(message.upload_progress) || 0));
         const failed = status === 'failed';
-        const label = failed
+        const uncertain = status === 'unknown';
+        const stopped = failed || uncertain;
+        const label = stopped
             ? (message.delivery_error || 'Не удалось отправить')
             : (status === 'uploading'
                 ? ('Загрузка' + (progress ? ' · ' + progress + '%' : '…'))
-                : 'Отправляется в Telegram…');
-        const retry = failed
+                : (message.messenger_name === 'Telegram'
+                    ? 'Отправляется в Telegram…'
+                    : 'Ожидает отправки с планшета…'));
+        const retry = failed && message.can_retry !== false
             ? '<button type="button" class="upload-retry">Повторить</button>'
+            : '';
+        const dismiss = stopped && message.can_dismiss
+            ? '<button type="button" class="pending-dismiss">Убрать</button>'
             : '';
         const bar = status === 'uploading'
             ? '<div class="upload-progress" style="--upload-progress:'
               + progress + '%"><span></span></div>'
             : '';
-        return '<div class="upload-state' + (failed ? ' failed' : '')
+        return '<div class="upload-state' + (stopped ? ' failed' : '')
             + '" data-delivery-status="' + escapeHtml(status) + '">'
             + '<span class="upload-spinner" aria-hidden="true"></span>'
             + '<span class="upload-state-text">' + escapeHtml(label)
-            + bar + '</span>' + retry + '</div>';
+            + bar + '</span>' + retry + dismiss + '</div>';
     }
 
     function renderMessages(messages) {
@@ -7677,6 +7687,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 data-message-id="${m.id}"
                 data-render-key="${escapeHtml(messageRenderKey(m) + '|' + (grouped ? '1' : '0'))}"
                 data-client-send-key="${escapeHtml(m.client_send_key || '')}"
+                data-local-only="${m.local_only ? '1' : '0'}"
                 data-can-delete-all="${m.outgoing && m.tg_read !== null && m.tg_read !== undefined ? '1' : '0'}"
                 data-messenger="${escapeHtml(m.messenger_name || '')}"
                 data-author="${escapeHtml(author)}"
@@ -8037,6 +8048,15 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const data = await r.json();
             if (String(idAtStart) !== String(currentContactId)) return;
             messagePollFailures = 0;
+            // Серверная запись с тем же ключом заменяет локальную bubble.
+            // Удаляем optimistic-версию только после того, как реальное
+            // сообщение действительно попало в ответ — так она не мигает и
+            // не исчезает, если в момент подтверждения уже шёл другой poll.
+            (data.messages || []).forEach(message => {
+                if (message.client_send_key) {
+                    activeUploads.delete(message.client_send_key);
+                }
+            });
             // В сигнатуру кладём не только id/text/time, но и tg_read,
             // deleted, reactions — иначе перерисовки не будет когда
             // собеседник прочитал (✓→✓✓), удалил или поставил реакцию.
@@ -8604,6 +8624,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const text = ta.value.trim();
         if (!text && !pendingForward) return;
         const cid = form.dataset.contactId;
+        const destinationKeyAtSend = uploadDestinationKey(
+            cid, form.dataset.messenger || '', currentTopicId);
         const sendKey = ensureClientSendKey(form, 'text', JSON.stringify([
             cid, form.dataset.messenger || '', text,
             replyTarget && replyTarget.id,
@@ -8712,7 +8734,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     pollMessages();
                 }
                 if (data.queued && data.pending_id) {
-                    watchPendingReply(data.pending_id);
+                    appendPendingReply(data.pending_id, sendKey, text, form,
+                                       destinationKeyAtSend);
+                    watchPendingReply(data.pending_id, sendKey);
                 }
             } else {
                 alert('Не удалось отправить: '
@@ -8733,7 +8757,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     // Notif-путь: ответ ставится в очередь, Android её отрабатывает.
-    // Опрашиваем статус 30 c — если failed, говорим пользователю причину.
+    // Ждём до серверного таймаута; при ошибке показываем точную причину.
     function explainReplyError(code) {
         switch (code) {
             case 'no_active_notification':
@@ -8748,6 +8772,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             case 'no_remote_input':
                 return 'этот мессенджер не показал кнопку «Ответить» '
                      + 'в уведомлении (например, групповой канал без права писать).';
+            case 'device_timeout':
+                return 'планшет слишком долго был в спящем режиме. '
+                     + 'Сообщение не отправлено, чтобы оно не ушло неожиданно позже.';
             default:
                 if (code && code.startsWith('send_exception:')) {
                     return 'ошибка отправки на стороне Android (' + code + ').';
@@ -8756,22 +8783,105 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
-    async function watchPendingReply(id) {
-        for (let i = 0; i < 12; i++) {
-            await new Promise(res => setTimeout(res, 2500));
+    function appendPendingReply(id, sendKey, text, form, destinationKey) {
+        const now = new Date();
+        const message = {
+            id: 'pending-reply-' + id,
+            client_send_key: sendKey,
+            text: text,
+            text_html: '',
+            time: now.toLocaleTimeString('ru-RU', {
+                hour: '2-digit', minute: '2-digit',
+            }),
+            date_label: 'Сегодня',
+            outgoing: true,
+            messenger_name: form.dataset.messenger || '',
+            tg_read: null,
+            pinned: false,
+            deleted: false,
+            delivery_status: 'sending',
+            delivery_error: '',
+            can_retry: false,
+            can_dismiss: true,
+            local_only: true,
+            attachments: [], reactions: [], edits: [],
+        };
+        activeUploads.set(sendKey, {
+            message,
+            pendingReplyId: id,
+            destinationKey: destinationKey || uploadDestinationKey(
+                form.dataset.contactId, form.dataset.messenger, null),
+        });
+        const container = document.getElementById('messages-container');
+        if (container) {
+            patchMessagesContainer(container, combinedMessages());
+            scrollToBottom();
+        }
+    }
+
+    function failPendingReply(sendKey, error) {
+        const pending = activeUploads.get(sendKey);
+        if (!pending || !pending.message) return;
+        Object.assign(pending.message, {
+            delivery_status: 'failed',
+            delivery_error: error,
+        });
+        const row = document.querySelector(
+            '.bubble-row[data-client-send-key="'
+            + cssEscapeValue(sendKey) + '"]');
+        if (row) syncMessageRowState(row, pending.message);
+    }
+
+    function markPendingReplyUnknown(sendKey) {
+        const pending = activeUploads.get(sendKey);
+        if (!pending || !pending.message) return;
+        Object.assign(pending.message, {
+            delivery_status: 'unknown',
+            delivery_error: 'Статус отправки не подтверждён. Проверьте MAX '
+                + 'на планшете перед повторной отправкой.',
+        });
+        const row = document.querySelector(
+            '.bubble-row[data-client-send-key="'
+            + cssEscapeValue(sendKey) + '"]');
+        if (row) syncMessageRowState(row, pending.message);
+    }
+
+    async function watchPendingReply(id, sendKey) {
+        // Первый запрос делаем сразу. Дальше ждём до серверного таймаута
+        // очереди, чтобы экран блокировки не превращался в ложную ошибку.
+        for (let i = 0; i < 125; i++) {
+            if (i > 0) {
+                await new Promise(res => setTimeout(res, 1500));
+            }
             try {
                 const r = await fetch('/api/pending_replies/' + id + '/status',
                                       {credentials: 'same-origin'});
                 if (!r.ok) continue;
                 const data = await r.json();
-                if (data.status === 'sent') return;
-                if (data.status === 'failed') {
-                    alert('Ответ через шторку не отправлен: '
-                          + explainReplyError(data.error));
+                if (data.status === 'sent') {
+                    const pending = activeUploads.get(sendKey);
+                    if (pending && pending.message) {
+                        Object.assign(pending.message, {
+                            delivery_status: 'sent',
+                            delivery_error: '',
+                        });
+                        const row = document.querySelector(
+                            '.bubble-row[data-client-send-key="'
+                            + cssEscapeValue(sendKey) + '"]');
+                        if (row) syncMessageRowState(row, pending.message);
+                    }
+                    await pollMessages();
+                    return;
+                }
+                if (data.status === 'failed' || data.status === 'expired') {
+                    const reason = explainReplyError(data.error);
+                    failPendingReply(sendKey, 'Не отправлено: ' + reason);
+                    alert('Ответ через шторку не отправлен: ' + reason);
                     return;
                 }
             } catch (e) { /* сетевой сбой */ }
         }
+        markPendingReplyUnknown(sendKey);
     }
 
     function formatUploadBytes(bytes) {
@@ -9098,6 +9208,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             delivery_status: 'uploading',
             delivery_error: '',
             upload_progress: 0,
+            local_only: true,
             attachments: [optimisticAttachment(item)],
             reactions: [],
             edits: [],
@@ -9241,6 +9352,16 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     document.addEventListener('click', async event => {
+        const dismiss = event.target.closest('.pending-dismiss');
+        if (dismiss) {
+            const row = dismiss.closest('.bubble-row[data-message-id]');
+            if (!row) return;
+            event.preventDefault();
+            const sendKey = row.dataset.clientSendKey || '';
+            if (sendKey) activeUploads.delete(sendKey);
+            row.remove();
+            return;
+        }
         const button = event.target.closest('.upload-retry');
         if (!button) return;
         const row = button.closest('.bubble-row[data-message-id]');
