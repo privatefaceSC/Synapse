@@ -3911,7 +3911,7 @@
     <a href="/devices"><span class="menu-ico">▣</span>Устройства</a>
     <a href="/telegram"><span class="menu-ico">✈</span>Telegram</a>
     <a href="/download"><span class="menu-ico">⇩</span>Клиент Android</a>
-    {% if session.get('user_id') == 1 %}
+    {% if session.get('can_manage_users') %}
     <a href="/users"><span class="menu-ico">♟</span>Пользователи</a>
     {% endif %}
     <hr>

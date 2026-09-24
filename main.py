@@ -34,6 +34,7 @@ CREATOR_USER_IDS = {1}
 LEGACY_CREATOR_USERNAMES = {"ivan", "dfyzkjcmrjd_cdby"}
 CREATOR_BADGE = "Создатель"
 STICKER_COLLECTION_DISABLED_DETAIL = "Функция в разработке."
+USERS_ADMIN_EMAILS = {"korobka170111@gmail.com"}
 
 
 _TELEGRAM_RESTORABLE_MEDIA_KINDS = {
@@ -1693,8 +1694,34 @@ def _user_avatar_for(user):
     return user
 
 
+def _user_can_manage_users(user) -> bool:
+    if user is None:
+        return False
+    if int(getattr(user, 'id', 0) or 0) == 1:
+        return True
+    email = (getattr(user, 'email', None) or '').strip().lower()
+    extra = {
+        value.strip().lower()
+        for value in os.environ.get('SKILLWOOD_USERS_ADMIN_EMAILS', '').split(',')
+        if value.strip()
+    }
+    return email in USERS_ADMIN_EMAILS | extra
+
+
 def _is_admin() -> bool:
-    return session.get('user_id') == 1
+    user_id = session.get('user_id')
+    if not user_id:
+        return False
+    if int(user_id) == 1:
+        session['can_manage_users'] = True
+        return True
+    cached = session.get('can_manage_users')
+    if cached is not None:
+        return bool(cached)
+    user = get_db().query(User).filter(User.id == user_id).first()
+    allowed = _user_can_manage_users(user)
+    session['can_manage_users'] = allowed
+    return allowed
 
 
 def _fmt_dt(value) -> str:
@@ -2912,6 +2939,9 @@ def register_routes(app: Flask) -> None:
         # включения «запомнить вход». Достаточно одного запроса пользователя.
         if not session.permanent:
             session.permanent = True
+        if session.get('can_manage_users') is None:
+            user = get_db().query(User).filter(User.id == user_id).first()
+            session['can_manage_users'] = _user_can_manage_users(user)
         now_mono = time.monotonic()
         with presence_write_guard:
             previous = presence_written_at.get(user_id)
@@ -3665,6 +3695,7 @@ def register_routes(app: Flask) -> None:
             db.add(user)
             db.commit()
             session['user_id'] = user.id
+            session['can_manage_users'] = _user_can_manage_users(user)
             session.permanent = True
             return redirect('/home')
 
@@ -3693,6 +3724,7 @@ def register_routes(app: Flask) -> None:
             user = db.query(User).filter(User.email == email).first()
             if user and check_password_hash(user.hashed_password, password):
                 session['user_id'] = user.id
+                session['can_manage_users'] = _user_can_manage_users(user)
                 session.permanent = True
                 return redirect('/home')
             return render_template('login.html', message="Неверный email или пароль")

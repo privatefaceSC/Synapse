@@ -111,7 +111,7 @@
                                 <span class="gm-ico">⤓</span>Клиент для Android</a>
                             <a href="/telegram">
                                 <span class="gm-ico">✈</span>Telegram</a>
-                            {% if session.get('user_id') == 1 %}
+                            {% if session.get('can_manage_users') %}
                             <a href="/users">
                                 <span class="gm-ico">👥</span>Пользователи</a>
                             {% endif %}

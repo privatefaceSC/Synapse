@@ -162,6 +162,7 @@
                 <div class="user-card__identity">
                     <div class="user-card__name">{{ s.user.display_name }}</div>
                     <div class="user-card__meta">
+                        <span>user_id: {{ s.user.id }}</span>
                         <span>{% if s.user.username %}@{{ s.user.username }}{% else %}без никнейма{% endif %}</span>
                         <span>{{ s.user.email }}</span>
                     </div>
