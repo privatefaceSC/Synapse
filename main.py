@@ -49,8 +49,6 @@ _media_restore_jobs_guard = threading.Lock()
 _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
 _PRESENCE_ONLINE_SECONDS = 75
 _PRESENCE_WRITE_INTERVAL_SECONDS = 20
-_PENDING_REPLY_LONG_POLL_SECONDS = 10.0
-_PENDING_REPLY_POLL_INTERVAL_SECONDS = 0.35
 
 
 def _media_restore_lock(key):
@@ -2846,6 +2844,8 @@ def _dm_load_conversation(db, me_id, partner, mark_read=False):
 
 
 def register_routes(app: Flask) -> None:
+    presence_write_guard = threading.Lock()
+    presence_written_at = {}
 
     @app.before_request
     def _record_web_presence():
@@ -2853,20 +2853,28 @@ def register_routes(app: Flask) -> None:
         user_id = session.get('user_id')
         if not user_id or request.endpoint == 'static':
             return None
+        now_mono = time.monotonic()
+        with presence_write_guard:
+            previous = presence_written_at.get(user_id)
+            if (previous is not None
+                    and now_mono - previous < _PRESENCE_WRITE_INTERVAL_SECONDS):
+                return None
+            # Бронируем интервал до обращения к SQLite. Параллельные запросы
+            # одного пользователя больше не создают очередь из UPDATE-lock.
+            presence_written_at[user_id] = now_mono
         now = datetime.now()
-        cutoff = now - timedelta(seconds=_PRESENCE_WRITE_INTERVAL_SECONDS)
         db = get_db()
         try:
             changed = (db.query(User)
                        .filter(User.id == user_id)
-                       .filter(or_(User.last_seen_at.is_(None),
-                                   User.last_seen_at < cutoff))
                        .update({User.last_seen_at: now},
                                synchronize_session=False))
             if changed:
                 db.commit()
         except Exception:
             db.rollback()
+            with presence_write_guard:
+                presence_written_at.pop(user_id, None)
             logger.exception('Не удалось обновить web presence пользователя %s',
                              user_id)
         return None
@@ -6708,12 +6716,9 @@ def register_routes(app: Flask) -> None:
         """Android-клиент забирает отложенные ответы для своего пользователя.
         Атомарно помечает их `picked`, чтобы повторный поллинг не возвращал
         одно и то же. Дальше клиент пытается отправить ответ через `RemoteInput`
-        и отчитывается в `/api/replies/<id>/done`.
-
-        Если очередь пуста, держим запрос открытым до 10 секунд. Старый APK
-        уже совместим с таким ответом: когда экран погашен, Android может
-        растянуть запуск следующего timer/coroutine, а активный HTTP-запрос
-        получает задание сразу и не добавляет к отправке лишние ~30 секунд.
+        и отчитывается в `/api/replies/<id>/done`. Ответ всегда мгновенный:
+        блокирующее ожидание здесь заняло бы дефицитный WSGI-поток и замедлило
+        бы весь веб-интерфейс на малом тарифе AlwaysData.
         """
         from data.pending_replies import (PendingReply, STATUS_PENDING,
                                           STATUS_PICKED)
@@ -6725,30 +6730,10 @@ def register_routes(app: Flask) -> None:
         device.last_seen_at = datetime.now()
         _expire_stale_pending_replies(db, device.user_id)
 
-        # Сначала фиксируем last_seen и заканчиваем транзакцию, чтобы во время
-        # ожидания не держать read/write-lock SQLite. rollback между SELECT
-        # также гарантирует, что сессия увидит запись другого WSGI worker.
-        db.commit()
-        wait_seconds = 0.0 if app.testing else _PENDING_REPLY_LONG_POLL_SECONDS
-        try:
-            requested_wait = request.args.get('wait')
-            if requested_wait is not None:
-                wait_seconds = max(0.0, min(
-                    _PENDING_REPLY_LONG_POLL_SECONDS,
-                    float(requested_wait)))
-        except (TypeError, ValueError):
-            pass
-        deadline = time.monotonic() + wait_seconds
-        while True:
-            items = (db.query(PendingReply)
-                     .filter(PendingReply.user_id == device.user_id,
-                             PendingReply.status == STATUS_PENDING)
-                     .order_by(PendingReply.id.asc()).all())
-            if items or time.monotonic() >= deadline:
-                break
-            db.rollback()
-            time.sleep(min(_PENDING_REPLY_POLL_INTERVAL_SECONDS,
-                           max(0.0, deadline - time.monotonic())))
+        items = (db.query(PendingReply)
+                 .filter(PendingReply.user_id == device.user_id,
+                         PendingReply.status == STATUS_PENDING)
+                 .order_by(PendingReply.id.asc()).all())
         now = datetime.now()
         out = []
         for it in items:
