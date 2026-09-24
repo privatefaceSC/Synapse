@@ -4,185 +4,136 @@
 
 {% block body %}
 <style>
-    .users-admin {
-        max-width: 1180px;
-    }
+    .users-admin { max-width: 1040px; }
+    .users-title-note { color: #64748b; font-size: .92rem; }
 
     .user-card {
-        border: 1px solid rgba(148, 163, 184, .24);
-        border-radius: 8px;
-        background: rgba(15, 23, 42, .72);
-        color: #e5edf7;
-        box-shadow: 0 18px 44px rgba(0, 0, 0, .22);
-        overflow: hidden;
+        margin-bottom: 14px; overflow: hidden;
+        border: 1px solid #e2e8f0; border-radius: 18px;
+        background: #fff; color: #172033;
+        box-shadow: 0 12px 34px rgba(15, 23, 42, .08);
     }
-
-    .user-card + .user-card {
-        margin-top: 16px;
-    }
-
     .user-card__head {
-        display: grid;
-        grid-template-columns: auto minmax(0, 1fr) auto;
-        gap: 14px;
-        align-items: center;
-        padding: 18px;
-        border-bottom: 1px solid rgba(148, 163, 184, .18);
+        display: flex; align-items: center; gap: 14px;
+        padding: 18px 20px; border-bottom: 1px solid #edf1f6;
     }
-
     .user-card__avatar {
-        width: 58px;
-        height: 58px;
-        border-radius: 50%;
-        object-fit: cover;
-        display: inline-grid;
-        place-items: center;
-        color: #fff;
-        font-weight: 700;
-        border: 1px solid rgba(255, 255, 255, .2);
-        flex: 0 0 auto;
+        width: 58px; height: 58px; border-radius: 50%; object-fit: cover;
+        display: inline-grid; place-items: center; flex: 0 0 auto;
+        color: #fff; font-weight: 750; font-size: 1.12rem;
+        border: 2px solid rgba(255, 255, 255, .72);
+        box-shadow: 0 4px 14px rgba(15, 23, 42, .16);
     }
-
-    .user-card__title {
-        min-width: 0;
-    }
-
+    .user-card__identity { min-width: 0; }
     .user-card__name {
-        font-size: 1.08rem;
-        font-weight: 700;
-        line-height: 1.25;
+        font-size: 1.08rem; font-weight: 750; line-height: 1.25;
+        overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
-
-    .user-card__meta,
-    .user-card__small {
-        color: #9aa8bb;
-        font-size: .88rem;
+    .user-card__meta {
+        display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 3px;
+        color: #64748b; font-size: .87rem;
     }
 
     .live-presence {
         display: inline-flex; align-items: center; gap: 7px;
-        margin-top: 7px; padding: 5px 10px; border-radius: 999px;
-        color: #a8b4c5; background: rgba(148,163,184,.13);
-        border: 1px solid rgba(148,163,184,.2); font-size: .78rem;
-        line-height: 1.25; transition: color .2s, background .2s, border-color .2s;
+        max-width: 100%; margin-top: 8px; padding: 5px 10px;
+        border: 1px solid #dbe3ec; border-radius: 999px;
+        color: #64748b; background: #f8fafc;
+        font-size: .76rem; line-height: 1.25;
+        transition: color .2s, background .2s, border-color .2s;
     }
     .live-presence__dot {
         width: 8px; height: 8px; border-radius: 50%;
         background: #94a3b8; flex: 0 0 auto;
     }
     .live-presence.online {
-        color: #6ee7b7; background: rgba(16,185,129,.13);
-        border-color: rgba(52,211,153,.28);
+        color: #047857; background: #ecfdf5; border-color: #a7f3d0;
     }
     .live-presence.online .live-presence__dot {
-        background: #34d399; box-shadow: 0 0 0 0 rgba(52,211,153,.5);
+        background: #10b981; box-shadow: 0 0 0 0 rgba(16, 185, 129, .45);
         animation: admin-presence-pulse 1.9s ease-out infinite;
     }
     @keyframes admin-presence-pulse {
-        0% { box-shadow: 0 0 0 0 rgba(52,211,153,.5); }
-        65%, 100% { box-shadow: 0 0 0 7px rgba(52,211,153,0); }
+        0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, .45); }
+        65%, 100% { box-shadow: 0 0 0 7px rgba(16, 185, 129, 0); }
+    }
+
+    .user-card__body { padding: 16px 20px 20px; }
+    .user-info-grid {
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+    }
+    .user-info {
+        min-width: 0; padding: 12px 13px;
+        border: 1px solid #e7edf4; border-radius: 13px;
+        background: #f8fafc;
+    }
+    .user-info__label {
+        margin-bottom: 6px; color: #7c899b; font-size: .71rem;
+        font-weight: 700; letter-spacing: .055em; text-transform: uppercase;
+    }
+    .user-info__value {
+        color: #1e293b; font-size: .94rem; font-weight: 700;
+        overflow-wrap: anywhere;
+    }
+    .status-chip {
+        display: inline-flex; align-items: center; gap: 6px;
+        padding: 4px 8px; border-radius: 999px;
+        color: #475569; background: #e9eef5; font-size: .78rem;
+        font-weight: 700; line-height: 1.2;
+    }
+    .status-chip::before {
+        content: ''; width: 7px; height: 7px; border-radius: 50%;
+        background: #94a3b8;
+    }
+    .status-chip.connected { color: #047857; background: #d1fae5; }
+    .status-chip.connected::before { background: #10b981; }
+    .status-chip.warning { color: #a16207; background: #fef3c7; }
+    .status-chip.warning::before { background: #f59e0b; }
+    .user-info__note { margin-top: 5px; color: #7c899b; font-size: .76rem; }
+
+    [data-bs-theme="dark"] .users-title-note { color: #94a3b8; }
+    [data-bs-theme="dark"] .user-card {
+        border-color: #29313d; background: #171a20; color: #e5edf7;
+        box-shadow: 0 16px 38px rgba(0, 0, 0, .22);
+    }
+    [data-bs-theme="dark"] .user-card__head { border-bottom-color: #272e38; }
+    [data-bs-theme="dark"] .user-card__meta { color: #9aa8bb; }
+    [data-bs-theme="dark"] .live-presence {
+        color: #a8b4c5; background: rgba(148, 163, 184, .1);
+        border-color: rgba(148, 163, 184, .2);
+    }
+    [data-bs-theme="dark"] .live-presence.online {
+        color: #6ee7b7; background: rgba(16, 185, 129, .13);
+        border-color: rgba(52, 211, 153, .28);
+    }
+    [data-bs-theme="dark"] .user-info {
+        border-color: rgba(148, 163, 184, .18);
+        background: rgba(30, 41, 59, .52);
+    }
+    [data-bs-theme="dark"] .user-info__label,
+    [data-bs-theme="dark"] .user-info__note { color: #9aa8bb; }
+    [data-bs-theme="dark"] .user-info__value { color: #e5edf7; }
+    [data-bs-theme="dark"] .status-chip {
+        color: #cbd5e1; background: rgba(100, 116, 139, .28);
+    }
+    [data-bs-theme="dark"] .status-chip.connected {
+        color: #6ee7b7; background: rgba(16, 185, 129, .18);
+    }
+    [data-bs-theme="dark"] .status-chip.warning {
+        color: #fcd34d; background: rgba(245, 158, 11, .17);
+    }
+
+    @media (max-width: 760px) {
+        .user-info-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .user-card__head, .user-card__body { padding-left: 15px; padding-right: 15px; }
+    }
+    @media (max-width: 460px) {
+        .user-info-grid { grid-template-columns: 1fr; }
+        .user-card__avatar { width: 52px; height: 52px; }
     }
     @media (prefers-reduced-motion: reduce) {
         .live-presence.online .live-presence__dot { animation: none; }
-    }
-
-    .user-card__body {
-        padding: 16px 18px 18px;
-    }
-
-    .user-statuses,
-    .user-stats {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 10px;
-    }
-
-    .user-status,
-    .user-stat,
-    .user-section {
-        border: 1px solid rgba(148, 163, 184, .2);
-        border-radius: 8px;
-        background: rgba(30, 41, 59, .56);
-    }
-
-    .user-status,
-    .user-stat {
-        padding: 10px 12px;
-    }
-
-    .user-status__label,
-    .user-stat__label {
-        color: #9aa8bb;
-        font-size: .78rem;
-        text-transform: uppercase;
-        letter-spacing: .04em;
-    }
-
-    .user-status__value,
-    .user-stat__value {
-        margin-top: 3px;
-        font-weight: 700;
-    }
-
-    .user-section {
-        padding: 13px;
-        height: 100%;
-    }
-
-    .user-section__title {
-        font-weight: 700;
-        margin-bottom: 10px;
-    }
-
-    .user-table {
-        color: #d7e0eb;
-        margin-bottom: 0;
-        font-size: .9rem;
-    }
-
-    .user-table th {
-        color: #9aa8bb;
-        font-weight: 600;
-        border-color: rgba(148, 163, 184, .18);
-        white-space: nowrap;
-    }
-
-    .user-table td {
-        border-color: rgba(148, 163, 184, .12);
-        vertical-align: middle;
-    }
-
-    .user-table .text-muted {
-        color: #9aa8bb !important;
-    }
-
-    .user-actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 8px;
-        justify-content: flex-end;
-    }
-
-    .truncate-cell {
-        max-width: 280px;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    @media (max-width: 720px) {
-        .user-card__head {
-            grid-template-columns: auto minmax(0, 1fr);
-        }
-
-        .user-actions {
-            grid-column: 1 / -1;
-            justify-content: flex-start;
-        }
-
-        .truncate-cell {
-            max-width: 180px;
-        }
     }
 </style>
 
@@ -190,7 +141,7 @@
     <div class="d-flex align-items-center justify-content-between mb-3">
         <div>
             <h2 class="mb-1">Пользователи</h2>
-            <div class="text-muted">Админская диагностика аккаунтов, устройств и уведомлений.</div>
+            <div class="users-title-note">Зарегистрированные аккаунты Synapse.</div>
         </div>
         <span class="badge bg-secondary">{{ users|length }}</span>
     </div>
@@ -208,252 +159,72 @@
                     </div>
                 {% endif %}
 
-                <div class="user-card__title">
+                <div class="user-card__identity">
                     <div class="user-card__name">{{ s.user.display_name }}</div>
+                    <div class="user-card__meta">
+                        <span>{% if s.user.username %}@{{ s.user.username }}{% else %}без никнейма{% endif %}</span>
+                        <span>{{ s.user.email }}</span>
+                    </div>
                     <div class="live-presence{% if s.presence.online %} online{% endif %}"
                          data-user-presence-id="{{ s.user.id }}"
                          title="{{ s.presence.detail }}">
                         <span class="live-presence__dot"></span>
                         <span class="live-presence__text">{{ s.presence.detail }}</span>
                     </div>
-                    <div class="user-card__meta">
-                        {{ s.user.email }}
-                        {% if s.user.username %}
-                            · @{{ s.user.username }}
-                        {% endif %}
-                        · ID {{ s.user.id }}
-                    </div>
-                    <div class="user-card__small">
-                        Регистрация: {{ s.user.created_at }} · Изменён: {{ s.user.modified_date }}
-                    </div>
-                    <div class="user-card__small">
-                        Документация:
-                        {% if s.user.about_seen %}
-                            открывал {{ s.user.about_seen_at }}
-                        {% else %}
-                            не открывал
-                        {% endif %}
-                    </div>
-                </div>
-
-                <div class="user-actions">
-                    <form method="post" action="/users/{{ s.user.id }}/reset-code">
-                        <button type="submit" class="btn btn-sm btn-outline-warning">
-                            Сбросить код Android
-                        </button>
-                    </form>
-                    <a class="btn btn-sm btn-outline-info"
-                       href="/users/{{ s.user.id }}/diagnostics.json"
-                       target="_blank" rel="noopener">
-                        Диагностика JSON
-                    </a>
                 </div>
             </div>
 
             <div class="user-card__body">
-                <div class="user-statuses mb-3">
-                    <div class="user-status">
-                        <div class="user-status__label">Android</div>
-                        <div class="user-status__value">
-                            {% if s.devices.connected %}
-                                {{ s.devices.total }} {{ 'устройство' if s.devices.total == 1 else 'устройства' }}
-                            {% else %}
-                                не подключён
-                            {% endif %}
-                        </div>
-                        <div class="user-card__small">
-                            Последний раз: {{ s.devices.last_seen_at }} · IP {{ s.devices.last_seen_ip }}
-                        </div>
-                        <div class="user-card__small">Код: {{ s.user.connect_code }}</div>
+                <div class="user-info-grid">
+                    <div class="user-info">
+                        <div class="user-info__label">Медиа</div>
+                        <div class="user-info__value">{{ s.media.label }}</div>
                     </div>
 
-                    <div class="user-status">
-                        <div class="user-status__label">Telegram</div>
-                        <div class="user-status__value">
-                            <span class="badge bg-{{ s.telegram.badge }}">{{ s.telegram.label }}</span>
-                            {% if s.telegram.phone %} {{ s.telegram.phone }}{% endif %}
+                    <div class="user-info">
+                        <div class="user-info__label">Язык</div>
+                        <div class="user-info__value">{{ s.user.preferred_lang|upper }}</div>
+                    </div>
+
+                    <div class="user-info">
+                        <div class="user-info__label">Android</div>
+                        <div class="user-info__value">
+                            <span class="status-chip{% if s.android.connected %} connected{% endif %}">
+                                {{ 'Подключён' if s.android.connected else 'Не подключён' }}
+                            </span>
                         </div>
-                        <div class="user-card__small">
-                            {% if s.telegram.ghost_mode %}призрак{% else %}без призрака{% endif %},
-                            muted filter: {{ 'да' if s.telegram.skip_muted else 'нет' }},
-                            archive filter: {{ 'да' if s.telegram.skip_archived else 'нет' }}
-                        </div>
-                        {% if s.telegram.error %}
-                            <div class="user-card__small text-warning">{{ s.telegram.error }}</div>
+                        {% if s.android.total > 1 %}
+                            <div class="user-info__note">Устройств: {{ s.android.total }}</div>
                         {% endif %}
                     </div>
 
-                    <div class="user-status">
-                        <div class="user-status__label">Web Push</div>
-                        <div class="user-status__value">
-                            {{ s.webpush.active }} активная из {{ s.webpush.total }}
-                        </div>
-                        <div class="user-card__small">
-                            {% if s.webpush.last_error %}
-                                Последняя ошибка: {{ s.webpush.last_error }}
-                            {% else %}
-                                Последних ошибок нет
-                            {% endif %}
-                        </div>
-                    </div>
-                </div>
-
-                <div class="user-stats mb-3">
-                    <div class="user-stat">
-                        <div class="user-stat__label">Контакты</div>
-                        <div class="user-stat__value">{{ s.counts.contacts }}</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Сообщения</div>
-                        <div class="user-stat__value">{{ s.counts.messages }}</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Архив</div>
-                        <div class="user-stat__value">{{ s.counts.archived }}</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Без звука</div>
-                        <div class="user-stat__value">{{ s.counts.muted }}</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Закреплено</div>
-                        <div class="user-stat__value">{{ s.counts.pinned_chats }} чатов · {{ s.counts.pinned_messages }} сообщений</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Заблокировано</div>
-                        <div class="user-stat__value">{{ s.counts.blocked }}</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Медиа</div>
-                        <div class="user-stat__value">{{ s.media.label }}</div>
-                    </div>
-                    <div class="user-stat">
-                        <div class="user-stat__label">Язык</div>
-                        <div class="user-stat__value">{{ s.user.preferred_lang }}</div>
-                    </div>
-                </div>
-
-                <div class="row g-3">
-                    <div class="col-lg-4">
-                        <div class="user-section">
-                            <div class="user-section__title">Чаты по мессенджерам</div>
-                            {% if s.messengers %}
-                            <div class="table-responsive">
-                                <table class="table table-sm user-table">
-                                    <thead>
-                                    <tr>
-                                        <th>Мессенджер</th>
-                                        <th>Чаты</th>
-                                        <th>Группы</th>
-                                        <th>Сообщ.</th>
-                                    </tr>
-                                    </thead>
-                                    <tbody>
-                                    {% for name, row in s.messengers.items() %}
-                                    <tr>
-                                        <td>{{ name }}</td>
-                                        <td>{{ row.handles }}</td>
-                                        <td>{{ row.groups }}</td>
-                                        <td>{{ row.messages }}</td>
-                                    </tr>
-                                    {% endfor %}
-                                    </tbody>
-                                </table>
-                            </div>
-                            {% else %}
-                                <div class="user-card__small">Чатов пока нет.</div>
-                            {% endif %}
+                    <div class="user-info">
+                        <div class="user-info__label">Telegram</div>
+                        <div class="user-info__value">
+                            <span class="status-chip{% if s.telegram.authorized %} connected{% else %} warning{% endif %}">
+                                {{ s.telegram.label }}
+                            </span>
                         </div>
                     </div>
 
-                    <div class="col-lg-4">
-                        <div class="user-section">
-                            <div class="user-section__title">Android-устройства</div>
-                            {% if s.devices['items'] %}
-                            <div class="table-responsive">
-                                <table class="table table-sm user-table">
-                                    <thead>
-                                    <tr>
-                                        <th>Имя</th>
-                                        <th>Онлайн</th>
-                                        <th></th>
-                                    </tr>
-                                    </thead>
-                                    <tbody>
-                                    {% for d in s.devices['items'] %}
-                                    <tr>
-                                        <td>
-                                            {{ d.name }}
-                                            <div class="user-card__small">IP {{ d.last_seen_ip }}</div>
-                                        </td>
-                                        <td>{{ d.last_seen_at }}</td>
-                                        <td class="text-end">
-                                            <form method="post" action="/users/devices/{{ d.id }}/delete">
-                                                <button type="submit"
-                                                        class="btn btn-sm btn-outline-danger">
-                                                    Отключить
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                    </tbody>
-                                </table>
-                            </div>
-                            {% else %}
-                                <div class="user-card__small">Android-клиент не подключался.</div>
-                            {% endif %}
+                    <div class="user-info">
+                        <div class="user-info__label">Web Push</div>
+                        <div class="user-info__value">
+                            <span class="status-chip{% if s.webpush.connected %} connected{% endif %}">
+                                {{ 'Подключён' if s.webpush.connected else 'Не подключён' }}
+                            </span>
                         </div>
+                        {% if s.webpush.connected and s.webpush.active > 1 %}
+                            <div class="user-info__note">Активных подписок: {{ s.webpush.active }}</div>
+                        {% endif %}
                     </div>
 
-                    <div class="col-lg-4">
-                        <div class="user-section">
-                            <div class="user-section__title">Push-подписки</div>
-                            {% if s.webpush['items'] %}
-                            <div class="table-responsive">
-                                <table class="table table-sm user-table">
-                                    <thead>
-                                    <tr>
-                                        <th>Устройство</th>
-                                        <th>Статус</th>
-                                        <th></th>
-                                    </tr>
-                                    </thead>
-                                    <tbody>
-                                    {% for p in s.webpush['items'] %}
-                                    <tr>
-                                        <td>
-                                            <div class="truncate-cell">{{ p.user_agent }}</div>
-                                            <div class="user-card__small">{{ p.endpoint }}</div>
-                                            <div class="user-card__small">{{ p.origin }}</div>
-                                        </td>
-                                        <td>
-                                            {% if p.enabled %}
-                                                <span class="badge bg-success">активна</span>
-                                            {% else %}
-                                                <span class="badge bg-secondary">выкл.</span>
-                                            {% endif %}
-                                            <div class="user-card__small">{{ p.updated_at }}</div>
-                                            {% if p.last_error %}
-                                                <div class="user-card__small text-warning">{{ p.last_error }}</div>
-                                            {% endif %}
-                                        </td>
-                                        <td class="text-end">
-                                            <form method="post" action="/users/webpush/{{ p.id }}/delete">
-                                                <button type="submit"
-                                                        class="btn btn-sm btn-outline-danger">
-                                                    Удалить
-                                                </button>
-                                            </form>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                    </tbody>
-                                </table>
-                            </div>
-                            {% else %}
-                                <div class="user-card__small">Web Push не подключался.</div>
-                            {% endif %}
+                    <div class="user-info">
+                        <div class="user-info__label">Документация</div>
+                        <div class="user-info__value">
+                            <span class="status-chip{% if s.user.about_seen %} connected{% endif %}">
+                                {{ 'Открывал' if s.user.about_seen else 'Не открывал' }}
+                            </span>
                         </div>
                     </div>
                 </div>
@@ -464,8 +235,8 @@
         <div class="alert alert-info">Пока никто не зарегистрировался.</div>
     {% endif %}
 </div>
+
 <script>
-    // Владелец видит изменения статуса без обновления всей тяжёлой страницы.
     (function() {
         async function refreshPresence() {
             if (document.hidden || navigator.onLine === false) return;

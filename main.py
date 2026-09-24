@@ -1797,6 +1797,59 @@ def _user_media_bytes(db, user_id: int) -> int:
     return max(int(external or 0) + int(direct or 0), files)
 
 
+def _admin_user_card_summary(db, user) -> dict:
+    """Только данные компактной админской карточки пользователя."""
+    from sqlalchemy import func
+    from data.devices import Device
+    from data.webpush_subscriptions import WebPushSubscription
+
+    _user_avatar_for(user)
+    device_total = (db.query(func.count(Device.id))
+                    .filter(Device.user_id == user.id)
+                    .scalar() or 0)
+    push_total = (db.query(func.count(WebPushSubscription.id))
+                  .filter(WebPushSubscription.user_id == user.id)
+                  .scalar() or 0)
+    push_active = (db.query(func.count(WebPushSubscription.id))
+                   .filter(WebPushSubscription.user_id == user.id,
+                           WebPushSubscription.enabled.is_(True))
+                   .scalar() or 0)
+    media_bytes = _user_media_bytes(db, user.id)
+
+    return {
+        'user': {
+            'id': user.id,
+            'display_name': (((user.name or '') + ' '
+                              + (user.surname or '')).strip()
+                             or user.username or user.email or f'user{user.id}'),
+            'email': user.email or '—',
+            'username': user.username or '',
+            'preferred_lang': user.preferred_lang or 'ru',
+            'about_seen': bool(getattr(user, 'about_seen_at', None)),
+        },
+        'avatar': {
+            'has_avatar': bool(user.has_avatar),
+            'initial': user.initial,
+            'color': user.avatar_color,
+        },
+        'presence': _user_presence(user),
+        'media': {
+            'bytes': media_bytes,
+            'label': _format_bytes(media_bytes),
+        },
+        'android': {
+            'connected': bool(device_total),
+            'total': int(device_total),
+        },
+        'telegram': _telegram_admin_status(user.id),
+        'webpush': {
+            'connected': bool(push_active),
+            'active': int(push_active),
+            'total': int(push_total),
+        },
+    }
+
+
 def _admin_user_summary(db, user) -> dict:
     from sqlalchemy import func, or_
     from data.contacts import Contact, MessengerHandle
@@ -3277,7 +3330,7 @@ def register_routes(app: Flask) -> None:
             abort(403)
         db = get_db()
         users = db.query(User).order_by(User.id.asc()).all()
-        summaries = [_admin_user_summary(db, u) for u in users]
+        summaries = [_admin_user_card_summary(db, u) for u in users]
         return render_template('users.html', users=summaries)
 
     @app.route('/users/presence.json')
