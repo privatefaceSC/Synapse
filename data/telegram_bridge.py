@@ -70,6 +70,13 @@ _recent_self_sent_ids = []
 # chat_id -> typing state. Старый формат float ещё поддерживается ниже:
 # {expires: monotonic, authors: {user_id_or_name: display_name}}.
 _typing = {}
+# Онлайн/последнее посещение Telegram. Ключ включает владельца Telegram-
+# сессии, иначе одинаковые chat_id разных аккаунтов пересекались бы.
+_presence_by_user = {}
+_presence_refresh_at = {}
+_presence_refreshing = set()
+_presence_lock = threading.Lock()
+_PRESENCE_REFRESH_INTERVAL = 45
 _recent_sync_at_by_user = {}
 _recent_sync_inflight_users = set()
 _RECENT_SYNC_INTERVAL = 10
@@ -1093,6 +1100,9 @@ async def _handle_message(event, user_id=None, client=None,
     chat = await event.get_chat()
     if _lifecycle_token(owner) != expected_lifecycle:
         return
+    if event.is_private:
+        _remember_presence(
+            owner, event.chat_id, getattr(chat, "status", None))
     if await _is_linked_discussion_group(
             chat, event.chat_id, user_id=user_id, client=client):
         return
@@ -1608,6 +1618,9 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
 
         chat_key = _chat_title(chat)
         chat_type = _chat_type_from_entity(chat)
+        if chat_type == "private":
+            _remember_presence(
+                owner, chat_id, getattr(chat, "status", None))
         archived = int(getattr(dialog, "folder_id", 0) or 0) == 1
 
         async for msg in client.iter_messages(chat or chat_id,
@@ -1840,6 +1853,14 @@ async def _register_handler_unlocked(user_id=None, client=None,
         if _lifecycle_token(owner) != registration_token:
             return
         try:
+            # UpdateUserStatus несёт `status`; typing-апдейт — нет. Не
+            # принимаем отсутствие status за офлайн, иначе «печатает» будет
+            # на несколько секунд сбрасывать зелёный индикатор.
+            event_status = getattr(event, "status", None)
+            event_user_id = (getattr(event, "user_id", None)
+                             or getattr(event, "chat_id", None))
+            if event_status is not None and event_user_id is not None:
+                _remember_presence(owner, event_user_id, event_status)
             if getattr(event, "typing", False):
                 chat_id = int(event.chat_id)
                 exp = time.monotonic() + 6
@@ -2208,6 +2229,157 @@ def typing_status(chat_id) -> dict:
             return {"typing": True, "authors": alive}
         return {"typing": bool(state.get("expires", 0) > now), "authors": []}
     return {"typing": bool(state is not None and state > now), "authors": []}
+
+
+def _telegram_status_presence(status):
+    """Перевести Telethon UserStatus* в компактный JSON для интерфейса."""
+    if status is None:
+        return None
+    import datetime as _dt
+
+    kind = status.__class__.__name__
+    now_utc = _dt.datetime.now(_dt.timezone.utc)
+
+    def aware(value):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=_dt.timezone.utc)
+        return value
+
+    def seen_detail(value):
+        value = aware(value)
+        if value is None:
+            return "Не в сети"
+        local = value.astimezone()
+        now_local = now_utc.astimezone(local.tzinfo)
+        if local.date() == now_local.date():
+            return f"Был(а) сегодня в {local:%H:%M}"
+        if local.date() == (now_local - _dt.timedelta(days=1)).date():
+            return f"Был(а) вчера в {local:%H:%M}"
+        return f"Был(а) {local:%d.%m.%Y} в {local:%H:%M}"
+
+    if kind == "UserStatusOnline":
+        expires = aware(getattr(status, "expires", None))
+        online = expires is None or expires > now_utc
+        return {
+            "online": online,
+            "label": "В сети" if online else "Не в сети",
+            "detail": "В сети" if online else "Был(а) недавно",
+            "last_seen_at_iso": None,
+            "online_until": expires.timestamp() if expires else None,
+            "source": "telegram",
+        }
+    if kind == "UserStatusOffline":
+        last_seen = aware(getattr(status, "was_online", None))
+        return {
+            "online": False,
+            "label": "Не в сети",
+            "detail": seen_detail(last_seen),
+            "last_seen_at_iso": last_seen.isoformat() if last_seen else None,
+            "online_until": None,
+            "source": "telegram",
+        }
+    approximate = {
+        "UserStatusRecently": "Был(а) недавно",
+        "UserStatusLastWeek": "Был(а) на этой неделе",
+        "UserStatusLastMonth": "Был(а) в этом месяце",
+    }.get(kind)
+    if approximate:
+        return {
+            "online": False,
+            "label": "Не в сети",
+            "detail": approximate,
+            "last_seen_at_iso": None,
+            "online_until": None,
+            "source": "telegram",
+        }
+    return None
+
+
+def _presence_key(user_id, chat_id):
+    try:
+        return _normalize_user_id(user_id), int(chat_id)
+    except (TypeError, ValueError):
+        return None
+
+
+def _remember_presence(user_id, chat_id, status):
+    key = _presence_key(user_id, chat_id)
+    presence = _telegram_status_presence(status)
+    if key is None or presence is None:
+        return None
+    with _presence_lock:
+        _presence_by_user[key] = presence
+    return presence
+
+
+async def _refresh_presence(chat_id, user_id=None):
+    owner = _normalize_user_id(user_id)
+    key = _presence_key(owner, chat_id)
+    try:
+        client = await _get_client(owner)
+        if not await client.is_user_authorized():
+            return None
+        entity = await client.get_entity(int(chat_id))
+        return _remember_presence(owner, chat_id,
+                                  getattr(entity, "status", None))
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Telegram presence refresh failed for user_id=%s: %s",
+                     owner, exc.__class__.__name__)
+        return None
+    finally:
+        if key is not None:
+            with _presence_lock:
+                _presence_refreshing.discard(key)
+
+
+def request_presence_refresh(chat_id, user_id=None):
+    """Запустить обновление статуса в фоне, не задерживая HTTP polling."""
+    if not is_configured() or not telethon_available():
+        return None
+    key = _presence_key(user_id, chat_id)
+    if key is None:
+        return None
+    now = time.monotonic()
+    with _presence_lock:
+        if (key in _presence_refreshing
+                or now - _presence_refresh_at.get(key, 0)
+                < _PRESENCE_REFRESH_INTERVAL):
+            return None
+        _presence_refresh_at[key] = now
+        _presence_refreshing.add(key)
+    _ensure_loop()
+    try:
+        return asyncio.run_coroutine_threadsafe(
+            _refresh_presence(key[1], user_id=key[0]), _loop)
+    except Exception:
+        with _presence_lock:
+            _presence_refreshing.discard(key)
+        return None
+
+
+def presence_status(chat_id, user_id=None, refresh=False):
+    """Последний известный Telegram-статус без блокирующего MTProto вызова."""
+    key = _presence_key(user_id, chat_id)
+    if key is None:
+        return None
+    if refresh:
+        request_presence_refresh(chat_id, user_id=user_id)
+    with _presence_lock:
+        cached = _presence_by_user.get(key)
+        presence = dict(cached) if cached else None
+    if presence is None:
+        return None
+    online_until = presence.pop("online_until", None)
+    if (presence.get("online") and online_until is not None
+            and online_until <= time.time()):
+        presence.update({
+            "online": False,
+            "label": "Не в сети",
+            "detail": "Был(а) недавно",
+        })
+    return presence
 
 
 def _is_muted(dialog) -> bool:

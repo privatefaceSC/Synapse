@@ -351,6 +351,18 @@ def _enrich_with_last_message(db, contacts):
             if partner is not None:
                 c.presence = _user_presence(partner)
                 break
+        if c.presence is None:
+            # Telegram presence хранится в памяти моста и читается здесь без
+            # сетевого запроса, поэтому список чатов остаётся быстрым.
+            from data import telegram_bridge
+            for handle in contact_handles:
+                if (handle.messenger_name == 'Telegram'
+                        and handle.tg_chat_id is not None
+                        and not _is_group_or_channel_handle(handle)):
+                    c.presence = telegram_bridge.presence_status(
+                        handle.tg_chat_id, user_id=c.user_id)
+                    if c.presence is not None:
+                        break
 
     if contact_ids:
         ranked = (
@@ -2222,6 +2234,31 @@ def _synapse_partner_id(handle) -> int | None:
         return None
 
 
+def _presence_for_handles(db, owner_id: int, handles,
+                          refresh_telegram: bool = False):
+    """Присутствие открытого личного чата Synapse или Telegram."""
+    for handle in handles:
+        if handle.messenger_name != SYNAPSE_MESSENGER:
+            continue
+        partner_id = _synapse_partner_id(handle)
+        if partner_id is None:
+            continue
+        partner = db.query(User).filter(User.id == partner_id).first()
+        if partner is not None:
+            return _user_presence(partner)
+
+    from data import telegram_bridge
+    for handle in handles:
+        if (handle.messenger_name != 'Telegram'
+                or handle.tg_chat_id is None
+                or _is_group_or_channel_handle(handle)):
+            continue
+        return telegram_bridge.presence_status(
+            handle.tg_chat_id, user_id=owner_id,
+            refresh=refresh_telegram)
+    return None
+
+
 def _ensure_synapse_handle(db, owner_id: int, partner):
     from data.contacts import Contact, MessengerHandle
 
@@ -3998,6 +4035,8 @@ def register_routes(app: Flask) -> None:
                 available.append(h.messenger_name)
         current_m = _pick_messenger(available, request.args.get('m'))
         m_handles = [h for h in handles if h.messenger_name == current_m]
+        selected_presence = _presence_for_handles(
+            db, user_id, m_handles, refresh_telegram=True)
         handle_ids = [h.id for h in m_handles]
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
@@ -4044,6 +4083,7 @@ def register_routes(app: Flask) -> None:
                                is_group=is_group, chat_type=chat_type,
                                notifications_muted=bool(contact.muted),
                                messengers=available, current_messenger=current_m,
+                               selected_presence=selected_presence,
                                archive_mode=archive_mode,
                                creator_mode=False, creator_cards=[])
 
@@ -4071,6 +4111,8 @@ def register_routes(app: Flask) -> None:
                 available.append(h.messenger_name)
         current_m = _pick_messenger(available, request.args.get('m'))
         m_handles = [h for h in handles if h.messenger_name == current_m]
+        selected_presence = _presence_for_handles(
+            db, user_id, m_handles, refresh_telegram=True)
         handle_ids = [h.id for h in m_handles]
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
@@ -4167,6 +4209,7 @@ def register_routes(app: Flask) -> None:
                 'archived': bool(contact.archived),
                 'is_creator': bool(getattr(contact, 'is_creator', False)),
                 'creator_title': getattr(contact, 'creator_title', ''),
+                'presence': selected_presence,
             },
             'topics': saved_topics,
             'has_older': has_older,
@@ -5279,7 +5322,17 @@ def register_routes(app: Flask) -> None:
             return jsonify({'typing': False})
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
-        tg_handle = _telegram_reply_handle(handles)
+        available = []
+        for handle in handles:
+            if handle.messenger_name not in available:
+                available.append(handle.messenger_name)
+        current_m = _pick_messenger(available, request.args.get('m'))
+        active_handles = [handle for handle in handles
+                          if handle.messenger_name == current_m]
+        tg_handle = _telegram_reply_handle(active_handles)
+        presence = _presence_for_handles(
+            db, session['user_id'], active_handles,
+            refresh_telegram=True)
         typing = False
         authors = []
         text = ''
@@ -5302,7 +5355,8 @@ def register_routes(app: Flask) -> None:
                     text = f'{authors[0]} и ещё {len(authors) - 1} печатают…'
             else:
                 text = 'печатает…'
-        return jsonify({'typing': bool(typing), 'authors': authors, 'text': text})
+        return jsonify({'typing': bool(typing), 'authors': authors,
+                        'text': text, 'presence': presence})
 
     @app.route('/contacts/<int:contact_id>/members.json')
     def contact_members(contact_id):

@@ -629,6 +629,40 @@
     }
     .feed-header .is-typing { color: #3b82f6; font-style: italic; }
     [data-bs-theme="dark"] .feed-header .is-typing { color: #60a5fa; }
+    .feed-header-subline {
+        display: flex; align-items: center; gap: 5px; min-width: 0;
+        white-space: nowrap; overflow: hidden;
+    }
+    .feed-header-presence {
+        display: inline-flex; align-items: center; gap: 5px;
+        min-width: 0; color: #64748b; font-weight: 600;
+    }
+    .feed-header-presence[hidden] { display: none; }
+    .feed-header-presence__dot {
+        width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto;
+        background: #94a3b8;
+    }
+    .feed-header-presence.online { color: #059669; }
+    .feed-header-presence.online .feed-header-presence__dot {
+        background: #10b981; box-shadow: 0 0 0 0 rgba(16,185,129,.45);
+        animation: presence-pulse 1.9s ease-out infinite;
+    }
+    .feed-header-presence__text,
+    .feed-header-context { overflow: hidden; text-overflow: ellipsis; }
+    .feed-header-context.with-presence::before { content: '·'; margin-right: 5px; }
+    .feed-header-typing { display: none; }
+    .feed-header-subline.is-typing .feed-header-presence,
+    .feed-header-subline.is-typing .feed-header-context { display: none; }
+    .feed-header-subline.is-typing .feed-header-typing {
+        display: inline; overflow: hidden; text-overflow: ellipsis;
+    }
+    [data-bs-theme="dark"] .feed-header-presence { color: #94a3b8; }
+    [data-bs-theme="dark"] .feed-header-presence.online { color: #6ee7b7; }
+    @media (prefers-reduced-motion: reduce) {
+        .feed-header-presence.online .feed-header-presence__dot {
+            animation: none;
+        }
+    }
     .feed-header .feed-header-top { cursor: pointer; user-select: none; }
     .feed-header .feed-header-top:hover { background: rgba(0,0,0,.025); }
     .feed-header .fw-semibold { font-size: 16px; font-weight: 700; color: #111827; }
@@ -4199,7 +4233,15 @@
                             <div class="flex-fill" style="min-width:0;">
                                 <div class="fw-semibold text-truncate">{{ selected.display_name }}{% if selected.is_creator %}<span
                                     class="creator-inline">★ {{ selected.creator_title }}</span>{% endif %}</div>
-                                <div class="text-muted small text-truncate">
+                                <div class="text-muted small text-truncate feed-header-subline">
+                                    <span class="feed-header-typing"></span>
+                                    <span class="feed-header-presence{% if selected_presence and selected_presence.online %} online{% endif %}"
+                                          {% if not selected_presence %}hidden{% endif %}
+                                          title="{{ selected_presence.detail if selected_presence else '' }}">
+                                        <span class="feed-header-presence__dot"></span>
+                                        <span class="feed-header-presence__text">{{ selected_presence.detail if selected_presence else '' }}</span>
+                                    </span>
+                                    <span class="feed-header-context{% if selected_presence %} with-presence{% endif %}">
                                     {% if is_group %}
                                         Группа — нажмите, чтобы увидеть участников
                                     {% elif _multi %}
@@ -4209,6 +4251,7 @@
                                     {% else %}
                                         нет личностей
                                     {% endif %}
+                                    </span>
                                 </div>
                             </div>
                             <button type="button" class="topics-btn"
@@ -7458,6 +7501,17 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 : 'Форум — выберите тему';
         }
 
+        const presence = c.presence || null;
+        const presenceText = presence
+            ? (presence.detail || presence.label || '') : '';
+        const presenceHtml = `<span class="feed-header-typing"></span>`
+            + `<span class="feed-header-presence${presence && presence.online ? ' online' : ''}"`
+            + `${presence ? '' : ' hidden'}`
+            + ` title="${escapeHtml(presenceText)}">`
+            + `<span class="feed-header-presence__dot"></span>`
+            + `<span class="feed-header-presence__text">${escapeHtml(presenceText)}</span></span>`
+            + `<span class="feed-header-context${presence ? ' with-presence' : ''}">${subline}</span>`;
+
         return `<div class="feed-header${expandable ? ' expandable' : ''}"
                      id="feed-header" data-contact-id="${c.id}"
                      data-is-group="${isGroup ? '1' : ''}"
@@ -7475,7 +7529,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">${escapeHtml(c.initial)}</span>`}
                 <div class="flex-fill" style="min-width:0;">
                     <div class="fw-semibold text-truncate">${escapeHtml(c.display_name)}${creatorBadgeHtml(c)}</div>
-                    <div class="text-muted small text-truncate">${subline}</div>
+                    <div class="text-muted small text-truncate feed-header-subline">${presenceHtml}</div>
                 </div>
                 <button type="button" class="topics-btn" data-topics-btn="1"
                         title="📑 Темы чата (анализирует Ollama)">📑</button>
@@ -8156,17 +8210,39 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         scheduleTypingPoll(0);
     }
 
-    function setTyping(on, text) {
-        const sub = feed.querySelector('.feed-header .text-muted');
+    function setHeaderPresence(presence) {
+        const sub = feed.querySelector('.feed-header-subline');
         if (!sub) return;
+        const badge = sub.querySelector('.feed-header-presence');
+        const label = sub.querySelector('.feed-header-presence__text');
+        const context = sub.querySelector('.feed-header-context');
+        if (!badge || !label) return;
+        if (presence) {
+            const detail = presence.detail || presence.label || '';
+            badge.hidden = false;
+            badge.classList.toggle('online', !!presence.online);
+            badge.title = detail;
+            label.textContent = detail;
+            if (context) context.classList.add('with-presence');
+        } else {
+            badge.hidden = true;
+            badge.classList.remove('online');
+            badge.title = '';
+            label.textContent = '';
+            if (context) context.classList.remove('with-presence');
+        }
+    }
+
+    function setTyping(on, text) {
+        const sub = feed.querySelector('.feed-header-subline');
+        if (!sub) return;
+        const typing = sub.querySelector('.feed-header-typing');
         if (on) {
-            if (sub.dataset.orig == null) sub.dataset.orig = sub.textContent;
-            sub.textContent = text || 'печатает…';
+            if (typing) typing.textContent = text || 'печатает…';
             sub.classList.add('is-typing');
-        } else if (sub.dataset.orig != null) {
-            sub.textContent = sub.dataset.orig;
-            delete sub.dataset.orig;
+        } else {
             sub.classList.remove('is-typing');
+            if (typing) typing.textContent = '';
         }
     }
 
@@ -8185,7 +8261,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const idAtStart = currentContactId;
         typingPollInFlight = true;
         try {
-            const r = await fetch('/contacts/' + idAtStart + '/typing.json',
+            const r = await fetch('/contacts/' + idAtStart + '/typing.json'
+                                  + messengerQuery(),
                                   {credentials: 'same-origin'});
             if (!r.ok) {
                 typingPollFailures += 1;
@@ -8194,6 +8271,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const data = await r.json();
             if (String(idAtStart) !== String(currentContactId)) return;
             typingPollFailures = 0;
+            setHeaderPresence(data.presence || null);
             setTyping(!!data.typing, data.text || '');
         } catch (e) {
             typingPollFailures += 1;
@@ -8236,6 +8314,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const data = await r.json();
             if (String(idAtStart) !== String(currentContactId)) return;
             messagePollFailures = 0;
+            if (data.contact) {
+                setHeaderPresence(data.contact.presence || null);
+            }
             // Серверная запись с тем же ключом заменяет локальную bubble.
             // Удаляем optimistic-версию только после того, как реальное
             // сообщение действительно попало в ответ — так она не мигает и
@@ -9318,6 +9399,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const fd = new FormData();
         fd.append('file', file);
         fd.append('client_send_key', sendKey);
+        if (opts.voice) fd.append('voice', '1');
         const caption = captionOverride != null
             ? captionOverride
             : (ta ? ta.value.trim() : '');
@@ -9473,10 +9555,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function optimisticAttachment(item) {
         const mime = (item.file && item.file.type) || '';
-        let kind = 'file';
-        if (mime.indexOf('image/') === 0) kind = 'image';
-        else if (mime.indexOf('video/') === 0) kind = 'video';
-        else if (mime.indexOf('audio/') === 0) kind = 'audio';
+        let kind = item.kind || 'file';
+        if (!item.kind && mime.indexOf('image/') === 0) kind = 'image';
+        else if (!item.kind && mime.indexOf('video/') === 0) kind = 'video';
+        else if (!item.kind && mime.indexOf('audio/') === 0) kind = 'audio';
         return {
             id: 'local-' + item.sendKey,
             kind,
@@ -9604,6 +9686,44 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         failOptimisticUpload(item);
         return false;
     }
+
+    async function queueVoiceUpload(form, blob, sendKey) {
+        if (!form || !blob) return false;
+        const ext = (blob.type || '').includes('ogg') ? 'ogg'
+            : ((blob.type || '').includes('wav') ? 'wav' : 'webm');
+        let file = blob;
+        try {
+            file = new File([blob], 'voice.' + ext, {
+                type: blob.type || 'audio/webm',
+            });
+        } catch (_) {
+            // Старый Safari умеет отправлять Blob; имя здесь необязательно,
+            // потому что сервер ориентируется ещё и на MIME.
+        }
+        const item = {
+            file,
+            kind: 'voice',
+            prepared: true,
+            sendKey: sendKey || makeClientSendKey('voice'),
+            url: URL.createObjectURL(blob),
+        };
+        const sendOpts = {
+            voice: true,
+            replyTo: replyTarget ? replyTarget.id : '',
+            silent: !!form.querySelector('input[name="silent"][value="1"]'),
+            scheduleAt: (form.querySelector(
+                'input[name="schedule_at"][type="hidden"]') || {}).value || '',
+        };
+        appendOptimisticUpload(item, '', form, sendOpts);
+        clearReply();
+        if (window.__skillwoodResetSendFlags) {
+            window.__skillwoodResetSendFlags(form);
+        }
+        await new Promise(resolve => requestAnimationFrame(resolve));
+        return transmitOptimisticUpload(item, '', form, sendOpts);
+    }
+
+    window.__skillwoodQueueVoiceUpload = queueVoiceUpload;
 
     async function sendFiles(form) {
         const items = pendingFiles.slice();
@@ -13049,18 +13169,32 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (panel) {
             panel.querySelectorAll('button').forEach(b => { b.disabled = true; });
         }
+        let released = false;
         try {
+            const hint = panel && panel.querySelector('.voice-rec-hint');
+            if (hint) hint.textContent = 'Подготавливаем голосовое…';
             const blob = await blobForSend();
-            if (blob) await sendVoice(form, blob, makeSendKey('voice'));
-        } finally {
-            finishSend(form);
-            voiceSending = false;
+            if (!blob) return;
+            // Панель записи исчезает сразу. Дальше пользователь видит
+            // голосовое прямо в чате со спиннером/процентом загрузки.
             cleanupUi();
+            finishSend(form);
+            released = true;
+            voiceSending = false;
+            Promise.resolve(sendVoice(
+                form, blob, makeSendKey('voice'))).catch(() => {});
+        } finally {
+            if (!released) finishSend(form);
+            voiceSending = false;
+            if (activeForm) cleanupUi();
         }
     }
 
     async function sendVoice(form, blob, sendKey) {
         if (!form) return;
+        if (window.__skillwoodQueueVoiceUpload) {
+            return window.__skillwoodQueueVoiceUpload(form, blob, sendKey);
+        }
         const contactId = form.dataset.contactId;
         if (!contactId) return;
         const fd = new FormData();
