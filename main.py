@@ -1034,8 +1034,18 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
     _recover_interrupted_media_deliveries(force=True)
 
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = 'yandexlyceum_secret_key'
-    app.config['MAX_CONTENT_LENGTH'] = 25 * 1024 * 1024
+    app.config.update(
+        SECRET_KEY=(os.environ.get('SKILLWOOD_SECRET_KEY')
+                    or 'yandexlyceum_secret_key'),
+        MAX_CONTENT_LENGTH=25 * 1024 * 1024,
+        # Обычная Flask-сессия живёт лишь до закрытия браузера. Постоянная
+        # сессия позволяет телефону/PWA помнить вход между запусками, а при
+        # регулярном использовании срок продлевается автоматически.
+        PERMANENT_SESSION_LIFETIME=timedelta(days=180),
+        SESSION_REFRESH_EACH_REQUEST=True,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE='Lax',
+    )
 
     @app.teardown_appcontext
     def _close_db(_exc):
@@ -1779,22 +1789,14 @@ def _kick_telegram_recent_sync(user_id: int):
         pass
 
 
-def _user_media_bytes(db, user_id: int) -> int:
-    from sqlalchemy import func, or_
-    from data.attachments import Attachment
-    from data.direct import DirectAttachment, DirectMessage
+def _user_media_bytes(user_id: int) -> int:
+    """Фактически занятое место в media/, без удалённого ленивого кэша.
 
-    external = (db.query(func.coalesce(func.sum(Attachment.size), 0))
-                .filter(Attachment.user_id == user_id)
-                .scalar() or 0)
-    direct = (db.query(func.coalesce(func.sum(DirectAttachment.size), 0))
-              .join(DirectMessage,
-                    DirectAttachment.message_id == DirectMessage.id)
-              .filter(or_(DirectMessage.sender_id == user_id,
-                          DirectMessage.recipient_id == user_id))
-              .scalar() or 0)
-    files = _dir_size(os.path.join(_media_root(), str(user_id)))
-    return max(int(external or 0) + int(direct or 0), files)
+    Поле Attachment.size описывает исходное вложение и остаётся в базе
+    после вытеснения Telegram-кэша, поэтому суммировать его для дисковой
+    квоты нельзя.
+    """
+    return _dir_size(os.path.join(_media_root(), str(user_id)))
 
 
 def _admin_user_card_summary(db, user) -> dict:
@@ -1814,7 +1816,7 @@ def _admin_user_card_summary(db, user) -> dict:
                    .filter(WebPushSubscription.user_id == user.id,
                            WebPushSubscription.enabled.is_(True))
                    .scalar() or 0)
-    media_bytes = _user_media_bytes(db, user.id)
+    media_bytes = _user_media_bytes(user.id)
 
     return {
         'user': {
@@ -1944,7 +1946,7 @@ def _admin_user_summary(db, user) -> dict:
     last_push_error = next(
         (sub.last_error for sub in push_subs if sub.last_error), None)
 
-    media_bytes = _user_media_bytes(db, user.id)
+    media_bytes = _user_media_bytes(user.id)
     counts = {
         'contacts': len(contacts),
         'messages': int(msg_total),
@@ -2906,6 +2908,10 @@ def register_routes(app: Flask) -> None:
         user_id = session.get('user_id')
         if not user_id or request.endpoint == 'static':
             return None
+        # Одновременно обновляем старые непостоянные сессии, созданные до
+        # включения «запомнить вход». Достаточно одного запроса пользователя.
+        if not session.permanent:
+            session.permanent = True
         now_mono = time.monotonic()
         with presence_write_guard:
             previous = presence_written_at.get(user_id)
@@ -2960,7 +2966,7 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/logout')
     def logout():
-        session.pop('user_id', None)
+        session.clear()
         return redirect('/')
 
     @app.route('/home')
@@ -3659,6 +3665,7 @@ def register_routes(app: Flask) -> None:
             db.add(user)
             db.commit()
             session['user_id'] = user.id
+            session.permanent = True
             return redirect('/home')
 
         return render_template('register.html')
@@ -3677,6 +3684,8 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/login', methods=['GET', 'POST'])
     def login():
+        if session.get('user_id'):
+            return redirect('/home')
         if request.method == 'POST':
             db = get_db()
             email = request.form.get('email')
@@ -3684,6 +3693,7 @@ def register_routes(app: Flask) -> None:
             user = db.query(User).filter(User.email == email).first()
             if user and check_password_hash(user.hashed_password, password):
                 session['user_id'] = user.id
+                session.permanent = True
                 return redirect('/home')
             return render_template('login.html', message="Неверный email или пароль")
         return render_template('login.html')
