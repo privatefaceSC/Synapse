@@ -4249,6 +4249,144 @@ def send_file(chat_id, data, filename, caption="", reply_to=None,
                  timeout=120)
 
 
+async def _send_album(chat_id, items, caption="", reply_to=None,
+                      parse_mode=None, silent=False, schedule=None,
+                      user_id=None):
+    """Отправляет список фото/видео одним нативным Telegram-альбомом."""
+    if len(items) < 2:
+        raise ValueError("Для альбома нужно минимум два файла")
+    client = await _get_client(user_id)
+    if not await client.is_user_authorized():
+        raise RuntimeError("Telegram не авторизован")
+    import io
+
+    files = []
+    for data, filename in items:
+        bio = io.BytesIO(data)
+        bio.name = filename or "media"
+        files.append(bio)
+    captions = [caption or ""] + [""] * (len(files) - 1)
+    kwargs = {
+        "caption": captions,
+        "reply_to": reply_to,
+        "parse_mode": parse_mode,
+    }
+    if silent:
+        kwargs["silent"] = True
+    if schedule:
+        kwargs["schedule"] = schedule
+    sent = await client.send_file(int(chat_id), files, **kwargs)
+    sent_messages = list(sent) if isinstance(sent, (list, tuple)) else [sent]
+    result = [
+        {
+            "id": getattr(message, "id", None),
+            "grouped_id": getattr(message, "grouped_id", None),
+        }
+        for message in sent_messages
+    ]
+    if not schedule:
+        now = time.monotonic()
+        _recent_self_sent_ids[:] = [
+            row for row in _recent_self_sent_ids if now - row[3] < 120]
+        owner = _normalize_user_id(user_id)
+        for row in result:
+            if row["id"] is not None:
+                _recent_self_sent_ids.append((
+                    owner, int(chat_id), int(row["id"]), now))
+    return result
+
+
+async def _queued_album_send(chat_id, items, caption, callback,
+                             reply_to=None, parse_mode=None, silent=False,
+                             schedule=None, user_id=None):
+    """Фоновая загрузка нативного альбома через общий media semaphore."""
+    sent_items = []
+    error = None
+    try:
+        global _file_send_semaphore, _file_send_semaphore_loop
+        running_loop = asyncio.get_running_loop()
+        if (_file_send_semaphore is None
+                or _file_send_semaphore_loop is not running_loop):
+            try:
+                limit = max(1, int(os.environ.get(
+                    "TELEGRAM_FILE_SEND_CONCURRENCY", "2")))
+            except ValueError:
+                limit = 2
+            _file_send_semaphore = asyncio.Semaphore(limit)
+            _file_send_semaphore_loop = running_loop
+        async with _file_send_semaphore:
+            loaded = []
+            for data, filename in items:
+                payload = (await asyncio.to_thread(data)
+                           if callable(data) else data)
+                if payload is None:
+                    raise RuntimeError(
+                        "Локальный файл альбома недоступен")
+                loaded.append((payload, filename))
+            sent_items = await asyncio.wait_for(
+                _send_album(
+                    chat_id, loaded, caption, reply_to, parse_mode,
+                    silent, schedule, user_id=user_id),
+                timeout=300)
+    except Exception as exc:  # noqa: BLE001
+        error = exc
+        _state_for(user_id)["error"] = f"album send: {exc}"
+    if callback is not None:
+        callback_error = None
+        for attempt in range(3):
+            try:
+                await asyncio.to_thread(callback, sent_items, error)
+                callback_error = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                callback_error = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.2 * (attempt + 1))
+        if callback_error is not None:
+            _state_for(user_id)["error"] = (
+                f"album callback: {callback_error}")
+    return sent_items
+
+
+def queue_album(chat_id, items, caption="", callback=None, reply_to=None,
+                parse_mode=None, silent=False, schedule=None, user_id=None):
+    """Ставит 2–10 фото/видео в очередь как один Telegram-альбом."""
+    if not is_configured() or not telethon_available():
+        raise RuntimeError("Telegram-мост не настроен")
+    if not 2 <= len(items) <= 10:
+        raise ValueError("Telegram-альбом должен содержать от 2 до 10 файлов")
+    _ensure_loop()
+    try:
+        max_pending = max(1, int(os.environ.get(
+            "TELEGRAM_FILE_QUEUE_MAX", "8")))
+    except ValueError:
+        max_pending = 8
+    global _pending_file_sends
+    with _pending_file_sends_lock:
+        if _pending_file_sends >= max_pending:
+            raise RuntimeError(
+                "Очередь медиа заполнена — повторите отправку позже")
+        _pending_file_sends += 1
+    try:
+        future = asyncio.run_coroutine_threadsafe(
+            _queued_album_send(
+                chat_id, items, caption, callback, reply_to, parse_mode,
+                silent, schedule, user_id=user_id),
+            _loop)
+    except Exception:
+        with _pending_file_sends_lock:
+            _pending_file_sends = max(0, _pending_file_sends - 1)
+        raise
+
+    def _release_slot(_future):
+        global _pending_file_sends
+        with _pending_file_sends_lock:
+            _pending_file_sends = max(0, _pending_file_sends - 1)
+
+    future.add_done_callback(_release_slot)
+    return future
+
+
 async def _queued_file_send(chat_id, data, filename, caption, callback,
                             reply_to=None, parse_mode=None, silent=False,
                             schedule=None, user_id=None, voice_note=False):

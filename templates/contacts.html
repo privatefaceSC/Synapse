@@ -1740,12 +1740,12 @@
     .media-album-grid .reply-quote,
     .media-album-grid .bubble > .text,
     .media-album-grid .truncated-note,
-    .media-album-grid .upload-state,
     .media-album-grid .time-row,
     .media-album-grid .reactions-row {
         display: none !important;
     }
     .media-album-grid .bubble {
+        position: relative;
         width: 100%; height: 100%; min-height: 0;
         padding: 0 !important; overflow: hidden;
         border: 0 !important; border-radius: 0 !important;
@@ -1765,6 +1765,15 @@
         padding: 8px; border-radius: 12px;
     }
     .media-album-grid .media-video-load small { display: none; }
+    .media-album-grid .upload-state {
+        position: absolute; z-index: 5; inset: 0;
+        display: flex; align-items: center; justify-content: center;
+        flex-direction: column; gap: 6px; margin: 0; padding: 10px;
+        color: #fff; text-align: center;
+        background: rgba(3,8,18,.48); backdrop-filter: blur(2px);
+    }
+    .media-album-grid .upload-state-text { flex: 0 1 auto; }
+    .media-album-grid .upload-progress { width: min(100px, 65%); }
     .media-album-grid .bubble-row.selected .bubble {
         box-shadow: inset 0 0 0 3px #60a5fa !important;
     }
@@ -9896,6 +9905,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             date_label: 'Сегодня',
             outgoing: true,
             messenger_name: form.dataset.messenger || 'Telegram',
+            album_id: item.albumId || '',
             tg_read: null,
             pinned: false,
             deleted: false,
@@ -10002,6 +10012,104 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return false;
     }
 
+    function settleOptimisticAlbum(items, data) {
+        const serverMessages = (data && data.messages) || [];
+        const urls = [];
+        items.forEach((item, index) => {
+            const upload = activeUploads.get(item.sendKey);
+            if (!upload) return;
+            activeUploads.delete(item.sendKey);
+            if (item.url) urls.push(item.url);
+            if (data && data.scheduled) return;
+            const payload = serverMessages[index];
+            if (!payload || !payload.id
+                    || upload.destinationKey
+                        !== currentUploadDestinationKey()) return;
+            const message = Object.assign({}, upload.message, payload, {
+                id: payload.id,
+                outgoing: true,
+                client_send_key: item.sendKey,
+                album_id: payload.album_id || data.album_id
+                    || upload.message.album_id || '',
+                tg_read: payload.tg_read == null ? null : payload.tg_read,
+                delivery_status: payload.delivery_status || 'sending',
+                delivery_error: payload.delivery_error || '',
+                attachments: payload.attachments || [],
+            });
+            const existingIndex = currentMessages.findIndex(
+                row => String(row.id) === String(message.id));
+            if (existingIndex >= 0) currentMessages[existingIndex] = message;
+            else currentMessages.push(message);
+        });
+        const container = document.getElementById('messages-container');
+        if (container) patchMessagesContainer(container, combinedMessages());
+        urls.forEach(url => URL.revokeObjectURL(url));
+    }
+
+    async function transmitOptimisticAlbum(items, caption, form, sendOpts) {
+        if (!items || items.length < 2) return false;
+        items.forEach(item => updateOptimisticUpload(item, {
+            delivery_status: 'uploading', delivery_error: '',
+            upload_progress: 0,
+        }));
+        for (const item of items) await preparePendingImage(item);
+
+        const fd = new FormData();
+        items.forEach(item => {
+            fd.append('file', item.file,
+                      item.file.name || ('media-' + item.sendKey));
+            fd.append('client_send_key', item.sendKey);
+        });
+        fd.append('text', caption || '');
+        fd.append('messenger', form.dataset.messenger || 'Telegram');
+        if (sendOpts.replyTo) fd.append('reply_to', sendOpts.replyTo);
+        if (sendOpts.silent) fd.append('silent', '1');
+        if (sendOpts.scheduleAt) {
+            fd.append('schedule_at', sendOpts.scheduleAt);
+        }
+
+        const setProgress = percent => items.forEach(item =>
+            updateOptimisticUploadProgress(item, percent));
+        try {
+            const requestAlbum = () => uploadFormData(
+                '/contacts/' + form.dataset.contactId + '/send-album',
+                fd, setProgress, 300000);
+            const response = mediaTools
+                ? await mediaTools.requestWithRetry(requestAlbum, {
+                    maxAttempts: 2, delayMs: 450,
+                })
+                : await requestAlbum();
+            const data = response.data
+                || await response.json().catch(() => ({}));
+            if (!response.ok || !data.ok
+                    || !Array.isArray(data.messages)
+                    || data.messages.length !== items.length) {
+                const errorText = uploadFailureMessage(
+                    response, data, null, items[0].file);
+                items.forEach(item => {
+                    item.lastError = errorText;
+                    failOptimisticUpload(item);
+                });
+                return false;
+            }
+            items.forEach(item => updateOptimisticUpload(item, {
+                delivery_status: data.scheduled ? 'sent' : 'sending',
+                upload_progress: 100,
+            }));
+            settleOptimisticAlbum(items, data);
+            pollMessages();
+            return true;
+        } catch (error) {
+            const errorText = uploadFailureMessage(
+                null, {}, error, items[0].file);
+            items.forEach(item => {
+                item.lastError = errorText;
+                failOptimisticUpload(item);
+            });
+            return false;
+        }
+    }
+
     async function queueVoiceUpload(form, blob, sendKey) {
         if (!form || !blob) return false;
         const ext = (blob.type || '').includes('ogg') ? 'ogg'
@@ -10056,6 +10164,34 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         items.forEach(item => {
             item.sendKey = item.sendKey || makeClientSendKey('file');
         });
+        const albumEligible = items.length >= 2
+            && (form.dataset.messenger || currentMessenger) === 'Telegram'
+            && !sendOpts.forwardMessageId
+            && items.every(item => {
+                const mime = (item.file && item.file.type) || '';
+                const name = (item.file && item.file.name) || '';
+                return mime.indexOf('image/') === 0
+                    || mime.indexOf('video/') === 0
+                    || /\.(?:jpe?g|png|gif|webp|heic|heif|bmp|mp4|mov|m4v|webm)$/i
+                        .test(name);
+            });
+        const albumBatches = [];
+        if (albumEligible) {
+            let index = 0;
+            while (index < items.length) {
+                const remaining = items.length - index;
+                let size = Math.min(10, remaining);
+                // Telegram режет альбомы по 10. Не оставляем последний
+                // одиночный файл: 11 медиа отправляем как 9 + 2.
+                if (remaining - size === 1) size -= 1;
+                const batch = items.slice(index, index + size);
+                const localAlbumId = 'local-album-'
+                    + makeClientSendKey('album');
+                batch.forEach(item => { item.albumId = localAlbumId; });
+                albumBatches.push(batch);
+                index += size;
+            }
+        }
         // Сразу возвращаем пользователя в чат. Object URL не освобождаем:
         // он нужен оптимистичному сообщению до ответа сервера.
         pendingFiles = [];
@@ -10077,9 +10213,24 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         // Даём браузеру закрыть окно и нарисовать превью до потенциально
         // тяжёлого ресайза фотографии.
         await new Promise(resolve => requestAnimationFrame(resolve));
-        for (let i = 0; i < items.length; i++) {
-            await transmitOptimisticUpload(
-                items[i], i === 0 ? caption : '', form, sendOpts);
+        if (albumBatches.length) {
+            for (let i = 0; i < albumBatches.length; i++) {
+                const batch = albumBatches[i];
+                batch.forEach(item => {
+                    const active = activeUploads.get(item.sendKey);
+                    if (active) {
+                        active.albumItems = batch;
+                        active.albumCaption = i === 0 ? caption : '';
+                    }
+                });
+                await transmitOptimisticAlbum(
+                    batch, i === 0 ? caption : '', form, sendOpts);
+            }
+        } else {
+            for (let i = 0; i < items.length; i++) {
+                await transmitOptimisticUpload(
+                    items[i], i === 0 ? caption : '', form, sendOpts);
+            }
         }
     }
 
@@ -10109,8 +10260,17 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 button.disabled = false;
                 return;
             }
-            await transmitOptimisticUpload(
-                local.item, local.caption, retryForm, local.sendOpts);
+            if (local.albumItems && local.albumItems.length >= 2) {
+                await transmitOptimisticAlbum(
+                    local.albumItems,
+                    Object.prototype.hasOwnProperty.call(
+                        local, 'albumCaption')
+                        ? local.albumCaption : local.caption,
+                    retryForm, local.sendOpts);
+            } else {
+                await transmitOptimisticUpload(
+                    local.item, local.caption, retryForm, local.sendOpts);
+            }
             return;
         }
         const messageId = row.dataset.messageId;

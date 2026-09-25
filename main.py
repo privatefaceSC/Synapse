@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 import os
 import random
 import re
@@ -1515,6 +1516,8 @@ def _manual_send_duplicate_payload(db, msg, user_id: int) -> dict:
         'text': getattr(msg, 'visible_text', msg.text or ''),
         'text_html': getattr(msg, 'visible_text_html', None),
         'messenger_name': msg.messenger_name,
+        'album_id': (str(msg.tg_grouped_id)
+                     if msg.tg_grouped_id is not None else None),
         'client_send_key': getattr(msg, 'notification_dedup_key', None),
         'media': bool(getattr(msg, 'media', [])),
         'queued': getattr(msg, 'delivery_status', None) == 'sending',
@@ -1534,7 +1537,7 @@ def _manual_send_duplicate_payload(db, msg, user_id: int) -> dict:
 
 
 def _finish_telegram_media_delivery(message_id: int, sent_id,
-                                    error) -> None:
+                                    error, tg_grouped_id=None) -> None:
     """Callback фоновой Telethon-отправки. Работает вне Flask request,
     поэтому использует отдельную SQLAlchemy-сессию."""
     db = db_sessions.create_session()
@@ -1559,8 +1562,12 @@ def _finish_telegram_media_delivery(message_id: int, sent_id,
                 msg.tg_read_at = duplicate.tg_read_at
                 msg.tg_topic_id = duplicate.tg_topic_id
                 msg.tg_topic_title = duplicate.tg_topic_title
+                if duplicate.tg_grouped_id is not None:
+                    tg_grouped_id = duplicate.tg_grouped_id
                 stale_paths = _purge_message_dependencies(db, [duplicate])
             msg.tg_message_id = telegram_id
+            if tg_grouped_id is not None:
+                msg.tg_grouped_id = int(tg_grouped_id)
             msg.delivery_status = 'sent'
             msg.delivery_error = None
             msg.delivery_started_at = None
@@ -4274,6 +4281,296 @@ def register_routes(app: Flask) -> None:
             ],
         })
 
+    @app.route('/contacts/<int:contact_id>/send-album', methods=['POST'])
+    def contact_send_album(contact_id):
+        """Принимает 2–10 фото/видео и ставит один Telegram-альбом."""
+        # У одиночной отправки остаётся жёсткий лимит 25 МБ. Для альбома
+        # разрешаем больший multipart, но ниже отдельно ограничиваем каждый
+        # файл и сумму, чтобы не раздувать память маленького AlwaysData.
+        request.max_content_length = 90 * 1024 * 1024
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data import telegram_bridge
+        from data.contacts import Contact, MessengerHandle
+
+        db = get_db()
+        user_id = session['user_id']
+        contact = (db.query(Contact)
+                   .filter(Contact.id == contact_id,
+                           Contact.user_id == user_id).first())
+        if contact is None:
+            return jsonify({'error': 'not_found'}), 404
+
+        uploads = [upload for upload in request.files.getlist('file')
+                   if upload is not None and upload.filename]
+        if not 2 <= len(uploads) <= 10:
+            return jsonify({
+                'error': 'bad_album_size',
+                'detail': 'В альбоме должно быть от 2 до 10 фото или видео',
+            }), 400
+        send_keys = [
+            _client_send_key(value)
+            for value in request.form.getlist('client_send_key')
+        ]
+        if (len(send_keys) != len(uploads) or any(not key for key in send_keys)
+                or len(set(send_keys)) != len(send_keys)):
+            return jsonify({'error': 'bad_send_keys'}), 400
+
+        requested_messenger = (
+            request.form.get('messenger') or '').strip() or 'Telegram'
+        if requested_messenger != 'Telegram':
+            return jsonify({'error': 'album_requires_telegram'}), 400
+        tg_handle = (db.query(MessengerHandle)
+                     .filter(MessengerHandle.contact_id == contact.id,
+                             MessengerHandle.user_id == user_id,
+                             MessengerHandle.messenger_name == 'Telegram',
+                             MessengerHandle.tg_chat_id.isnot(None))
+                     .first())
+        if tg_handle is None:
+            return jsonify({'error': 'no_telegram_handle'}), 400
+
+        existing_rows = (db.query(Messages)
+                         .filter(Messages.user_id == user_id,
+                                 Messages.notification_dedup_key.in_(
+                                     send_keys))
+                         .all())
+        if existing_rows:
+            by_key = {row.notification_dedup_key: row
+                      for row in existing_rows}
+            if len(by_key) != len(send_keys):
+                return jsonify({
+                    'error': 'partial_album_exists',
+                    'detail': ('Часть альбома уже принята. Обновите чат '
+                               'перед повторной отправкой.'),
+                }), 409
+            return jsonify({
+                'ok': True,
+                'duplicate': True,
+                'queued': any(row.delivery_status == 'sending'
+                              for row in existing_rows),
+                'scheduled': any(
+                    row.delivery_schedule_at is not None
+                    for row in existing_rows),
+                'when': next((
+                    row.delivery_schedule_at.isoformat()
+                    for row in existing_rows
+                    if row.delivery_schedule_at is not None), None),
+                'messages': [
+                    _manual_send_duplicate_payload(db, by_key[key], user_id)
+                    for key in send_keys
+                ],
+            })
+
+        text = (request.form.get('text') or '').strip()
+        md_parse_mode = None
+        md_html = None
+        md_plain = text
+        if text and _has_markdown(text):
+            try:
+                from telethon.extensions import (html as _tg_html,
+                                                  markdown as _tg_md)
+                parsed_text, entities = _tg_md.parse(text)
+                md_parse_mode = 'md'
+                md_plain = parsed_text
+                md_html = _tg_html.unparse(parsed_text, entities)
+            except Exception:  # noqa: BLE001
+                md_plain = text
+
+        silent = (request.form.get('silent') or '') in ('1', 'true', 'on')
+        schedule_at = None
+        schedule_raw = (request.form.get('schedule_at') or '').strip()
+        if schedule_raw:
+            try:
+                schedule_at = datetime.strptime(
+                    schedule_raw[:16], '%Y-%m-%dT%H:%M')
+            except ValueError:
+                try:
+                    schedule_at = datetime.fromisoformat(schedule_raw)
+                except ValueError:
+                    schedule_at = None
+            if schedule_at is not None and schedule_at <= datetime.now():
+                return jsonify({
+                    'error': 'bad_schedule',
+                    'detail': 'Время отправки должно быть в будущем',
+                }), 400
+
+        reply_target = None
+        reply_to_tg_id = None
+        reply_raw = (request.form.get('reply_to') or '').strip()
+        if reply_raw:
+            try:
+                reply_id = int(reply_raw)
+            except (TypeError, ValueError):
+                reply_id = None
+            if reply_id:
+                reply_target = (db.query(Messages)
+                                .filter(Messages.id == reply_id,
+                                        Messages.user_id == user_id,
+                                        Messages.handle_id == tg_handle.id)
+                                .first())
+                if (reply_target is not None
+                        and reply_target.tg_message_id is not None):
+                    reply_to_tg_id = reply_target.tg_message_id
+
+        per_file_limit = 24 * 1024 * 1024
+        total_limit = 80 * 1024 * 1024
+        prepared = []
+        total_size = 0
+        for upload in uploads:
+            mime = (upload.mimetype or '').lower()
+            if not (mime.startswith('image/') or mime.startswith('video/')):
+                mime = (mimetypes.guess_type(upload.filename or '')[0]
+                        or '').lower()
+            if not (mime.startswith('image/') or mime.startswith('video/')):
+                return jsonify({
+                    'error': 'bad_album_media',
+                    'detail': ('Telegram-альбом может содержать только '
+                               'фото и видео'),
+                }), 400
+            data = upload.read()
+            if not data:
+                return jsonify({'error': 'empty'}), 400
+            if len(data) > per_file_limit:
+                return jsonify({
+                    'error': 'file_too_large',
+                    'detail': 'Один из файлов больше 24 МБ',
+                }), 413
+            total_size += len(data)
+            if total_size > total_limit:
+                return jsonify({
+                    'error': 'album_too_large',
+                    'detail': 'Общий размер альбома больше 80 МБ',
+                }), 413
+            prepared.append({
+                'data': data,
+                'name': upload.filename or 'media',
+                'mime': mime,
+                'kind': ('image' if mime.startswith('image/') else 'video'),
+            })
+
+        local_grouped_id = random.getrandbits(63) or 1
+        now = datetime.now()
+        rows = []
+        stored_paths = []
+        attachments = []
+        try:
+            for index, item in enumerate(prepared):
+                placeholder = ('📷 Фото' if item['kind'] == 'image'
+                               else '🎬 Видео')
+                created_at = now + timedelta(microseconds=index)
+                msg = Messages(
+                    sender='Вы',
+                    text=(md_plain if index == 0 and md_plain
+                          else placeholder),
+                    text_html=(md_html if index == 0 else None),
+                    messenger_name='Telegram',
+                    time=created_at.strftime('%H:%M'),
+                    user_id=user_id,
+                    handle_id=tg_handle.id,
+                    created_at=created_at,
+                    outgoing=True,
+                    tg_grouped_id=local_grouped_id,
+                    reply_to_message_id=(
+                        reply_target.id if reply_target is not None else None),
+                    notification_dedup_key=send_keys[index],
+                    delivery_status='sending',
+                    delivery_error=None,
+                    delivery_caption=(text if index == 0 else ''),
+                    delivery_silent=bool(silent),
+                    delivery_reply_to_tg_id=reply_to_tg_id,
+                    delivery_schedule_at=schedule_at,
+                    delivery_started_at=now,
+                )
+                db.add(msg)
+                db.flush()
+                stored_path = _store_media_bytes(user_id, item['data'])
+                stored_paths.append(stored_path)
+                attachment = _attach_message_file(
+                    db, user_id, msg.id, item['kind'], item['mime'],
+                    item['name'], stored_path, len(item['data']))
+                rows.append(msg)
+                attachments.append(attachment)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            _remove_media_paths(stored_paths)
+            raise
+
+        response_messages = []
+        for index, (msg, attachment) in enumerate(zip(rows, attachments)):
+            response_messages.append({
+                'id': msg.id,
+                'client_send_key': send_keys[index],
+                'time': msg.time,
+                'date_label': _message_date_label(msg.created_at),
+                'text': md_plain if index == 0 else '',
+                'text_html': md_html if index == 0 else None,
+                'messenger_name': 'Telegram',
+                'album_id': str(local_grouped_id),
+                'delivery_status': 'sending',
+                'delivery_error': None,
+                'attachments': [{
+                    'id': attachment.id,
+                    'kind': attachment.kind,
+                    'mime': attachment.mime,
+                    'name': attachment.original_name,
+                    'has_sticker_pack': False,
+                }],
+            })
+
+        delivery_items = []
+        for item, stored_path in zip(prepared, stored_paths):
+            def _load_delivery_file(path=stored_path):
+                payload = _read_media_bytes(path)
+                if payload is None:
+                    raise RuntimeError(
+                        'Локальный файл альбома недоступен')
+                return payload
+            delivery_items.append((_load_delivery_file, item['name']))
+
+        message_ids = [msg.id for msg in rows]
+
+        def _delivery_done(sent_items, error):
+            sent_items = sent_items or []
+            for index, message_id in enumerate(message_ids):
+                sent = sent_items[index] if index < len(sent_items) else {}
+                item_error = error
+                if item_error is None and sent.get('id') is None:
+                    item_error = RuntimeError(
+                        'Telegram вернул неполный альбом')
+                if schedule_at is not None:
+                    _finish_scheduled_media_delivery(
+                        message_id, sent.get('id'), item_error)
+                else:
+                    _finish_telegram_media_delivery(
+                        message_id, sent.get('id'), item_error,
+                        tg_grouped_id=sent.get('grouped_id'))
+
+        try:
+            telegram_bridge.queue_album(
+                tg_handle.tg_chat_id, delivery_items, text,
+                callback=_delivery_done, reply_to=reply_to_tg_id,
+                parse_mode=md_parse_mode, silent=silent,
+                schedule=schedule_at, user_id=user_id)
+        except Exception as exc:  # noqa: BLE001
+            for message_id in message_ids:
+                _finish_telegram_media_delivery(
+                    message_id, None, exc,
+                    tg_grouped_id=local_grouped_id)
+            for payload in response_messages:
+                payload['delivery_status'] = 'failed'
+                payload['delivery_error'] = str(exc)[:1000]
+
+        return jsonify({
+            'ok': True,
+            'queued': True,
+            'scheduled': schedule_at is not None,
+            'when': (schedule_at.isoformat()
+                     if schedule_at is not None else None),
+            'album_id': str(local_grouped_id),
+            'messages': response_messages,
+        }), 202
+
     @app.route('/contacts/<int:contact_id>/send', methods=['POST'])
     def contact_send(contact_id):
         if not session.get('user_id'):
@@ -6402,6 +6699,115 @@ def register_routes(app: Flask) -> None:
         if getattr(msg, 'delivery_status', None) != 'failed':
             return jsonify({'error': 'not_retryable'}), 400
         chat_id = _msg_tg_chat_id(db, msg)
+        # Если не удалась первоначальная отправка целого альбома, повторяем
+        # его снова одной операцией. Иначе нажатие «Повторить» на одной
+        # плитке превратило бы нативный альбом в отдельные сообщения.
+        album_rows = []
+        album_attachments = []
+        if msg.tg_grouped_id is not None:
+            album_rows = (db.query(Messages)
+                          .filter(
+                              Messages.user_id == user_id,
+                              Messages.handle_id == msg.handle_id,
+                              Messages.outgoing.is_(True),
+                              Messages.tg_grouped_id == msg.tg_grouped_id)
+                          .order_by(Messages.created_at.asc(),
+                                    Messages.id.asc()).all())
+            if (len(album_rows) < 2
+                    or any(row.tg_message_id is not None
+                           or row.delivery_status != 'failed'
+                           for row in album_rows)):
+                album_rows = []
+            if album_rows:
+                for row in album_rows:
+                    row_attachment = next(iter(
+                        _message_attachment_rows(db, row.id)), None)
+                    if (row_attachment is None
+                            or row_attachment.kind not in ('image', 'video')
+                            or _read_media_bytes(
+                                row_attachment.stored_path) is None):
+                        album_rows = []
+                        album_attachments = []
+                        break
+                    album_attachments.append(row_attachment)
+        if album_rows:
+            first = album_rows[0]
+            retry_schedule_at = (
+                first.delivery_schedule_at
+                if first.delivery_schedule_at is not None
+                and first.delivery_schedule_at > datetime.now()
+                else None)
+            album_ids = [row.id for row in album_rows]
+            claimed = (db.query(Messages)
+                       .filter(Messages.id.in_(album_ids),
+                               Messages.user_id == user_id,
+                               Messages.tg_message_id.is_(None),
+                               Messages.delivery_status == 'failed')
+                       .update({
+                           Messages.delivery_status: 'sending',
+                           Messages.delivery_error: None,
+                           Messages.delivery_started_at: datetime.now(),
+                       }, synchronize_session=False))
+            db.commit()
+            if claimed != len(album_rows):
+                return jsonify({'error': 'already_retrying'}), 409
+
+            delivery_items = []
+            for attachment in album_attachments:
+                def _load_album_file(path=attachment.stored_path):
+                    payload = _read_media_bytes(path)
+                    if payload is None:
+                        raise RuntimeError(
+                            'Локальный файл альбома недоступен')
+                    return payload
+                delivery_items.append((
+                    _load_album_file, attachment.original_name or 'media'))
+
+            def _album_done(sent_items, error):
+                sent_items = sent_items or []
+                for index, row_id in enumerate(album_ids):
+                    sent = (sent_items[index]
+                            if index < len(sent_items) else {})
+                    item_error = error
+                    if item_error is None and sent.get('id') is None:
+                        item_error = RuntimeError(
+                            'Telegram вернул неполный альбом')
+                    if retry_schedule_at is not None:
+                        _finish_scheduled_media_delivery(
+                            row_id, sent.get('id'), item_error)
+                    else:
+                        _finish_telegram_media_delivery(
+                            row_id, sent.get('id'), item_error,
+                            tg_grouped_id=sent.get('grouped_id'))
+
+            response_status = 'sending'
+            response_error = None
+            try:
+                telegram_bridge.queue_album(
+                    chat_id, delivery_items,
+                    first.delivery_caption or '',
+                    callback=_album_done, user_id=user_id,
+                    reply_to=first.delivery_reply_to_tg_id,
+                    parse_mode=('md' if _has_markdown(
+                        first.delivery_caption or '') else None),
+                    silent=bool(first.delivery_silent),
+                    schedule=retry_schedule_at)
+            except Exception as exc:  # noqa: BLE001
+                for row_id in album_ids:
+                    _finish_telegram_media_delivery(
+                        row_id, None, exc,
+                        tg_grouped_id=msg.tg_grouped_id)
+                response_status = 'failed'
+                response_error = str(exc)[:1000]
+            return jsonify({
+                'ok': True,
+                'queued': True,
+                'album': True,
+                'message_ids': album_ids,
+                'delivery_status': response_status,
+                'delivery_error': response_error,
+            }), 202
+
         attachment = next(iter(_message_attachment_rows(db, msg.id)), None)
         if chat_id is None or attachment is None:
             return jsonify({'error': 'media_missing'}), 400
