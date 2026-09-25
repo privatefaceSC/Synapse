@@ -4226,6 +4226,8 @@ def register_routes(app: Flask) -> None:
                 {'id': m.id, 'sender': m.sender, 'text': m.visible_text,
                  'text_html': m.visible_text_html,
                  'messenger_name': m.messenger_name,
+                 'album_id': (str(m.tg_grouped_id)
+                              if m.tg_grouped_id is not None else None),
                  'client_send_key': getattr(
                      m, 'notification_dedup_key', None),
                  'time': m.time,

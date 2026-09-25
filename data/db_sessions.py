@@ -47,6 +47,7 @@ def _apply_light_migrations(engine):
                               ("tg_forum_checked_at", "DATETIME"),
                               ("is_group", "BOOLEAN")],
         "messages": [("outgoing", "BOOLEAN"), ("tg_message_id", "BIGINT"),
+                     ("tg_grouped_id", "BIGINT"),
                      ("reply_to_message_id", "INTEGER"),
                      ("tg_read_at", "DATETIME"),
                      ("deleted_at", "DATETIME"),

@@ -1123,11 +1123,15 @@ async def _handle_message(event, user_id=None, client=None,
                 MessengerHandle.messenger_name == "Telegram",
                 MessengerHandle.tg_chat_id == event.chat_id).all()]
             if handle_ids:
-                exists = db.query(
-                    _Messages.id, _Messages.delivery_status).filter(
+                exists = db.query(_Messages).filter(
                     _Messages.user_id == _normalize_user_id(user_id),
                     _Messages.tg_message_id == int(tg_message_id_for_dupe),
                     _Messages.handle_id.in_(handle_ids)).first()
+                grouped_id = getattr(msg, "grouped_id", None)
+                if (exists is not None and grouped_id is not None
+                        and exists.tg_grouped_id is None):
+                    exists.tg_grouped_id = int(grouped_id)
+                    db.commit()
                 # `scheduled` — скрытая idempotency-запись. Реальное эхо
                 # должно пройти в record_message, который превратит её в
                 # видимое отправленное сообщение и сохранит стабильный id.
@@ -1313,6 +1317,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  tg_chat_id=chat_id, author=author,
                                  outgoing=is_out, tg_chat_type=chat_type,
                                  tg_message_id=getattr(msg, "id", None),
+                                 tg_grouped_id=getattr(msg, "grouped_id", None),
                                  reply_to_tg_id=reply_to_tg_id,
                                  tg_ttl_seconds=ttl,
                                  fwd_from_name=fwd_name,
@@ -1472,6 +1477,29 @@ def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
     message_id, _has_live_attachment = _telegram_message_state(
         user_id, chat_id, tg_message_id)
     return message_id is not None
+
+
+def _backfill_telegram_grouped_id(message_id, msg, user_id=None):
+    """Дополняет grouped_id у старой записи при недавней catch-up."""
+    grouped_id = getattr(msg, "grouped_id", None)
+    if message_id is None or grouped_id is None:
+        return False
+    from data import db_sessions
+    from data.users import Messages as _Messages
+
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    try:
+        message = db.query(_Messages).filter(
+            _Messages.id == int(message_id),
+            _Messages.user_id == owner).first()
+        if message is None or message.tg_grouped_id is not None:
+            return False
+        message.tg_grouped_id = int(grouped_id)
+        db.commit()
+        return True
+    finally:
+        db.close()
 
 
 def _ensure_message_attachment_stub(message_id, msg, kind, user_id=None):
@@ -1634,6 +1662,8 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
             existing_id, has_live_attachment = _telegram_message_state(
                 owner, chat_id, tg_id)
             if existing_id is not None:
+                _backfill_telegram_grouped_id(
+                    existing_id, msg, user_id=owner)
                 if (kind in _REMOTE_ATTACHMENT_KINDS
                         and not has_live_attachment):
                     _ensure_message_attachment_stub(

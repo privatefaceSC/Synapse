@@ -52,6 +52,9 @@ class Messages(SqlAlchemyBase):
     outgoing = sqlalchemy.Column(sqlalchemy.Boolean, default=False, nullable=True)
     # id сообщения в Telegram — нужен для удаления/редактирования.
     tg_message_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
+    # Все элементы нативного Telegram-альбома получают один grouped_id.
+    # По нему веб собирает фото/видео в компактную мозаику.
+    tg_grouped_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
     # Когда собеседник в Telegram прочитал это исходящее сообщение (приходит
     # из UpdateReadHistoryOutbox). NULL = ещё не прочитано (одна галочка
     # в UI). Не NULL = прочитано (двойная галочка).

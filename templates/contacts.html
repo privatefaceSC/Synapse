@@ -1664,6 +1664,152 @@
     .bubble.media-caption .media-vnote-wrap {
         margin-top: 0;
     }
+    /* Нативный Telegram-альбом. В БД у его элементов общий grouped_id,
+       а JS оставляет каждое сообщение самостоятельным для меню/удаления,
+       но визуально собирает соседние фото и видео в одну мозаику. */
+    .media-album {
+        display: flex; align-items: flex-end; gap: 7px;
+        max-width: min(460px, 84%); margin: 0 0 14px;
+    }
+    .media-album.outgoing { margin-left: auto; }
+    .media-album.incoming { margin-right: auto; }
+    .media-album > .message-avatar { margin-bottom: 1px; }
+    .media-album-stack {
+        position: relative; width: min(430px, 76vw); min-width: 0;
+    }
+    .media-album-author {
+        margin: 0 3px 5px; color: #2563eb;
+        font-size: 12px; font-weight: 700;
+    }
+    [data-bs-theme="dark"] .media-album-author { color: #7db7ff; }
+    .media-album-context {
+        margin-bottom: 3px; padding: 8px 10px;
+        border-radius: 13px 13px 8px 8px;
+        background: #fff; box-shadow: 0 3px 12px rgba(15,23,42,.10);
+    }
+    .media-album.outgoing .media-album-context {
+        background: linear-gradient(135deg, #3685d3, #2f6fae);
+        color: #fff;
+    }
+    [data-bs-theme="dark"] .media-album-context {
+        background: rgba(34,42,56,.96);
+    }
+    [data-bs-theme="dark"] .media-album.outgoing .media-album-context {
+        background: linear-gradient(135deg, rgba(48,111,184,.98),
+                                             rgba(37,86,147,.98));
+    }
+    .media-album-grid {
+        display: grid; gap: 2px; overflow: hidden;
+        width: 100%; border-radius: 17px;
+        background: rgba(15,23,42,.20);
+        box-shadow: 0 8px 24px rgba(15,23,42,.16);
+    }
+    .media-album.has-caption .media-album-grid {
+        border-radius: 17px 17px 5px 5px;
+    }
+    .media-album-grid.album-count-2 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-auto-rows: clamp(170px, 30vw, 225px);
+    }
+    .media-album-grid.album-count-3 {
+        grid-template-columns: 1.35fr 1fr;
+        grid-template-rows: repeat(2, clamp(105px, 19vw, 155px));
+    }
+    .media-album-grid.album-count-3 > .bubble-row:first-child {
+        grid-row: 1 / span 2;
+    }
+    .media-album-grid.album-count-4 {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-template-rows: repeat(2, clamp(125px, 23vw, 175px));
+    }
+    .media-album-grid.album-count-many {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-auto-rows: clamp(92px, 18vw, 135px);
+    }
+    .media-album-grid .bubble-row {
+        display: block; width: 100%; height: 100%; min-width: 0;
+        max-width: none; margin: 0 !important; align-self: stretch;
+    }
+    .media-album-grid .message-stack {
+        display: block; width: 100%; height: 100%; max-width: none;
+    }
+    .media-album-grid .message-avatar,
+    .media-album-grid .bubble-author,
+    .media-album-grid .deleted-banner,
+    .media-album-grid .fwd-header,
+    .media-album-grid .reply-quote,
+    .media-album-grid .bubble > .text,
+    .media-album-grid .truncated-note,
+    .media-album-grid .upload-state,
+    .media-album-grid .time-row,
+    .media-album-grid .reactions-row {
+        display: none !important;
+    }
+    .media-album-grid .bubble {
+        width: 100%; height: 100%; min-height: 0;
+        padding: 0 !important; overflow: hidden;
+        border: 0 !important; border-radius: 0 !important;
+        background: #111827 !important; box-shadow: none !important;
+    }
+    .media-album-grid .media-img,
+    .media-album-grid .media-video-wrap,
+    .media-album-grid .media-remote-wrap {
+        display: block; width: 100%; height: 100%; min-height: 0;
+        max-width: none; max-height: none; margin: 0 !important;
+        border-radius: 0; object-fit: cover;
+    }
+    .media-album-grid .media-img { cursor: zoom-in; }
+    .media-album-grid .media-video-wrap { aspect-ratio: auto; }
+    .media-album-grid .media-video-load {
+        width: calc(100% - 14px); min-height: 72px;
+        padding: 8px; border-radius: 12px;
+    }
+    .media-album-grid .media-video-load small { display: none; }
+    .media-album-grid .bubble-row.selected .bubble {
+        box-shadow: inset 0 0 0 3px #60a5fa !important;
+    }
+    .media-album-footer {
+        padding: 8px 11px 7px; border-radius: 5px 5px 15px 15px;
+        background: #fff; color: #18202b;
+        box-shadow: 0 8px 24px rgba(15,23,42,.14);
+    }
+    .media-album-footer .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .media-album-footer .time-row { margin-top: 3px; }
+    .media-album-footer.meta-only {
+        position: absolute; z-index: 4; right: 7px; bottom: 6px;
+        padding: 2px 7px; border-radius: 999px;
+        background: rgba(4,9,18,.62); color: rgba(255,255,255,.88);
+        box-shadow: none; backdrop-filter: blur(6px);
+        pointer-events: none;
+    }
+    .media-album-footer.meta-only .time-row { margin: 0; color: inherit; }
+    .media-album.outgoing .media-album-footer:not(.meta-only) {
+        background: linear-gradient(135deg, #3685d3, #2f6fae);
+        color: #fff;
+    }
+    [data-bs-theme="dark"] .media-album-footer:not(.meta-only) {
+        background: rgba(34,42,56,.96); color: #eef2f7;
+    }
+    [data-bs-theme="dark"] .media-album.outgoing
+        .media-album-footer:not(.meta-only) {
+        background: linear-gradient(135deg, rgba(48,111,184,.98),
+                                             rgba(37,86,147,.98));
+    }
+    @media (max-width: 600px) {
+        .media-album { max-width: calc(100% - 4px); }
+        .media-album-stack { width: min(390px, calc(100vw - 82px)); }
+        .media-album.outgoing .media-album-stack {
+            width: min(410px, calc(100vw - 42px));
+        }
+        .media-album-grid.album-count-2 { grid-auto-rows: 45vw; }
+        .media-album-grid.album-count-3 {
+            grid-template-rows: repeat(2, 30vw);
+        }
+        .media-album-grid.album-count-4 {
+            grid-template-rows: repeat(2, 38vw);
+        }
+        .media-album-grid.album-count-many { grid-auto-rows: 28vw; }
+    }
     /* Видеосообщение-«кружочек» (Telegram video note): круглый плеер без
        нативной панели управления — клик по кружку играет/паузит. */
     .bubble .media-vnote-wrap {
@@ -4281,6 +4427,7 @@
                             {% set msg_show_source = _show_authors and not m.outgoing and not msg_grouped %}
                             <div class="bubble-row{% if m.outgoing %} outgoing{% else %} incoming{% endif %}{% if m.pinned_at %} pinned{% endif %}{% if msg_grouped %} grouped{% endif %}{% if m.delivery_status == 'failed' %} delivery-failed{% elif m.delivery_status and m.delivery_status != 'sent' %} pending{% endif %}"
                                  data-message-id="{{ m.id }}"
+                                 data-album-id="{{ m.tg_grouped_id or '' }}"
                                  data-client-send-key="{{ m.notification_dedup_key or '' }}"
                                  data-can-delete-all="{{ '1' if m.outgoing and m.tg_message_id else '0' }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
@@ -7171,6 +7318,13 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return String(value).replace(/["\\]/g, '\\$&');
     }
 
+    function messageRowScrollTop(container, row) {
+        if (!container || !row) return 0;
+        const containerRect = container.getBoundingClientRect();
+        const rowRect = row.getBoundingClientRect();
+        return container.scrollTop + rowRect.top - containerRect.top;
+    }
+
     function captureScrollAnchor(container) {
         if (!container || container.id !== 'messages-container') return null;
         const rows = Array.from(
@@ -7180,11 +7334,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         let anchor = rows[0];
         for (const row of rows) {
             anchor = row;
-            if (row.offsetTop + row.offsetHeight >= topLine) break;
+            const rowTop = messageRowScrollTop(container, row);
+            if (rowTop + row.offsetHeight >= topLine) break;
         }
         return {
             id: anchor.dataset.messageId,
-            offset: topLine - anchor.offsetTop,
+            offset: topLine - messageRowScrollTop(container, anchor),
         };
     }
 
@@ -7196,7 +7351,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + cssEscapeValue(anchor.id) + '"]');
             if (row) {
                 container.scrollTop = Math.max(
-                    0, row.offsetTop + (anchor.offset || 0) - 16);
+                    0, messageRowScrollTop(container, row)
+                        + (anchor.offset || 0) - 16);
                 return;
             }
         }
@@ -7275,7 +7431,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const topLine = c.scrollTop + 16;
         let active = rows[0];
         for (const row of rows) {
-            if (row.offsetTop <= topLine) active = row;
+            if (messageRowScrollTop(c, row) <= topLine) active = row;
             else break;
         }
         const label = active.dataset.dateLabel || '';
@@ -7323,6 +7479,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     function messagePollSignature(messages) {
         return JSON.stringify((messages || []).map(m => [
             m.id || (m.time + m.text), m.text, m.text_html || '', m.time,
+            m.album_id || '',
             m.tg_read ? 1 : 0, m.deleted ? 1 : 0, m.pinned ? 1 : 0,
             m.delivery_status || '', m.delivery_error || '',
             (m.reactions || []).map(r =>
@@ -7687,6 +7844,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return JSON.stringify([
             m.text || '', m.text_html || '', !!m.outgoing, !!m.deleted,
             m.messenger_name || '', m.display_author || m.sender || '',
+            m.album_id || '',
             m.author_avatar_url || '', m.author_profile_url || '',
             m.reply_to || null, m.fwd_from || null, m.ttl_seconds || null,
             m.media_restore_kind || '',
@@ -7927,6 +8085,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     ? ' pending' : '');
             return `<div class="bubble-row${m.outgoing ? ' outgoing' : ' incoming'}${m.pinned ? ' pinned' : ''}${grouped ? ' grouped' : ''}${deliveryClass}"
                 data-message-id="${m.id}"
+                data-album-id="${escapeHtml(m.album_id || '')}"
                 data-render-key="${escapeHtml(messageRenderKey(m) + '|' + (grouped ? '1' : '0'))}"
                 data-client-send-key="${escapeHtml(m.client_send_key || '')}"
                 data-local-only="${m.local_only ? '1' : '0'}"
@@ -7995,8 +8154,160 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    function albumCellForRow(row) {
+        if (!row || !row.dataset.albumId
+                || row.dataset.messenger !== 'Telegram') return null;
+        const bubble = row.querySelector('.bubble');
+        if (!bubble) return null;
+        const cells = Array.from(bubble.children).filter(node => {
+            if (!node.classList) return false;
+            if (node.classList.contains('media-img')
+                    || node.classList.contains('media-video-wrap')) return true;
+            return node.classList.contains('media-remote-wrap')
+                && (node.classList.contains('kind-image')
+                    || node.classList.contains('kind-video'));
+        });
+        return cells.length === 1 ? cells[0] : null;
+    }
+
+    function albumDescriptor(row) {
+        const media = albumCellForRow(row);
+        if (!media) return null;
+        const direction = row.classList.contains('outgoing')
+            ? 'outgoing' : 'incoming';
+        return {
+            media,
+            key: [row.dataset.albumId, direction,
+                  row.dataset.author || '', row.dataset.messenger || '',
+                  row.dataset.dateLabel || ''].join('|'),
+            direction,
+        };
+    }
+
+    function unpackMediaAlbums(container) {
+        if (!container) return;
+        Array.from(container.children).forEach(wrapper => {
+            if (!wrapper.classList
+                    || !wrapper.classList.contains('media-album')) return;
+            const grid = wrapper.querySelector('.media-album-grid');
+            const rows = grid
+                ? Array.from(grid.children).filter(node =>
+                    node.classList && node.classList.contains('bubble-row'))
+                : [];
+            const fragment = document.createDocumentFragment();
+            rows.forEach(row => fragment.appendChild(row));
+            wrapper.before(fragment);
+            wrapper.remove();
+        });
+    }
+
+    function packOneMediaAlbum(run, descriptor) {
+        if (!run || run.length < 2) return;
+        const first = run[0];
+        const wrapper = document.createElement('div');
+        wrapper.className = 'media-album ' + descriptor.direction;
+        wrapper.dataset.albumId = first.dataset.albumId;
+        wrapper.setAttribute('aria-label',
+            'Альбом Telegram · ' + run.length + ' медиа');
+        // Сначала ставим обёртку на место первой строки,
+        // и только потом переносим строки в grid. Иначе first.before()
+        // работал бы уже внутри отсоединённого grid.
+        first.before(wrapper);
+
+        if (descriptor.direction === 'incoming') {
+            const avatar = run.map(row => Array.from(row.children).find(node =>
+                node.classList
+                && node.classList.contains('message-avatar')
+                && !node.classList.contains('placeholder')))
+                .find(Boolean);
+            if (avatar) wrapper.appendChild(avatar.cloneNode(true));
+        }
+
+        const stack = document.createElement('div');
+        stack.className = 'media-album-stack';
+        const author = run.map(row => row.querySelector('.bubble-author'))
+            .find(Boolean);
+        if (author) {
+            const albumAuthor = document.createElement('div');
+            albumAuthor.className = 'media-album-author';
+            albumAuthor.textContent = author.textContent || '';
+            stack.appendChild(albumAuthor);
+        }
+
+        const sourceBubble = first.querySelector('.bubble');
+        const contextNodes = sourceBubble
+            ? Array.from(sourceBubble.children).filter(node =>
+                node.classList && (node.classList.contains('fwd-header')
+                    || node.classList.contains('reply-quote')))
+            : [];
+        if (contextNodes.length) {
+            const context = document.createElement('div');
+            context.className = 'media-album-context';
+            contextNodes.forEach(node => context.appendChild(
+                node.cloneNode(true)));
+            stack.appendChild(context);
+        }
+
+        const grid = document.createElement('div');
+        const countClass = run.length <= 4
+            ? 'album-count-' + run.length : 'album-count-many';
+        grid.className = 'media-album-grid ' + countClass;
+        run.forEach(row => grid.appendChild(row));
+        stack.appendChild(grid);
+
+        const captionSource = run.map(row =>
+            row.querySelector('.bubble > .text')).find(node =>
+                node && (node.textContent || '').trim());
+        const timeSource = run[run.length - 1].querySelector(
+            '.bubble > .time-row');
+        if (captionSource || timeSource) {
+            const footer = document.createElement('div');
+            footer.className = 'media-album-footer'
+                + (captionSource ? '' : ' meta-only');
+            footer.dataset.messageId = run[run.length - 1].dataset.messageId;
+            if (captionSource) footer.appendChild(
+                captionSource.cloneNode(true));
+            if (timeSource) {
+                const time = timeSource.cloneNode(true);
+                time.querySelectorAll('.edited-badge').forEach(
+                    button => button.remove());
+                footer.appendChild(time);
+            }
+            stack.appendChild(footer);
+            if (captionSource) wrapper.classList.add('has-caption');
+        }
+
+        wrapper.appendChild(stack);
+    }
+
+    function packMediaAlbums(container) {
+        if (!container) return;
+        const rows = Array.from(container.children).filter(node =>
+            node.classList && node.classList.contains('bubble-row'));
+        let index = 0;
+        while (index < rows.length) {
+            const descriptor = albumDescriptor(rows[index]);
+            if (!descriptor) { index += 1; continue; }
+            const run = [rows[index]];
+            let next = index + 1;
+            while (next < rows.length) {
+                const candidate = albumDescriptor(rows[next]);
+                if (!candidate || candidate.key !== descriptor.key) break;
+                run.push(rows[next]);
+                next += 1;
+            }
+            if (run.length >= 2) packOneMediaAlbum(run, descriptor);
+            index = next;
+        }
+    }
+
+    // Прямое открытие URL чата уже содержит server-rendered
+    // сообщения: их тоже собираем, не дожидаясь polling.
+    packMediaAlbums(document.getElementById('messages-container'));
+
     function patchMessagesContainer(container, messages) {
         if (!container) return;
+        unpackMediaAlbums(container);
         if (!messages.length) {
             const pill = container.querySelector('.scroll-date-pill');
             container.innerHTML = '<div class="empty-state">Нет сообщений.</div>';
@@ -8037,6 +8348,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         existingRows.forEach((row, id) => {
             if (!wanted.has(id)) row.remove();
         });
+        packMediaAlbums(container);
     }
 
     function renderChannelNotice(contact) {
@@ -8120,6 +8432,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + '<div id="messages-container">'
                 + renderMessages(combinedMessages()) + '</div>'
                 + renderComposer(contact);
+            packMediaAlbums(feed.querySelector('#messages-container'));
         }
         if (window.__skillwoodSyncVoiceMode) {
             window.__skillwoodSyncVoiceMode(feed);

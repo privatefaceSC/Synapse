@@ -354,7 +354,8 @@ def find_or_create_handle(db, user_id: int, messenger_name: str, sender_raw: str
 
 def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text: str,
                     tg_chat_id=None, author=None, outgoing=False, tg_chat_type=None,
-                    tg_message_id=None, reply_to_tg_id=None, package_name=None,
+                    tg_message_id=None, tg_grouped_id=None,
+                    reply_to_tg_id=None, package_name=None,
                     tg_ttl_seconds=None, fwd_from_name=None,
                     fwd_from_tg_chat_id=None, fwd_from_messenger=None,
                     fwd_from_synapse_user_id=None, author_tg_chat_id=None,
@@ -438,6 +439,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     if prior is not None:
                         existing.reply_to_message_id = prior.id
                 existing.tg_ttl_seconds = tg_ttl_seconds
+                existing.tg_grouped_id = tg_grouped_id
                 existing.fwd_from_name = fwd_from_name
                 existing.fwd_from_tg_chat_id = fwd_from_tg_chat_id
                 existing.fwd_from_messenger = fwd_from_messenger
@@ -448,6 +450,10 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                 existing.delivery_status = 'sent'
                 existing.delivery_error = None
                 existing.delivery_started_at = None
+            elif tg_grouped_id is not None and existing.tg_grouped_id is None:
+                # Недавняя catch-up синхронизация может встретить запись,
+                # созданную до поддержки альбомов. Дополняем её без дубля.
+                existing.tg_grouped_id = tg_grouped_id
             db.commit()
             return existing
 
@@ -487,6 +493,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         created_at=now,
         outgoing=outgoing,
         tg_message_id=tg_message_id,
+        tg_grouped_id=tg_grouped_id,
         reply_to_message_id=reply_to_message_id,
         tg_ttl_seconds=tg_ttl_seconds,
         fwd_from_name=fwd_from_name,
