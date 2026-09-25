@@ -9140,8 +9140,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         switch (code) {
             case 'no_active_notification':
             case 'no_cached_reply':
-                return 'мы пока не видели уведомлений от этого чата. '
-                     + 'Дождись нового сообщения собеседника.';
+                return 'сейчас на планшете нет рабочей кнопки «Ответить» '
+                     + 'для этого чата. Не смахивайте уведомление MAX; '
+                     + 'после нового сообщения канал восстановится.';
             case 'pending_intent_dead':
             case 'pending_intent_canceled':
                 return 'мессенджер закрыл канал ответа (был перезапущен). '
@@ -9151,8 +9152,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 return 'этот мессенджер не показал кнопку «Ответить» '
                      + 'в уведомлении (например, групповой канал без права писать).';
             case 'device_timeout':
-                return 'планшет слишком долго был в спящем режиме. '
-                     + 'Сообщение не отправлено, чтобы оно не ушло неожиданно позже.';
+                return 'планшет не ответил за 3 минуты либо MAX не оставил '
+                     + 'активную кнопку «Ответить». Сообщение не отправлено, '
+                     + 'чтобы оно не ушло неожиданно позже.';
             default:
                 if (code && code.startsWith('send_exception:')) {
                     return 'ошибка отправки на стороне Android (' + code + ').';

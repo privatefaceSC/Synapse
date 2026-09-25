@@ -50,6 +50,14 @@ _media_restore_jobs_guard = threading.Lock()
 _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
 _PRESENCE_ONLINE_SECONDS = 75
 _PRESENCE_WRITE_INTERVAL_SECONDS = 20
+_NOTIFICATION_REPLY_MAX_AGE_SECONDS = 180
+_NOTIFICATION_REPLY_RETRY_SECONDS = 12
+_RETRYABLE_NOTIFICATION_REPLY_ERRORS = {
+    'no_active_notification',
+    'no_cached_reply',
+    'pending_intent_dead',
+    'pending_intent_canceled',
+}
 
 
 def _media_restore_lock(key):
@@ -6835,7 +6843,8 @@ def register_routes(app: Flask) -> None:
         from data.pending_replies import (PendingReply, STATUS_EXPIRED,
                                           STATUS_PENDING)
         now = datetime.now()
-        queue_cutoff = now - timedelta(seconds=180)
+        queue_cutoff = now - timedelta(
+            seconds=_NOTIFICATION_REPLY_MAX_AGE_SECONDS)
         changed = 0
         changed += (db.query(PendingReply)
                     .filter(PendingReply.user_id == user_id,
@@ -6881,7 +6890,9 @@ def register_routes(app: Flask) -> None:
 
         items = (db.query(PendingReply)
                  .filter(PendingReply.user_id == device.user_id,
-                         PendingReply.status == STATUS_PENDING)
+                         PendingReply.status == STATUS_PENDING,
+                         or_(PendingReply.picked_up_at.is_(None),
+                             PendingReply.picked_up_at <= datetime.now()))
                  .order_by(PendingReply.id.asc()).all())
         now = datetime.now()
         out = []
@@ -6912,8 +6923,8 @@ def register_routes(app: Flask) -> None:
         запись `Messages` (исходящее), и она проявляется в ленте веб-панели."""
         from data.contacts import MessengerHandle
         from data.pending_replies import (PendingReply, STATUS_EXPIRED,
-                                          STATUS_FAILED, STATUS_PICKED,
-                                          STATUS_SENT)
+                                          STATUS_FAILED, STATUS_PENDING,
+                                          STATUS_PICKED, STATUS_SENT)
         db = get_db()
         device = _device_from_bearer(db)
         if device is None:
@@ -6935,7 +6946,7 @@ def register_routes(app: Flask) -> None:
 
         body = request.get_json(silent=True) or {}
         ok = bool(body.get('ok'))
-        error = body.get('error') or None
+        error = str(body.get('error') or '')[:200] or None
         now = datetime.now()
 
         if ok:
@@ -6984,12 +6995,49 @@ def register_routes(app: Flask) -> None:
                 )
                 db.add(msg)
         else:
+            # Потеря notification action часто временна: Android мог только
+            # что проснуться, переподключить NotificationListener или ещё не
+            # успеть прогреть кэш активных уведомлений. Не объявляем отправку
+            # проваленной с первой попытки. Возвращаем задачу в очередь с
+            # коротким backoff; общий TTL по created_at по-прежнему не даёт
+            # сообщению внезапно уйти спустя много минут.
+            retry_deadline = (
+                pr.created_at
+                + timedelta(seconds=_NOTIFICATION_REPLY_MAX_AGE_SECONDS)
+            )
+            if (error in _RETRYABLE_NOTIFICATION_REPLY_ERRORS
+                    and now < retry_deadline):
+                claimed = (db.query(PendingReply)
+                           .filter(PendingReply.id == pr.id,
+                                   PendingReply.user_id == device.user_id,
+                                   PendingReply.status == STATUS_PICKED)
+                           .update({
+                               PendingReply.status: STATUS_PENDING,
+                               PendingReply.error: error,
+                               # Для pending это поле служит также временем
+                               # следующей разрешённой попытки.
+                               PendingReply.picked_up_at: (
+                                   now + timedelta(
+                                       seconds=_NOTIFICATION_REPLY_RETRY_SECONDS)
+                               ),
+                               PendingReply.device_id: None,
+                           }, synchronize_session=False))
+                if claimed != 1:
+                    db.rollback()
+                    return jsonify({'error': 'reply_already_finished'}), 409
+                db.commit()
+                return jsonify({
+                    'ok': True,
+                    'retrying': True,
+                    'retry_after_seconds': (
+                        _NOTIFICATION_REPLY_RETRY_SECONDS),
+                })
             claimed = (db.query(PendingReply)
                        .filter(PendingReply.id == pr.id,
                                PendingReply.user_id == device.user_id,
                                PendingReply.status == STATUS_PICKED)
                        .update({PendingReply.status: STATUS_FAILED,
-                                PendingReply.error: (error or '')[:200]},
+                                PendingReply.error: error},
                                synchronize_session=False))
             if claimed != 1:
                 db.rollback()
