@@ -7082,11 +7082,18 @@ def register_routes(app: Flask) -> None:
         ]
         for d in candidates:
             if os.path.exists(os.path.join(d, 'skillwood.apk')):
-                return send_from_directory(
+                response = send_from_directory(
                     d, 'skillwood.apk',
                     as_attachment=True,
                     mimetype='application/vnd.android.package-archive',
                 )
+                # Имя APK неизменно, поэтому мобильный браузер или внешний
+                # прокси не должен вернуть предыдущую сборку из кэша.
+                response.headers['Cache-Control'] = (
+                    'no-store, no-cache, must-revalidate, max-age=0')
+                response.headers['Pragma'] = 'no-cache'
+                response.headers['Expires'] = '0'
+                return response
         abort(404)
 
     @app.route('/sw.js')
