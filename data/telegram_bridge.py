@@ -15,6 +15,7 @@
 import asyncio
 import base64
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 import json
@@ -272,6 +273,67 @@ def _media_root():
     """То же хранилище медиа, что у Android-клиента (см. main._media_root)."""
     return os.environ.get("SKILLWOOD_MEDIA_ROOT") or os.path.join(
         os.getcwd(), "media")
+
+
+@contextmanager
+def _media_process_trim_lock():
+    """Не дать нескольким uWSGI workers одновременно обходить media/.
+
+    На AlwaysData media и SQLite лежат на сетевом home-диске. Параллельный
+    os.walk из каждого worker создаёт большой IO-всплеск как раз во время
+    прогрева приложения. На Windows тестам достаточно process-local lock.
+    """
+    if os.name == "nt":
+        yield True
+        return
+    try:
+        import fcntl
+    except ImportError:
+        yield True
+        return
+    root = _media_root()
+    os.makedirs(root, exist_ok=True)
+    lock_file = open(os.path.join(root, ".cache-trim.lock"), "a+b")
+    acquired = False
+    try:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError:
+            # Другой worker уже выполняет чистку. Ждать его в web-процессе
+            # нельзя: достаточно результата единственного владельца lock.
+            yield False
+            return
+        yield True
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lock_file.close()
+
+
+def _shared_media_trim_is_recent(interval):
+    """Общий для всех workers интервал между полными обходами media/."""
+    try:
+        age = time.time() - os.path.getmtime(
+            os.path.join(_media_root(), ".cache-trim.stamp"))
+    except OSError:
+        return False
+    return 0 <= age < interval
+
+
+def _mark_shared_media_trim():
+    try:
+        stamp = os.path.join(_media_root(), ".cache-trim.stamp")
+        with open(stamp, "a+b"):
+            pass
+        os.utime(stamp, None)
+    except OSError:
+        # Маркер — только оптимизация. Ошибка его записи не должна ломать
+        # приём сообщений или успешную чистку.
+        pass
 
 
 def _media_max_bytes():
@@ -558,25 +620,37 @@ def trim_media_cache(force=False):
         if (not force and _media_trimmed_at
                 and now - _media_trimmed_at < interval):
             return {"checked": False, "before": 0, "after": 0, "freed": 0}
-        # Бронируем интервал до дорогого os.walk: два WSGI-
-        # запроса в одном процессе не запустят два обхода.
-        _media_trimmed_at = now
-        try:
-            with _media_eviction_lock:
-                before = _media_store_usage_bytes(force=True)
-                if before <= target:
-                    return {"checked": True, "before": before,
-                            "after": before, "freed": 0}
-                requested = (before - target
-                             + _media_eviction_hysteresis(target))
-                freed = _evict_reloadable_telegram_media(requested)
-                after = _media_store_usage_bytes(force=True)
-        except Exception:
-            # На старте SQLite может быть занята миграцией или
-            # Telegram catch-up. Не бронируем 30-минутный интервал
-            # после неудачи: startup-retry сможет повторить чистку.
-            _media_trimmed_at = 0.0
-            raise
+        with _media_process_trim_lock() as process_lock_acquired:
+            if not process_lock_acquired:
+                return {"checked": False, "before": 0,
+                        "after": 0, "freed": 0}
+            # force нужен для первого запуска внутри процесса, но не должен
+            # заставлять каждый uWSGI worker повторять тот же сетевой обход.
+            if _shared_media_trim_is_recent(interval):
+                _media_trimmed_at = now
+                return {"checked": False, "before": 0,
+                        "after": 0, "freed": 0}
+            # Бронируем интервал до дорогого os.walk: два запроса в одном
+            # процессе не запустят два обхода.
+            _media_trimmed_at = now
+            try:
+                with _media_eviction_lock:
+                    before = _media_store_usage_bytes(force=True)
+                    if before <= target:
+                        _mark_shared_media_trim()
+                        return {"checked": True, "before": before,
+                                "after": before, "freed": 0}
+                    requested = (before - target
+                                 + _media_eviction_hysteresis(target))
+                    freed = _evict_reloadable_telegram_media(requested)
+                    after = _media_store_usage_bytes(force=True)
+                _mark_shared_media_trim()
+            except Exception:
+                # На старте SQLite может быть занята миграцией или
+                # Telegram catch-up. Не бронируем 30-минутный интервал
+                # после неудачи: startup-retry сможет повторить чистку.
+                _media_trimmed_at = 0.0
+                raise
     if freed:
         logger.info(
             "Automatic Telegram media cache trim: %s -> %s bytes "
@@ -590,8 +664,8 @@ async def _trim_media_cache_async(force=False):
 
 
 async def _trim_media_cache_after_startup():
-    """Пережить краткую SQLite-блокировку во время старта."""
-    for attempt, delay in enumerate((0, 10, 30), start=1):
+    """Чистить после прогрева, не конкурируя со стартом сайта и SQLite."""
+    for attempt, delay in enumerate((30, 30, 60), start=1):
         if delay:
             await asyncio.sleep(delay)
         try:

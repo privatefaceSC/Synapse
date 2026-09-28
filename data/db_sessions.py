@@ -1,14 +1,46 @@
 import os
+import threading
+from contextlib import contextmanager
 
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import NullPool, StaticPool
+from sqlalchemy.pool import StaticPool
 
 SqlAlchemyBase = orm.declarative_base()
 
 __factory = None
 __engine = None
+__schema_thread_lock = threading.Lock()
+# Увеличивать при каждом изменении wanted/indexes ниже. Первый WSGI worker
+# применяет миграции, остальные после общего file-lock читают только PRAGMA.
+_SCHEMA_VERSION = 1
+
+
+@contextmanager
+def _schema_lock(db_file):
+    """Сериализовать create_all/миграции между WSGI-процессами.
+
+    AlwaysData может одновременно поднять несколько uWSGI workers.
+    Без file-lock они все пытаются получить SQLite schema write-lock.
+    """
+    with __schema_thread_lock:
+        if db_file == ":memory:" or os.name == "nt":
+            yield
+            return
+        lock_path = os.path.abspath(db_file) + ".migrate.lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        import fcntl
+        lock_file = open(lock_path, "a+b")
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            finally:
+                lock_file.close()
+
 
 def global_init(db_file):
     global __factory, __engine
@@ -27,17 +59,17 @@ def global_init(db_file):
     conn_str = f'sqlite:///{db_file}'
     print(f"Подключение к базе данных по адресу {conn_str}")
 
-    # SQLite на AlwaysData лежит на сетевом home-диске. Не
-    # держим соединения в пуле между HTTP/Telegram-задачами:
-    # это снижает риск залипших read-транзакций. WAL на NFS не
-    # включаем: его shared-memory locking не безопасен для NFS.
-    pool_class = StaticPool if db_file == ":memory:" else NullPool
-    engine = sa.create_engine(
-        conn_str,
-        echo=False,
-        poolclass=pool_class,
-        connect_args={"check_same_thread": False, "timeout": 5},
-    )
+    # WAL на NFS не включаем: shared-memory locking для него не
+    # безопасен. Обычный SQLAlchemy QueuePool важен на сетевом
+    # home-диске: новое SQLite-соединение на каждый polling
+    # оказалось на AlwaysData намного дороже повторного использования.
+    engine_kwargs = {
+        "echo": False,
+        "connect_args": {"check_same_thread": False, "timeout": 5},
+    }
+    if db_file == ":memory:":
+        engine_kwargs["poolclass"] = StaticPool
+    engine = sa.create_engine(conn_str, **engine_kwargs)
 
     @sa.event.listens_for(engine, "connect")
     def _configure_sqlite_connection(dbapi_connection, _record):
@@ -56,8 +88,13 @@ def global_init(db_file):
 
     from . import __all_models
 
-    SqlAlchemyBase.metadata.create_all(engine)
-    _apply_light_migrations(engine)
+    with _schema_lock(db_file):
+        with engine.connect() as conn:
+            schema_version = int(
+                conn.exec_driver_sql("PRAGMA user_version").scalar() or 0)
+        if schema_version < _SCHEMA_VERSION:
+            SqlAlchemyBase.metadata.create_all(engine)
+            _apply_light_migrations(engine)
 
 
 def _apply_light_migrations(engine):
@@ -131,15 +168,17 @@ def _apply_light_migrations(engine):
         # User ID нельзя добавить как UNIQUE-колонку через ALTER в SQLite,
         # поэтому проставляем существующим пользователям значение по умолчанию
         # (user<id>) и навешиваем уникальный индекс отдельно.
-        conn.exec_driver_sql(
-            "UPDATE users SET username = 'user' || id "
-            "WHERE username IS NULL OR username = ''")
-        conn.exec_driver_sql(
-            "UPDATE users SET created_at = modified_date "
-            "WHERE created_at IS NULL")
-        conn.exec_driver_sql(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username "
-            "ON users(username)")
+        if conn.exec_driver_sql(
+                "SELECT 1 FROM users WHERE username IS NULL OR username = '' "
+                "LIMIT 1").first():
+            conn.exec_driver_sql(
+                "UPDATE users SET username = 'user' || id "
+                "WHERE username IS NULL OR username = ''")
+        if conn.exec_driver_sql(
+                "SELECT 1 FROM users WHERE created_at IS NULL LIMIT 1").first():
+            conn.exec_driver_sql(
+                "UPDATE users SET created_at = modified_date "
+                "WHERE created_at IS NULL")
         # Горячие запросы ленты и Telegram bridge. ForeignKey в SQLite
         # сам по себе индекс не создаёт; без этих индексов каждый
         # polling открытого чата сканировал всю таблицу messages.
@@ -171,8 +210,26 @@ def _apply_light_migrations(engine):
             "CREATE INDEX IF NOT EXISTS ix_pending_replies_device_queue "
             "ON pending_replies(user_id, status, created_at)",
         )
-        for statement in indexes:
+        existing_indexes = {
+            row[0] for row in conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type = 'index'").fetchall()
+        }
+        all_indexes = (
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username "
+            "ON users(username)",
+        ) + indexes
+        for statement in all_indexes:
+            # Не выполняем даже CREATE INDEX IF NOT EXISTS повторно:
+            # на NFS и эта проверка берёт schema write-lock.
+            match = statement.split(" INDEX IF NOT EXISTS ", 1)
+            if len(match) != 2:
+                continue
+            index_name = match[1].split(None, 1)[0]
+            if index_name in existing_indexes:
+                continue
             conn.exec_driver_sql(statement)
+            existing_indexes.add(index_name)
+        conn.exec_driver_sql(f"PRAGMA user_version = {_SCHEMA_VERSION}")
 
 
 def create_session() -> Session:
