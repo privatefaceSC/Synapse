@@ -119,19 +119,25 @@ def save_subscription(db, user_id: int, payload: dict, user_agent=None):
     sub = db.query(WebPushSubscription).filter(
         WebPushSubscription.endpoint == endpoint).first()
     now = datetime.datetime.now()
+    changed = sub is None
     if sub is None:
         sub = WebPushSubscription(endpoint=endpoint, created_at=now)
         db.add(sub)
-    sub.user_id = user_id
-    sub.p256dh = p256dh
-    sub.auth = auth
-    sub.origin = (_clean_origin(payload.get("origin"))
-                  or _clean_origin(getattr(sub, "origin", None)))
-    sub.user_agent = (user_agent or "")[:500] or None
-    sub.enabled = True
-    sub.updated_at = now
-    sub.failed_at = None
-    sub.last_error = None
+    values = {
+        "user_id": user_id,
+        "p256dh": p256dh,
+        "auth": auth,
+        "origin": (_clean_origin(payload.get("origin"))
+                   or _clean_origin(getattr(sub, "origin", None))),
+        "user_agent": (user_agent or "")[:500] or None,
+        "enabled": True,
+        "failed_at": None,
+        "last_error": None,
+    }
+    for name, value in values.items():
+        if getattr(sub, name, None) != value:
+            setattr(sub, name, value)
+            changed = True
     if sub.user_agent:
         stale_subs = (db.query(WebPushSubscription)
                       .filter(WebPushSubscription.user_id == user_id,
@@ -147,7 +153,13 @@ def save_subscription(db, user_id: int, payload: dict, user_agent=None):
             stale.updated_at = now
             stale.failed_at = None
             stale.last_error = None
-    db.commit()
+            changed = True
+    if changed:
+        # Браузер повторно присылает ту же PushSubscription при загрузке
+        # страниц. Не обновляем updated_at и не берём SQLite write-lock,
+        # если данные фактически не изменились.
+        sub.updated_at = now
+        db.commit()
     return sub
 
 

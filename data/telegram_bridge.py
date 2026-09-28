@@ -87,13 +87,17 @@ _DEFAULT_MEDIA_MAX_MB = 20
 _DEFAULT_MEDIA_STORE_MAX_MB = 650
 _DEFAULT_MEDIA_CACHE_TARGET_MB = 500
 _DEFAULT_MEDIA_CLEANUP_INTERVAL_SECONDS = 30 * 60
+_MEDIA_TRIM_POLICY_VERSION = 2
 _DEFAULT_CATCHUP_IMAGE_MAX_MB = 8
 _CATCHUP_MEDIA_MAX_AGE_SECONDS = 15 * 60
 _MEDIA_EVICTION_GRACE_SECONDS = 15 * 60
 _REMOTE_ATTACHMENT_KINDS = frozenset({
     "image", "video", "video_note", "voice", "audio", "file",
 })
-_EVICTABLE_MEDIA_KINDS = frozenset({"image", "video"})
+# Все эти Telegram-вложения можно вернуть по сохранённому message id.
+# Ограничение только фото/видео оставляло в кэше крупные голосовые и файлы,
+# из-за чего общий лимит media/ мог так и не достигнуть целевого размера.
+_EVICTABLE_MEDIA_KINDS = _REMOTE_ATTACHMENT_KINDS
 # [последний расчёт monotonic, bytes, поколение записей]
 _media_usage_cache = [0.0, 0, 0]
 _media_usage_lock = threading.Lock()
@@ -318,7 +322,9 @@ def _shared_media_trim_is_recent(interval):
     """Общий для всех workers интервал между полными обходами media/."""
     try:
         age = time.time() - os.path.getmtime(
-            os.path.join(_media_root(), ".cache-trim.stamp"))
+            os.path.join(
+                _media_root(),
+                f".cache-trim-v{_MEDIA_TRIM_POLICY_VERSION}.stamp"))
     except OSError:
         return False
     return 0 <= age < interval
@@ -326,7 +332,9 @@ def _shared_media_trim_is_recent(interval):
 
 def _mark_shared_media_trim():
     try:
-        stamp = os.path.join(_media_root(), ".cache-trim.stamp")
+        stamp = os.path.join(
+            _media_root(),
+            f".cache-trim-v{_MEDIA_TRIM_POLICY_VERSION}.stamp")
         with open(stamp, "a+b"):
             pass
         os.utime(stamp, None)
@@ -502,7 +510,7 @@ def _media_eviction_hysteresis(limit):
 
 
 def _evict_reloadable_telegram_media(bytes_needed):
-    """Удаляет только локальный кэш старых Telegram photo/video.
+    """Удаляет только локальный кэш восстановимых Telegram-вложений.
 
     Строка Attachment остаётся в БД: UI сможет показать «не
     загружено» и по явному клику снова забрать файл из Telegram.
@@ -605,7 +613,7 @@ def _evict_reloadable_telegram_media(bytes_needed):
 def trim_media_cache(force=False):
     """Автоматически сжать media/ до безопасной цели.
 
-    Удаляются только старые Telegram photo/video, которые можно
+    Удаляются только старые Telegram-вложения, которые можно
     восстановить по tg_message_id. Attachment остаётся в базе, поэтому
     UI покажет «Загрузить». MAX/одноразовые/общие файлы не
     трогаются. Возвращает компактную статистику.
@@ -638,6 +646,10 @@ def trim_media_cache(force=False):
                     before = _media_store_usage_bytes(force=True)
                     if before <= target:
                         _mark_shared_media_trim()
+                        logger.info(
+                            "Automatic Telegram media cache trim checked: "
+                            "%s bytes (target %s), nothing to remove",
+                            before, target)
                         return {"checked": True, "before": before,
                                 "after": before, "freed": 0}
                     requested = (before - target
@@ -651,10 +663,10 @@ def trim_media_cache(force=False):
                 # после неудачи: startup-retry сможет повторить чистку.
                 _media_trimmed_at = 0.0
                 raise
-    if freed:
-        logger.info(
-            "Automatic Telegram media cache trim: %s -> %s bytes "
-            "(target %s)", before, after, target)
+    logger.info(
+        "Automatic Telegram media cache trim: %s -> %s bytes "
+        "(target %s, freed %s)", before, after, target,
+        max(0, before - after))
     return {"checked": True, "before": before,
             "after": after, "freed": max(0, before - after)}
 

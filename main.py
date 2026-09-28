@@ -85,6 +85,7 @@ _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
 _PRESENCE_ONLINE_SECONDS = 75
 _PRESENCE_WRITE_INTERVAL_SECONDS = 45
 _PRESENCE_WRITE_BUSY_TIMEOUT_MS = 100
+_SERVICE_STATE_WRITE_MIN_INTERVAL_SECONDS = 10
 _DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS = 60
 _DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS = 100
 _DEVICE_AUTH_CACHE_SECONDS = 60
@@ -97,6 +98,8 @@ _RETRYABLE_NOTIFICATION_REPLY_ERRORS = {
     'pending_intent_dead',
     'pending_intent_canceled',
 }
+_service_state_write_guard = threading.Lock()
+_service_state_write_attempted_at = {}
 
 
 def _media_restore_lock(key):
@@ -552,6 +555,19 @@ def _notify_webpush_message(message_id):
             print(f"Web Push: message={message_id} result={result}")
     except Exception as exc:  # noqa: BLE001
         print(f"Web Push: message={message_id} error={exc}")
+
+
+def _service_state_write_due(throttle_key) -> bool:
+    """Не чаще одного read-receipt commit на переписку за интервал."""
+    now_mono = time.monotonic()
+    with _service_state_write_guard:
+        previous = _service_state_write_attempted_at.get(throttle_key)
+        if (previous is not None
+                and now_mono - previous
+                < _SERVICE_STATE_WRITE_MIN_INTERVAL_SECONDS):
+            return False
+        _service_state_write_attempted_at[throttle_key] = now_mono
+    return True
 
 
 def _commit_best_effort(db, context: str) -> bool:
@@ -2972,8 +2988,8 @@ def _mark_synapse_contact_read(db, owner_id: int, handles):
     for msg in incoming:
         msg.read_at = now
         changed = True
-    if changed:
-        db.flush()
+    # Flush выполняет вызывающий best-effort commit уже после установки
+    # короткого busy_timeout. Иначе polling мог ждать SQLite пять секунд.
     return changed
 
 
@@ -4161,8 +4177,8 @@ def register_routes(app: Flask) -> None:
 
         handles = db.query(MessengerHandle).filter(MessengerHandle.contact_id == contact.id).all()
         _mark_contact_creator_from_handles(contact, handles, _creator_user_ids(db))
-        synapse_read_changed = _mark_synapse_contact_read(
-            db, user_id, handles)
+        read_state_due = _service_state_write_due(
+            (id(db.get_bind()), user_id, contact_id, None, 'read_state'))
         # Контакт — «папка»: чат на каждый мессенджер. Показываем один.
         available = []
         for h in handles:
@@ -4202,7 +4218,17 @@ def register_routes(app: Flask) -> None:
             .all()
         )
         msgs = list(reversed(msgs))
-        contact_read_changed = _mark_contact_read_if_unread(contact, msgs)
+        synapse_read_changed = False
+        contact_read_changed = False
+        if read_state_due:
+            # Оба изменения только stage-ятся. no_autoflush не позволяет
+            # промежуточному SELECT начать SQLite write-транзакцию раньше,
+            # чем best-effort commit выставит короткий busy_timeout.
+            with db.no_autoflush:
+                synapse_read_changed = _mark_synapse_contact_read(
+                    db, user_id, handles)
+                contact_read_changed = _mark_contact_read_if_unread(
+                    contact, msgs)
         if synapse_read_changed or contact_read_changed:
             _commit_best_effort(db, 'contact_detail.read_state')
         for m in msgs:
@@ -4242,8 +4268,10 @@ def register_routes(app: Flask) -> None:
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
         _mark_contact_creator_from_handles(contact, handles, _creator_user_ids(db))
-        synapse_read_changed = _mark_synapse_contact_read(
-            db, user_id, handles)
+        read_state_due = _service_state_write_due(
+            (id(db.get_bind()), user_id, contact_id,
+             request.args.get('topic_id'),
+             'read_state'))
         available = []
         for h in handles:
             if h.messenger_name not in available:
@@ -4306,25 +4334,30 @@ def register_routes(app: Flask) -> None:
         # Запросы before_id только листают старую историю. А обычный
         # polling помечает чат прочитанным только если в нём есть
         # новое входящее. Пустой polling больше не берёт write-lock.
-        read_state_changed = bool(synapse_read_changed)
+        read_state_changed = False
         latest_incoming_at = max(
             (message.created_at for message in msgs
              if not bool(getattr(message, 'outgoing', False))
              and message.created_at is not None),
             default=None,
         )
-        if (not before_id and is_forum and topic_id_int is not None
-                and tg_chat_handle is not None):
-            # У форум-чата у каждой темы свой last_read — иначе открытие
-            # одной темы тушит «непрочитанное» во всех остальных.
-            from data.topic_reads import mark_topic_read
-            read_state_changed = mark_topic_read(
-                db, tg_chat_handle.id, topic_id_int,
-                read_through=latest_incoming_at) or read_state_changed
-        elif not before_id:
-            read_state_changed = (
-                _mark_contact_read_if_unread(contact, msgs)
-                or read_state_changed)
+        if read_state_due:
+            with db.no_autoflush:
+                read_state_changed = _mark_synapse_contact_read(
+                    db, user_id, handles)
+                if (not before_id and is_forum
+                        and topic_id_int is not None
+                        and tg_chat_handle is not None):
+                    # У форум-чата у каждой темы свой last_read — иначе
+                    # открытие одной темы тушит «непрочитанное» во всех.
+                    from data.topic_reads import mark_topic_read
+                    read_state_changed = mark_topic_read(
+                        db, tg_chat_handle.id, topic_id_int,
+                        read_through=latest_incoming_at) or read_state_changed
+                elif not before_id:
+                    read_state_changed = (
+                        _mark_contact_read_if_unread(contact, msgs)
+                        or read_state_changed)
         if read_state_changed:
             _commit_best_effort(db, 'messages_json.read_state')
         _attach_media(db, msgs)
@@ -7880,10 +7913,6 @@ def register_routes(app: Flask) -> None:
         device = _device_from_bearer(db)
         if device is None:
             return 'Unauthorized', 401
-        device.last_seen_ip = request.remote_addr
-        device.last_seen_at = datetime.now()
-        db.commit()
-
         chat_avatar_path = _save_notification_avatar(
             device.user_id, request.form.get('chat_avatar'))
         author_avatar_path = _save_notification_avatar(
@@ -7927,10 +7956,6 @@ def register_routes(app: Flask) -> None:
         if device is None:
             return 'Unauthorized', 401
         user_id = device.user_id
-
-        device.last_seen_ip = request.remote_addr
-        device.last_seen_at = datetime.now()
-        db.commit()
 
         # Если это фото уже было (Max/VK шлёт повторно) - не создаём дубль
         if dedup_key is not None:

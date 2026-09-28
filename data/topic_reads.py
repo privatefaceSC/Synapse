@@ -52,7 +52,9 @@ def mark_topic_read(db, handle_id: int, topic_id: int, read_through=None):
                               last_read_at=now))
     else:
         state.last_read_at = now
-    db.flush()
+    # Не flush здесь: вызывающий маршрут сначала выставляет короткий
+    # busy_timeout и только затем делает best-effort commit. Иначе flush
+    # мог ждать SQLite пять секунд прямо в polling-запросе чата.
     return True
 
 
