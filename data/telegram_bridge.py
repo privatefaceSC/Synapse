@@ -102,7 +102,7 @@ _media_eviction_lock = threading.Lock()
 _media_reserved_bytes = 0
 _media_trim_lock = threading.Lock()
 _media_trimmed_at = 0.0
-_media_cleanup_future = None
+_media_cleanup_thread = None
 # Результат проверки «является ли megagroup группой комментариев канала».
 # Отрицательный ответ кэшируем ненадолго: связь группы с каналом может
 # появиться позже, но делать GetFullChannel на каждое входящее слишком дорого.
@@ -663,13 +663,13 @@ async def _trim_media_cache_async(force=False):
     return await asyncio.to_thread(trim_media_cache, force)
 
 
-async def _trim_media_cache_after_startup():
+def _trim_media_cache_after_startup():
     """Чистить после прогрева, не конкурируя со стартом сайта и SQLite."""
     for attempt, delay in enumerate((30, 30, 60), start=1):
         if delay:
-            await asyncio.sleep(delay)
+            time.sleep(delay)
         try:
-            return await _trim_media_cache_async(force=True)
+            return trim_media_cache(force=True)
         except Exception as exc:  # noqa: BLE001
             if attempt >= 3:
                 logger.warning(
@@ -679,15 +679,31 @@ async def _trim_media_cache_after_startup():
 
 
 def _schedule_media_cache_trim(force=False):
-    """Запустить одну неблокирующую чистку после старта WSGI."""
-    global _media_cleanup_future
-    if (_media_cleanup_future is not None
-            and not _media_cleanup_future.done()):
-        return _media_cleanup_future
-    coro = (_trim_media_cache_after_startup() if force
-            else _trim_media_cache_async(force=False))
-    _media_cleanup_future = asyncio.run_coroutine_threadsafe(coro, _loop)
-    return _media_cleanup_future
+    """Запустить одну короткоживущую чистку независимо от Telegram-loop."""
+    global _media_cleanup_thread
+    if (_media_cleanup_thread is not None
+            and _media_cleanup_thread.is_alive()):
+        return _media_cleanup_thread
+
+    def run_cleanup():
+        try:
+            if force:
+                _trim_media_cache_after_startup()
+            else:
+                trim_media_cache(force=False)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Automatic Telegram media cache trim failed: %s",
+                           exc)
+
+    _media_cleanup_thread = threading.Thread(
+        target=run_cleanup, name="media-cache-trim", daemon=True)
+    _media_cleanup_thread.start()
+    return _media_cleanup_thread
+
+
+def schedule_media_cache_trim():
+    """Публичный production-hook для фоновой очистки после старта WSGI."""
+    return _schedule_media_cache_trim(force=True)
 
 
 def reserve_media_write(size, replacing_size=0):
@@ -3307,9 +3323,6 @@ def start(user_id=None):
         return
     _quiet_telethon_logging()
     _ensure_loop()
-    # Старый Telegram-кэш убираем сразу после запуска, но не
-    # блокируем импорт Flask/первый HTTP-ответ обходом media/.
-    _schedule_media_cache_trim(force=True)
     owners = {_normalize_user_id(user_id)} if user_id is not None else {
         _owner_user_id()
     }

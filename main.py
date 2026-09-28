@@ -50,10 +50,12 @@ _media_restore_jobs = {}
 _media_restore_jobs_guard = threading.Lock()
 _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
 _PRESENCE_ONLINE_SECONDS = 75
-_PRESENCE_WRITE_INTERVAL_SECONDS = 20
+_PRESENCE_WRITE_INTERVAL_SECONDS = 45
 _PRESENCE_WRITE_BUSY_TIMEOUT_MS = 100
 _DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS = 60
 _DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS = 100
+_DEVICE_AUTH_CACHE_SECONDS = 60
+_ANDROID_EMPTY_QUEUE_RECHECK_SECONDS = 5
 _NOTIFICATION_REPLY_MAX_AGE_SECONDS = 180
 _NOTIFICATION_REPLY_RETRY_SECONDS = 12
 _RETRYABLE_NOTIFICATION_REPLY_ERRORS = {
@@ -3008,6 +3010,9 @@ def register_routes(app: Flask) -> None:
     presence_written_at = {}
     presence_pending = {}
     presence_worker_running = [False]
+    device_poll_cache = {}
+    device_poll_cache_guard = threading.Lock()
+    pending_empty_until = {}
 
     def _flush_presence_updates():
         """Один короткоживущий worker для best-effort presence.
@@ -3024,6 +3029,16 @@ def register_routes(app: Flask) -> None:
                 user_id, seen_at = presence_pending.popitem()
             db = db_sessions.create_session()
             try:
+                persisted_seen_at = (db.query(User.last_seen_at)
+                                     .filter(User.id == user_id)
+                                     .scalar())
+                if (persisted_seen_at is not None
+                        and persisted_seen_at >= seen_at - timedelta(
+                            seconds=_PRESENCE_WRITE_INTERVAL_SECONDS)):
+                    # Другой WSGI worker уже сохранил свежую активность.
+                    # Одного UPDATE на пользователя достаточно для всех.
+                    db.rollback()
+                    continue
                 db.connection().exec_driver_sql(
                     f"PRAGMA busy_timeout={_PRESENCE_WRITE_BUSY_TIMEOUT_MS}")
                 db.query(User).filter(User.id == user_id).update(
@@ -5192,6 +5207,7 @@ def register_routes(app: Flask) -> None:
                            .order_by(PendingReply.id.desc())
                            .first())
             if existing_pr is not None:
+                _invalidate_pending_poll_cache(user_id)
                 return jsonify({
                     'ok': True,
                     'duplicate': True,
@@ -5211,6 +5227,7 @@ def register_routes(app: Flask) -> None:
         )
         db.add(pr)
         db.commit()
+        _invalidate_pending_poll_cache(user_id)
         return jsonify({'ok': True, 'queued': True, 'pending_id': pr.id,
                         'via': 'notif'})
 
@@ -7325,6 +7342,54 @@ def register_routes(app: Flask) -> None:
             return None
         return db.query(Device).filter(Device.token_hash == hash_token(token)).first()
 
+    def _poll_device_identity(db):
+        """Авторизовать частый Android polling с коротким memory-cache."""
+        from data.devices import Device, hash_token
+        auth = request.headers.get('Authorization', '')
+        if not auth.startswith('Bearer '):
+            return None
+        token = auth[len('Bearer '):].strip()
+        if not token:
+            return None
+        token_hash = hash_token(token)
+        now_mono = time.monotonic()
+        with device_poll_cache_guard:
+            cached = device_poll_cache.get(token_hash)
+            if cached is not None and cached['expires_at'] > now_mono:
+                return dict(cached)
+        device = (db.query(Device.id, Device.user_id, Device.name,
+                           Device.last_seen_ip, Device.last_seen_at)
+                  .filter(Device.token_hash == token_hash).first())
+        if device is None:
+            return None
+        identity = {
+            'id': int(device.id),
+            'user_id': int(device.user_id),
+            'name': device.name,
+            'last_seen_ip': device.last_seen_ip,
+            'last_seen_at': device.last_seen_at,
+            'expires_at': now_mono + _DEVICE_AUTH_CACHE_SECONDS,
+        }
+        with device_poll_cache_guard:
+            device_poll_cache[token_hash] = dict(identity)
+            if len(device_poll_cache) > 256:
+                expired = [key for key, value in device_poll_cache.items()
+                           if value['expires_at'] <= now_mono]
+                for key in expired:
+                    device_poll_cache.pop(key, None)
+        return identity
+
+    def _remember_poll_device_seen(device_id, seen_at, seen_ip):
+        with device_poll_cache_guard:
+            for cached in device_poll_cache.values():
+                if cached['id'] == device_id:
+                    cached['last_seen_at'] = seen_at
+                    cached['last_seen_ip'] = seen_ip
+
+    def _invalidate_pending_poll_cache(user_id):
+        with device_poll_cache_guard:
+            pending_empty_until.pop(int(user_id), None)
+
     def _expire_stale_pending_replies(db, user_id):
         """Отменяет только задания, которые Android ещё не забрал.
 
@@ -7379,22 +7444,33 @@ def register_routes(app: Flask) -> None:
         """
         from data.pending_replies import (PendingReply, STATUS_PENDING,
                                           STATUS_PICKED)
+        from data.devices import Device
         db = get_db()
-        device = _device_from_bearer(db)
+        device = _poll_device_identity(db)
         if device is None:
             return jsonify({'error': 'unauthorized'}), 401
         now = datetime.now()
-        last_seen_at = device.last_seen_at
+        last_seen_at = device['last_seen_at']
         heartbeat_due = (
             last_seen_at is None
             or now - last_seen_at >= timedelta(
                 seconds=_DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS)
-            or device.last_seen_ip != request.remote_addr
+            or device['last_seen_ip'] != request.remote_addr
         )
-        _expire_stale_pending_replies(db, device.user_id)
+        now_mono = time.monotonic()
+        with device_poll_cache_guard:
+            empty_until = pending_empty_until.get(device['user_id'], 0)
+        if (not app.testing and not heartbeat_due
+                and empty_until > now_mono):
+            # Самый частый путь: очередь недавно уже была пустой. Здесь нет
+            # ни одного обращения к SQLite, поэтому polling планшета не
+            # занимает дефицитный WSGI worker сетевым I/O.
+            return jsonify({'replies': []})
+
+        _expire_stale_pending_replies(db, device['user_id'])
 
         items = (db.query(PendingReply)
-                 .filter(PendingReply.user_id == device.user_id,
+                 .filter(PendingReply.user_id == device['user_id'],
                          PendingReply.status == STATUS_PENDING,
                          or_(PendingReply.picked_up_at.is_(None),
                              PendingReply.picked_up_at <= datetime.now()))
@@ -7408,7 +7484,7 @@ def register_routes(app: Flask) -> None:
                                PendingReply.status == STATUS_PENDING)
                        .update({PendingReply.status: STATUS_PICKED,
                                 PendingReply.picked_up_at: now,
-                                PendingReply.device_id: device.id},
+                                PendingReply.device_id: device['id']},
                                synchronize_session=False))
             if claimed != 1:
                 continue
@@ -7421,9 +7497,14 @@ def register_routes(app: Flask) -> None:
         if out:
             # Реальный claim всё равно требует надёжного commit; обновление
             # активности устройства можно безопасно включить в него.
-            device.last_seen_ip = request.remote_addr
-            device.last_seen_at = now
+            db.query(Device).filter(Device.id == device['id']).update({
+                Device.last_seen_ip: request.remote_addr,
+                Device.last_seen_at: now,
+            }, synchronize_session=False)
             db.commit()
+            _remember_poll_device_seen(
+                device['id'], now, request.remote_addr)
+            _invalidate_pending_poll_cache(device['user_id'])
         elif heartbeat_due:
             # Android опрашивает пустую очередь каждые несколько секунд.
             # Не превращаем каждый GET в SQLite writer и не ждём занятую
@@ -7433,12 +7514,18 @@ def register_routes(app: Flask) -> None:
             try:
                 connection.exec_driver_sql(
                     f"PRAGMA busy_timeout={_DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS}")
-                device.last_seen_ip = request.remote_addr
-                device.last_seen_at = now
+                db.query(Device).filter(Device.id == device['id']).update({
+                    Device.last_seen_ip: request.remote_addr,
+                    Device.last_seen_at: now,
+                }, synchronize_session=False)
                 db.commit()
             except OperationalError:
                 db.rollback()
             finally:
+                # При занятой базе не повторяем необязательную запись на
+                # каждом следующем polling; новая попытка будет через минуту.
+                _remember_poll_device_seen(
+                    device['id'], now, request.remote_addr)
                 try:
                     connection.exec_driver_sql("PRAGMA busy_timeout=5000")
                 except Exception:  # noqa: BLE001
@@ -7447,6 +7534,10 @@ def register_routes(app: Flask) -> None:
             # Закрываем read-транзакцию явно: teardown вернёт соединение в
             # pool, но до конца формирования ответа оно уже не держит lock.
             db.rollback()
+        if not app.testing and not out:
+            with device_poll_cache_guard:
+                pending_empty_until[device['user_id']] = (
+                    time.monotonic() + _ANDROID_EMPTY_QUEUE_RECHECK_SECONDS)
         return jsonify({'replies': out})
 
     @app.route('/api/replies/<int:reply_id>/done', methods=['POST'])
@@ -8161,5 +8252,7 @@ def _generate_unique_code(db, exclude=None) -> str:
 
 if __name__ == '__main__':
     app = create_app()
+    from data import telegram_bridge
+    telegram_bridge.schedule_media_cache_trim()
     port = int(os.environ.get('PORT', '5000'))
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
