@@ -80,6 +80,17 @@ def global_init(db_file):
         finally:
             cursor.close()
 
+    @sa.event.listens_for(engine, "checkout")
+    def _reset_sqlite_busy_timeout(dbapi_connection, _record, _proxy):
+        # Best-effort presence/heartbeat временно уменьшают timeout до
+        # 100 мс. При возврате соединения из pool обычные операции снова
+        # получают штатные пять секунд ожидания.
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=5000")
+        finally:
+            cursor.close()
+
     __engine = engine
     # Сессии здесь короткоживущие (один HTTP-запрос/событие).
     # Не просрачиваем все ORM-объекты после commit: иначе рендер

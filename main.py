@@ -52,6 +52,8 @@ _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
 _PRESENCE_ONLINE_SECONDS = 75
 _PRESENCE_WRITE_INTERVAL_SECONDS = 20
 _PRESENCE_WRITE_BUSY_TIMEOUT_MS = 100
+_DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS = 60
+_DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS = 100
 _NOTIFICATION_REPLY_MAX_AGE_SECONDS = 180
 _NOTIFICATION_REPLY_RETRY_SECONDS = 12
 _RETRYABLE_NOTIFICATION_REPLY_ERRORS = {
@@ -7335,14 +7337,21 @@ def register_routes(app: Flask) -> None:
         now = datetime.now()
         queue_cutoff = now - timedelta(
             seconds=_NOTIFICATION_REPLY_MAX_AGE_SECONDS)
-        changed = 0
-        changed += (db.query(PendingReply)
-                    .filter(PendingReply.user_id == user_id,
-                            PendingReply.status == STATUS_PENDING,
-                            PendingReply.created_at < queue_cutoff)
-                    .update({PendingReply.status: STATUS_EXPIRED,
-                             PendingReply.error: 'device_timeout'},
-                            synchronize_session=False))
+        stale_filter = (
+            PendingReply.user_id == user_id,
+            PendingReply.status == STATUS_PENDING,
+            PendingReply.created_at < queue_cutoff,
+        )
+        # SQLite начинает write-транзакцию даже для UPDATE, который не
+        # находит ни одной строки. Android polling вызывал такой пустой
+        # UPDATE каждые несколько секунд и непрерывно держал базу занятой.
+        if db.query(PendingReply.id).filter(*stale_filter).first() is None:
+            return 0
+        changed = (db.query(PendingReply)
+                   .filter(*stale_filter)
+                   .update({PendingReply.status: STATUS_EXPIRED,
+                            PendingReply.error: 'device_timeout'},
+                           synchronize_session=False))
         if changed:
             db.commit()
         return changed
@@ -7374,8 +7383,14 @@ def register_routes(app: Flask) -> None:
         device = _device_from_bearer(db)
         if device is None:
             return jsonify({'error': 'unauthorized'}), 401
-        device.last_seen_ip = request.remote_addr
-        device.last_seen_at = datetime.now()
+        now = datetime.now()
+        last_seen_at = device.last_seen_at
+        heartbeat_due = (
+            last_seen_at is None
+            or now - last_seen_at >= timedelta(
+                seconds=_DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS)
+            or device.last_seen_ip != request.remote_addr
+        )
         _expire_stale_pending_replies(db, device.user_id)
 
         items = (db.query(PendingReply)
@@ -7384,7 +7399,6 @@ def register_routes(app: Flask) -> None:
                          or_(PendingReply.picked_up_at.is_(None),
                              PendingReply.picked_up_at <= datetime.now()))
                  .order_by(PendingReply.id.asc()).all())
-        now = datetime.now()
         out = []
         for it in items:
             # UPDATE ... WHERE status=pending делает claim безопасным даже
@@ -7404,7 +7418,35 @@ def register_routes(app: Flask) -> None:
                 'sender_label': it.sender_label,
                 'text': it.text,
             })
-        db.commit()
+        if out:
+            # Реальный claim всё равно требует надёжного commit; обновление
+            # активности устройства можно безопасно включить в него.
+            device.last_seen_ip = request.remote_addr
+            device.last_seen_at = now
+            db.commit()
+        elif heartbeat_due:
+            # Android опрашивает пустую очередь каждые несколько секунд.
+            # Не превращаем каждый GET в SQLite writer и не ждём занятую
+            # базу ради необязательной отметки «устройство в сети».
+            from sqlalchemy.exc import OperationalError
+            connection = db.connection()
+            try:
+                connection.exec_driver_sql(
+                    f"PRAGMA busy_timeout={_DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS}")
+                device.last_seen_ip = request.remote_addr
+                device.last_seen_at = now
+                db.commit()
+            except OperationalError:
+                db.rollback()
+            finally:
+                try:
+                    connection.exec_driver_sql("PRAGMA busy_timeout=5000")
+                except Exception:  # noqa: BLE001
+                    pass
+        else:
+            # Закрываем read-транзакцию явно: teardown вернёт соединение в
+            # pool, но до конца формирования ответа оно уже не держит lock.
+            db.rollback()
         return jsonify({'replies': out})
 
     @app.route('/api/replies/<int:reply_id>/done', methods=['POST'])
