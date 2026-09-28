@@ -1,0 +1,18 @@
+/* Shared, theme-aware interface icons. User messages and emoji stay untouched. */
+.ui-icon {
+    display: inline-block;
+    width: 1.2em;
+    height: 1.2em;
+    flex: 0 0 auto;
+    vertical-align: -.2em;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    overflow: visible;
+    pointer-events: none;
+}
+.ui-icon-sm { width: 1em; height: 1em; }
+.ui-icon-lg { width: 1.5em; height: 1.5em; }
+.gm-ico { display: inline-flex; align-items: center; justify-content: center; }

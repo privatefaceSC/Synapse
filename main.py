@@ -4416,6 +4416,119 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'folder_not_found'}), 404
         return jsonify({'ok': True, 'folder': row})
 
+    @app.route('/contacts/folders/<int:folder_id>/membership',
+               methods=['POST'])
+    def contacts_folder_membership(folder_id):
+        """Add/remove all of one contact's matching handles incrementally."""
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({'error': 'invalid_json'}), 400
+        contact_id = payload.get('contact_id')
+        included = payload.get('included')
+        if (isinstance(contact_id, bool)
+                or not isinstance(contact_id, int)
+                or contact_id <= 0):
+            return jsonify({'error': 'invalid_contact_id'}), 400
+        if not isinstance(included, bool):
+            return jsonify({'error': 'invalid_included'}), 400
+
+        from data.chat_folders import ChatFolder, ChatFolderMember
+        from data.contacts import Contact, MessengerHandle
+        db = get_db()
+        user_id = session['user_id']
+        folder = (db.query(ChatFolder)
+                  .filter(ChatFolder.id == folder_id,
+                          ChatFolder.user_id == user_id).first())
+        if folder is None:
+            return jsonify({'error': 'folder_not_found'}), 404
+        if folder.read_only:
+            return jsonify({
+                'error': 'folder_read_only',
+                'detail': 'Эту папку нельзя изменять из Synapse',
+            }), 409
+        contact = (db.query(Contact)
+                   .filter(Contact.id == contact_id,
+                           Contact.user_id == user_id).first())
+        if contact is None:
+            # Do not disclose whether the id belongs to another account.
+            return jsonify({'error': 'contact_not_found'}), 404
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.user_id == user_id,
+                           MessengerHandle.contact_id == contact.id,
+                           MessengerHandle.messenger_name ==
+                           folder.messenger_name)
+                   .order_by(MessengerHandle.id.asc()).all())
+        if not handles:
+            return jsonify({'error': 'contact_messenger_mismatch'}), 400
+
+        if folder.source == 'telegram':
+            if (folder.messenger_name != 'Telegram'
+                    or folder.remote_id is None
+                    or any(handle.tg_chat_id is None for handle in handles)):
+                return jsonify({'error': 'invalid_member_handles'}), 400
+            from data import telegram_bridge
+            remote_id = int(folder.remote_id)
+            chat_ids = list(dict.fromkeys(
+                int(handle.tg_chat_id) for handle in handles))
+            # The bridge fetches and merges into the fresh remote filter.  End
+            # this read transaction first so its snapshot writer is never
+            # blocked by a long Telegram round-trip.
+            db.rollback()
+            try:
+                telegram_bridge.set_dialog_folder_membership(
+                    remote_id, chat_ids, included=included,
+                    user_id=user_id)
+            except telegram_bridge.TelegramFolderError as exc:
+                return _chat_folder_error_response(exc)
+            db.expire_all()
+        elif folder.source == 'local':
+            handle_ids = [handle.id for handle in handles]
+            if included:
+                from sqlalchemy import func
+                current = {member.handle_id: member for member in
+                           db.query(ChatFolderMember)
+                           .filter(ChatFolderMember.folder_id == folder.id,
+                                   ChatFolderMember.handle_id.in_(handle_ids))
+                           .all()}
+                max_position = (db.query(func.max(
+                    ChatFolderMember.position))
+                    .filter(ChatFolderMember.folder_id == folder.id)
+                    .scalar())
+                next_position = int(max_position if max_position is not None
+                                    else -1) + 1
+                for handle in handles:
+                    member = current.get(handle.id)
+                    if member is None:
+                        db.add(ChatFolderMember(
+                            folder_id=folder.id, handle_id=handle.id,
+                            position=next_position, pinned=False,
+                            membership_source='explicit'))
+                        next_position += 1
+                    else:
+                        member.pinned = False
+                        member.membership_source = 'explicit'
+            else:
+                (db.query(ChatFolderMember)
+                 .filter(ChatFolderMember.folder_id == folder.id,
+                         ChatFolderMember.handle_id.in_(handle_ids))
+                 .delete(synchronize_session=False))
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                app.logger.exception(
+                    'Local chat folder membership update failed')
+                return jsonify({'error': 'folder_save_failed'}), 503
+        else:
+            return jsonify({'error': 'folder_read_only'}), 409
+
+        row = _single_folder_json(db, user_id, folder_id)
+        if row is None:
+            return jsonify({'error': 'folder_not_found'}), 404
+        return jsonify({'ok': True, 'folder': row})
+
     @app.route('/contacts/folders/<int:folder_id>', methods=['DELETE'])
     def contacts_folder_delete(folder_id):
         if not session.get('user_id'):

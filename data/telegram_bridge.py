@@ -3907,6 +3907,104 @@ async def _update_dialog_folder(remote_id, *, title=None,
 
 
 @_serialize_dialog_folder_process
+async def _set_dialog_folder_membership(remote_id, chat_ids, *, included,
+                                        user_id=None):
+    """Incrementally change selected peers in one fresh Telegram filter.
+
+    This intentionally does not accept the web UI's cached full membership:
+    another Telegram client may have edited the folder since that snapshot.
+    Only the requested peers are changed; every unrelated peer and filter flag
+    is left exactly as returned by Telegram under the shared mutation guard.
+    """
+    from telethon.tl import functions
+
+    owner = _normalize_user_id(user_id)
+    async with _dialog_folder_lock_for(owner):
+        client = await _get_client(owner)
+        if not await client.is_user_authorized():
+            raise TelegramFolderError(
+                "telegram_not_authorized", "Telegram не авторизован")
+
+        target_ids = tuple(dict.fromkeys(int(value) for value in chat_ids))
+        if not target_ids:
+            raise TelegramFolderError(
+                "invalid_member_handles",
+                "У контакта нет чата Telegram")
+
+        # Always merge into a just-fetched filter.  The database snapshot is
+        # display/cache state and must never be the source for this mutation.
+        filters = await _get_dialog_filters(client)
+        remote_filter = _remote_filter_by_id(filters, remote_id)
+        if remote_filter.__class__.__name__ == "DialogFilterChatlist":
+            raise TelegramFolderError(
+                "folder_read_only",
+                "Общая папка Telegram пока доступна только для просмотра")
+
+        pinned_peers = list(
+            getattr(remote_filter, "pinned_peers", ()) or ())
+        include_peers = list(
+            getattr(remote_filter, "include_peers", ()) or ())
+        exclude_peers = list(
+            getattr(remote_filter, "exclude_peers", ()) or ())
+        all_existing_peers = pinned_peers + include_peers + exclude_peers
+        target_peers = await _resolve_input_peers(
+            client, target_ids, all_existing_peers)
+        # Compare resolved, type-aware peer ids exactly.  User(42), Chat(42)
+        # and Channel(42) are distinct Telegram peers even though their bare
+        # numeric part is the same.
+        target_peer_ids = set(_dialog_folder_peer_ids(target_peers))
+
+        def is_target(peer):
+            peer_id = _dialog_folder_peer_id(peer)
+            return peer_id is not None and peer_id in target_peer_ids
+
+        def append_missing(peers, additions):
+            result = list(peers)
+            represented = set(_dialog_folder_peer_ids(result))
+            for peer in additions:
+                peer_id = _dialog_folder_peer_id(peer)
+                if peer_id is not None and peer_id in represented:
+                    continue
+                result.append(peer)
+                if peer_id is not None:
+                    represented.add(peer_id)
+            return result
+
+        if included:
+            # An explicit include wins over a rule/exclusion.  Keep an
+            # existing pin, but also put the peer in include_peers so the
+            # requested membership remains explicit if it is later unpinned.
+            exclude_peers = [peer for peer in exclude_peers
+                             if not is_target(peer)]
+            include_peers = append_missing(include_peers, target_peers)
+        else:
+            pinned_peers = [peer for peer in pinned_peers
+                            if not is_target(peer)]
+            include_peers = [peer for peer in include_peers
+                             if not is_target(peer)]
+            # Excluding the peer unconditionally is safe and prevents broad
+            # dynamic rules (contacts/groups/etc.) from immediately adding it
+            # back after its explicit include or pin is removed.
+            exclude_peers = append_missing(exclude_peers, target_peers)
+
+        remote_filter.pinned_peers = pinned_peers
+        remote_filter.include_peers = include_peers
+        remote_filter.exclude_peers = exclude_peers
+        if not _remote_filter_has_inclusion(remote_filter):
+            raise TelegramFolderError(
+                "folder_requires_chats",
+                "В папке Telegram должен остаться хотя бы один чат или тип чатов")
+
+        await client(functions.messages.UpdateDialogFilterRequest(
+            id=int(remote_id), filter=remote_filter))
+        fresh_filters = await _get_dialog_filters(client)
+        dialogs = await _get_existing_handle_dialogs(owner, client)
+        await asyncio.to_thread(
+            _write_dialog_folder_snapshot, owner, fresh_filters, dialogs)
+        _mark_shared_dialog_folder_refresh(owner)
+
+
+@_serialize_dialog_folder_process
 async def _delete_dialog_folder(remote_id, user_id=None):
     from telethon.tl import functions
 
@@ -4025,6 +4123,12 @@ def update_dialog_folder(remote_id, *, title=None, member_chat_ids=None,
     return _call_dialog_folder(_update_dialog_folder(
         remote_id, title=title, member_chat_ids=member_chat_ids,
         known_chat_ids=known_chat_ids, user_id=user_id), timeout=120)
+
+
+def set_dialog_folder_membership(remote_id, chat_ids, *, included,
+                                 user_id=None):
+    return _call_dialog_folder(_set_dialog_folder_membership(
+        remote_id, chat_ids, included=included, user_id=user_id), timeout=120)
 
 
 def delete_dialog_folder(remote_id, user_id=None):

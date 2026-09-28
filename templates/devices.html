@@ -79,7 +79,7 @@
 <div class="container dev-wrap">
     <div class="d-flex align-items-center justify-content-between mb-1">
         <h2 class="mb-0">Устройства</h2>
-        <a href="/code" class="btn btn-outline-primary btn-sm">+ Привязать</a>
+        <a href="/code" class="btn btn-outline-primary btn-sm"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#plus"></use></svg> Привязать</a>
     </div>
     <p class="text-muted small mb-3">
         Устройства, привязанные к вашему аккаунту. Отвязка немедленно
@@ -89,7 +89,7 @@
     {% if devices %}
         {% for d in devices %}
         <div class="dev-card card-soft device-row mb-3">
-            <div class="ico">📱</div>
+            <div class="ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#smartphone"></use></svg></div>
             <div class="flex-grow-1">
                 <div class="nm">{{ d.name }}</div>
                 <div class="meta">
@@ -112,7 +112,7 @@
         {% endfor %}
     {% else %}
         <div class="dev-card card-soft empty-dev">
-            <div class="big">📭</div>
+            <div class="big"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#inbox"></use></svg></div>
             <div class="fw-semibold mb-1">Нет привязанных устройств</div>
             <div class="small">
                 Откройте <a href="/code">страницу с кодом</a> и введите его

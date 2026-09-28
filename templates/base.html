@@ -11,6 +11,8 @@
     <link rel="manifest" href="/manifest.webmanifest">
     <link rel="icon" href="/static/synapse-icon.svg" type="image/svg+xml">
     <link rel="apple-touch-icon" href="/static/synapse-icon.svg">
+    <link rel="stylesheet" href="/static/ui-icons.css?v=1">
+    <script src="/static/ui-icons.js?v=1"></script>
     <script>
         // Применяем тему ДО загрузки стилей, чтобы не было мигания светлой темой.
         (function() {
@@ -93,31 +95,26 @@
                                 aria-label="Настройки"
                                 aria-haspopup="true"
                                 aria-expanded="false">
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
-                                 stroke="currentColor" stroke-width="2"
-                                 stroke-linecap="round" stroke-linejoin="round">
-                                <circle cx="12" cy="12" r="3"></circle>
-                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                            </svg>
+                            <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#settings"></use></svg>
                         </button>
                         <div id="gear-menu" class="gear-menu" role="menu">
                             <a href="/profile">
-                                <span class="gm-ico">👤</span>Профиль</a>
+                                <span class="gm-ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#user"></use></svg></span>Профиль</a>
                             <a href="/contacts/manage">
-                                <span class="gm-ico">🔗</span>Связи</a>
+                                <span class="gm-ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#link"></use></svg></span>Связи</a>
                             <a href="/devices">
-                                <span class="gm-ico">📱</span>Устройства</a>
+                                <span class="gm-ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#smartphone"></use></svg></span>Устройства</a>
                             <a href="/download">
-                                <span class="gm-ico">⤓</span>Клиент для Android</a>
+                                <span class="gm-ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#download"></use></svg></span>Клиент для Android</a>
                             <a href="/telegram">
-                                <span class="gm-ico">✈</span>Telegram</a>
+                                <span class="gm-ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#send"></use></svg></span>Telegram</a>
                             {% if session.get('can_manage_users') %}
                             <a href="/users">
-                                <span class="gm-ico">👥</span>Пользователи</a>
+                                <span class="gm-ico"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#users"></use></svg></span>Пользователи</a>
                             {% endif %}
                             <hr>
                             <button type="button" id="theme-toggle">
-                                <span class="gm-ico" id="theme-toggle-icon">🌙</span>
+                                <span class="gm-ico" id="theme-toggle-icon"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#moon"></use></svg></span>
                                 <span id="theme-toggle-label">Тёмная тема</span>
                             </button>
                         </div>
@@ -127,7 +124,7 @@
                     <a class="btn btn-sm btn-primary" href="/register">Регистрация</a>
                     <button id="theme-toggle"
                             class="btn btn-sm btn-outline-secondary gear-btn"
-                            title="Переключить тему" aria-label="Переключить тему">🌙</button>
+                            title="Переключить тему" aria-label="Переключить тему"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#moon"></use></svg></button>
                 {% endif %}
             </div>
         </div>
@@ -167,9 +164,9 @@
             function sync() {
                 var cur = document.documentElement.getAttribute('data-bs-theme');
                 if (ico) {
-                    ico.textContent = cur === 'dark' ? '☀' : '🌙';
+                    ico.innerHTML = window.synapseIcon(cur === 'dark' ? 'sun' : 'moon');
                 } else {
-                    btn.textContent = cur === 'dark' ? '☀' : '🌙';
+                    btn.innerHTML = window.synapseIcon(cur === 'dark' ? 'sun' : 'moon');
                 }
                 if (label) {
                     label.textContent = cur === 'dark'

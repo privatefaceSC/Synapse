@@ -1,4 +1,5 @@
 {% extends 'base.html' %}
+{% macro contact_icon(name) -%}<svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#{{ name }}"></use></svg>{%- endmacro %}
 
 {% block title %}{% if selected %}{{ selected.display_name }}{% else %}Контакты{% endif %}{% endblock %}
 
@@ -460,9 +461,9 @@
     .contact-search input:focus {
         border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
     }
-    .contact-search::before {
-        content: "🔍"; position: absolute; left: 13px; top: 50%;
-        transform: translateY(-50%); font-size: 13px; opacity: .55;
+    .contact-search > .search-icon {
+        position: absolute; left: 13px; top: 50%;
+        transform: translateY(-50%); font-size: 16px; opacity: .55;
         pointer-events: none;
     }
     .contact-list {
@@ -1479,8 +1480,11 @@
      * вертикальный overflow → у composer появлялся «ползунок». */
     .bubble-row .bubble { position: relative; }
     .bubble-row.pinned .bubble::before {
-        content: '📌'; position: absolute; top: 4px; right: 6px;
-        font-size: 11px; opacity: .8; pointer-events: none;
+        content: ''; position: absolute; top: 4px; right: 6px;
+        width: 13px; height: 13px; opacity: .8; pointer-events: none;
+        background: currentColor;
+        -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m16 9 3 3v2H5v-2l3-3V3h8v6ZM12 14v7' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
+        mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='m16 9 3 3v2H5v-2l3-3V3h8v6ZM12 14v7' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/contain no-repeat;
     }
     /* Чуть сдвигаем правый край text-блока, чтобы значок не наезжал
      * на длинный текст. */
@@ -4248,28 +4252,28 @@
     </span>
 </button>
 <div class="contacts-app-menu-panel" data-contacts-menu-panel role="menu">
-    <a href="/"><span class="menu-ico">⌂</span>Главная</a>
-    <a href="/contacts"><span class="menu-ico">◉</span>Контакты</a>
+    <a href="/"><span class="menu-ico">{{ contact_icon('home') }}</span>Главная</a>
+    <a href="/contacts"><span class="menu-ico">{{ contact_icon('messages') }}</span>Контакты</a>
     <hr>
-    <a href="/profile"><span class="menu-ico">●</span>Профиль</a>
-    <a href="/contacts/manage"><span class="menu-ico">↔</span>Связи</a>
+    <a href="/profile"><span class="menu-ico">{{ contact_icon('user') }}</span>Профиль</a>
+    <a href="/contacts/manage"><span class="menu-ico">{{ contact_icon('link') }}</span>Связи</a>
     {% if archive_mode %}
-    <a href="/contacts"><span class="menu-ico">←</span>Все чаты</a>
+    <a href="/contacts"><span class="menu-ico">{{ contact_icon('chevron-left') }}</span>Все чаты</a>
     {% else %}
-    <a href="/contacts?archived=1"><span class="menu-ico">↙</span>Архив</a>
+    <a href="/contacts?archived=1"><span class="menu-ico">{{ contact_icon('archive') }}</span>Архив</a>
     {% endif %}
-    <a href="/devices"><span class="menu-ico">▣</span>Устройства</a>
-    <a href="/telegram"><span class="menu-ico">✈</span>Telegram</a>
-    <a href="/download"><span class="menu-ico">⇩</span>Клиент Android</a>
+    <a href="/devices"><span class="menu-ico">{{ contact_icon('smartphone') }}</span>Устройства</a>
+    <a href="/telegram"><span class="menu-ico">{{ contact_icon('send') }}</span>Telegram</a>
+    <a href="/download"><span class="menu-ico">{{ contact_icon('download') }}</span>Клиент Android</a>
     {% if session.get('can_manage_users') %}
-    <a href="/users"><span class="menu-ico">♟</span>Пользователи</a>
+    <a href="/users"><span class="menu-ico">{{ contact_icon('users') }}</span>Пользователи</a>
     {% endif %}
     <hr>
     <button type="button" data-contacts-theme-toggle>
-        <span class="menu-ico" data-contacts-theme-icon>◐</span>
+        <span class="menu-ico" data-contacts-theme-icon>{{ contact_icon('moon') }}</span>
         <span data-contacts-theme-label>Тема</span>
     </button>
-    <a href="/logout" class="danger"><span class="menu-ico">⎋</span>Выход</a>
+    <a href="/logout" class="danger"><span class="menu-ico">{{ contact_icon('log-out') }}</span>Выход</a>
 </div>
 <div class="sticker-peek" id="sticker-peek" hidden aria-hidden="true">
     <div class="sticker-peek-inner" id="sticker-peek-inner"></div>
@@ -4298,7 +4302,7 @@
 
         function syncThemeLabel() {
             const cur = document.documentElement.getAttribute('data-bs-theme');
-            if (themeIcon) themeIcon.textContent = cur === 'dark' ? '☀' : '◐';
+            if (themeIcon) themeIcon.innerHTML = window.synapseIcon(cur === 'dark' ? 'sun' : 'moon');
             if (themeLabel) {
                 themeLabel.textContent = cur === 'dark'
                     ? 'Светлая тема' : 'Тёмная тема';
@@ -4393,7 +4397,7 @@
         <div class="col-md-4 h-100 {% if selected %}d-none d-md-flex{% endif %}" id="col-list">
             {% if archive_mode %}
             <div class="archive-head">
-                <a href="/contacts" class="archive-back" aria-label="Все чаты">←</a>
+                <a href="/contacts" class="archive-back" aria-label="Все чаты">{{ contact_icon('chevron-left') }}</a>
                 <div>
                     <div class="archive-title">Архив</div>
                     <div class="archive-sub">Скрытые чаты</div>
@@ -4401,12 +4405,13 @@
             </div>
             {% endif %}
             <div class="contact-search has-new-chat">
+                <span class="search-icon">{{ contact_icon('search') }}</span>
                 <input type="search" id="contact-search-input" autocomplete="off"
                        placeholder="Поиск по контактам и сообщениям…">
                 <button type="button" id="new-synapse-chat" class="new-synapse-chat"
-                        title="Новый чат Synapse" aria-label="Новый чат Synapse">+</button>
+                        title="Новый чат Synapse" aria-label="Новый чат Synapse">{{ contact_icon('plus') }}</button>
                 <button type="button" id="enable-notif-btn" class="enable-notif"
-                        hidden title="Включить уведомления о новых сообщениях">🔔</button>
+                        hidden title="Включить уведомления о новых сообщениях">{{ contact_icon('bell') }}</button>
                 <div class="search-results" id="search-results" role="listbox"></div>
             </div>
             <div class="messenger-folders" id="messenger-folders"></div>
@@ -4438,7 +4443,7 @@
                             <span class="flex-fill" style="min-width:0;">
                                 <span class="creator-suggestion-name">
                                     {{ creator.display_name }}
-                                    <span class="creator-inline">★ {{ creator.creator_title }}</span>
+                                    <span class="creator-inline">{{ contact_icon('crown') }} {{ creator.creator_title }}</span>
                                 </span>
                                 <span class="creator-suggestion-meta">
                                     @{{ creator.username }} ·
@@ -4474,8 +4479,8 @@
                             <div class="contact-meta">
                                 <div class="d-flex justify-content-between">
                                     <span class="name">{{ c.display_name }}{% if c.is_creator %}<span
-                                        class="creator-inline">★ {{ c.creator_title }}</span>{% endif %}<span
-                                        class="status-marks">{% if c.pinned_at %}📌{% endif %}{% if c.muted %}🔇{% endif %}</span></span>
+                                        class="creator-inline">{{ contact_icon('crown') }} {{ c.creator_title }}</span>{% endif %}<span
+                                        class="status-marks">{% if c.pinned_at %}{{ contact_icon('pin') }}{% endif %}{% if c.muted %}{{ contact_icon('bell-off') }}{% endif %}</span></span>
                                     <span class="time">{{ c.last_time or '' }}</span>
                                 </div>
                                 {% if c.presence %}
@@ -4508,7 +4513,7 @@
                         </a>
                         <button type="button" class="contact-kebab"
                                 aria-label="Меню"
-                                onclick="openContactMenu(this, {{ c.id }});">⋮</button>
+                                onclick="openContactMenu(this, {{ c.id }});">{{ contact_icon('more-vertical') }}</button>
                     </div>
                     {% endfor %}
                 {% else %}
@@ -4550,7 +4555,7 @@
                          data-chat-type="{{ chat_type or '' }}"
                          data-messengers="{{ (messengers or [])|join(',') }}">
                         <div class="feed-header-top">
-                            <a href="/contacts" class="feed-back-btn d-md-none" aria-label="Назад">←</a>
+                            <a href="/contacts" class="feed-back-btn d-md-none" aria-label="Назад">{{ contact_icon('chevron-left') }}</a>
                             {% if selected.avatar_url %}
                             <span class="avatar"><img src="{{ selected.avatar_url }}" alt=""></span>
                             {% else %}
@@ -4560,7 +4565,7 @@
                             {% endif %}
                             <div class="flex-fill" style="min-width:0;">
                                 <div class="fw-semibold text-truncate">{{ selected.display_name }}{% if selected.is_creator %}<span
-                                    class="creator-inline">★ {{ selected.creator_title }}</span>{% endif %}</div>
+                                    class="creator-inline">{{ contact_icon('crown') }} {{ selected.creator_title }}</span>{% endif %}</div>
                                 <div class="text-muted small text-truncate feed-header-subline{% if selected_activity and selected_activity.active %} is-typing{% endif %}">
                                     <span class="feed-header-typing chat-activity"
                                           data-activity-kind="{{ selected_activity.kind if selected_activity and selected_activity.active else '' }}">
@@ -4637,12 +4642,12 @@
                                     {% if m.deleted_at %}
                                     <div class="deleted-banner"
                                          title="Сообщение удалили в мессенджере, но мы успели сохранить">
-                                        🗑 {% if m.outgoing %}Вы удалили это сообщение{% else %}Удалено собеседником{% endif %}
+                                        {{ contact_icon('trash') }} {% if m.outgoing %}Вы удалили это сообщение{% else %}Удалено собеседником{% endif %}
                                     </div>
                                     {% endif %}
                                     {% if m.fwd_quote %}
                                     <div class="fwd-header" title="Это сообщение переслано">
-                                        <span class="fwd-ico">↪</span><span class="fwd-label">Переслано от </span>
+                                        <span class="fwd-ico">{{ contact_icon('forward') }}</span><span class="fwd-label">Переслано от </span>
                                         {% if m.fwd_quote.url %}
                                             <a class="fwd-name fwd-link"
                                                href="{{ m.fwd_quote.url }}"
@@ -4666,7 +4671,7 @@
                                         {% set media_availability = a.availability|default('local', true) %}
                                         {% if media_availability != 'local' %}
                                         {% set media_title = 'Фото' if a.kind == 'image' else ('Видео' if a.kind == 'video' else ('Видеосообщение' if a.kind == 'video_note' else ('Голосовое сообщение' if a.kind == 'voice' else ('Аудио' if a.kind == 'audio' else 'Файл')))) %}
-                                        {% set media_icon = '📷' if a.kind == 'image' else ('🎥' if a.kind == 'video' else ('⏺' if a.kind == 'video_note' else ('🎤' if a.kind == 'voice' else ('🎵' if a.kind == 'audio' else '📎')))) %}
+                                        {% set media_icon = 'image' if a.kind == 'image' else ('video' if a.kind == 'video' else ('circle-video' if a.kind == 'video_note' else ('mic' if a.kind == 'voice' else ('music' if a.kind == 'audio' else 'file')))) %}
                                         <span class="media-remote-wrap kind-{{ a.kind }}">
                                             <button type="button"
                                                     class="media-video-load media-remote-load"
@@ -4676,7 +4681,7 @@
                                                     data-media-kind="{{ a.kind }}"
                                                     title="Загрузить {{ media_title|lower }}"
                                                     {% else %}disabled title="Файл недоступен"{% endif %}>
-                                                <span class="media-video-load-ico">{{ media_icon }}</span>
+                                                <span class="media-video-load-ico">{{ contact_icon(media_icon) }}</span>
                                                 <strong>{{ media_title }}</strong>
                                                 <small>{% if media_availability == 'remote' %}Не загружено · нажмите, чтобы загрузить{% else %}Файл недоступен{% endif %}</small>
                                             </button>
@@ -4691,7 +4696,7 @@
                                         <button class="sticker-tgs" type="button"
                                                 data-sticker-attachment-id="{{ a.id }}"
                                                 {% if m.messenger_name == 'Telegram' or a.sticker_pack_key %}data-sticker-pack-id="{{ a.id }}"{% endif %}>
-                                            <span>✦</span><span>Анимированный стикер</span>
+                                            {{ contact_icon('sticker') }}<span>Анимированный стикер</span>
                                         </button>
                                         {% else %}
                                         <img class="sticker-img" src="/attachments/{{ a.id }}"
@@ -4705,7 +4710,7 @@
                                               data-video-kind="video_note">
                                             <button type="button" class="media-video-load"
                                                     title="Загрузить видеосообщение">
-                                                <span class="media-video-load-ico">▶</span>
+                                                <span class="media-video-load-ico">{{ contact_icon('play') }}</span>
                                                 <strong>Видеосообщение</strong>
                                                 <small>Нажмите, чтобы загрузить</small>
                                             </button>
@@ -4716,7 +4721,7 @@
                                               data-video-kind="video">
                                             <button type="button" class="media-video-load"
                                                     title="Загрузить видео">
-                                                <span class="media-video-load-ico">▶</span>
+                                                <span class="media-video-load-ico">{{ contact_icon('play') }}</span>
                                                 <strong>Видео</strong>
                                                 <small>Нажмите, чтобы загрузить</small>
                                             </button>
@@ -4731,7 +4736,7 @@
                                                controls preload="none"></audio>
                                         {% elif a.kind == 'file' %}
                                         <a class="media-file" href="/attachments/{{ a.id }}" download>
-                                            <span class="file-ico">📎</span>
+                                            <span class="file-ico">{{ contact_icon('file') }}</span>
                                             <span class="file-name">{{ a.original_name or 'Файл' }}</span>
                                         </a>
                                         {% else %}
@@ -4742,14 +4747,14 @@
                                     {% endfor %}
                                     {% if m.media_restore_kind and not m.media %}
                                     {% set media_title = 'Фото' if m.media_restore_kind == 'image' else ('Видео' if m.media_restore_kind == 'video' else ('Видеосообщение' if m.media_restore_kind == 'video_note' else ('Голосовое сообщение' if m.media_restore_kind == 'voice' else ('Аудио' if m.media_restore_kind == 'audio' else 'Файл')))) %}
-                                    {% set media_icon = '📷' if m.media_restore_kind == 'image' else ('🎥' if m.media_restore_kind == 'video' else ('⏺' if m.media_restore_kind == 'video_note' else ('🎤' if m.media_restore_kind == 'voice' else ('🎵' if m.media_restore_kind == 'audio' else '📎')))) %}
+                                    {% set media_icon = 'image' if m.media_restore_kind == 'image' else ('video' if m.media_restore_kind == 'video' else ('circle-video' if m.media_restore_kind == 'video_note' else ('mic' if m.media_restore_kind == 'voice' else ('music' if m.media_restore_kind == 'audio' else 'file')))) %}
                                     <span class="media-remote-wrap kind-{{ m.media_restore_kind }}">
                                         <button type="button"
                                                 class="media-video-load media-remote-load"
                                                 data-restore-url="/messages/{{ m.id }}/telegram-media/restore"
                                                 data-media-kind="{{ m.media_restore_kind }}"
                                                 title="Загрузить {{ media_title|lower }}">
-                                            <span class="media-video-load-ico">{{ media_icon }}</span>
+                                            <span class="media-video-load-ico">{{ contact_icon(media_icon) }}</span>
                                             <strong>{{ media_title }}</strong>
                                             <small>Не загружено · нажмите, чтобы загрузить</small>
                                         </button>
@@ -4760,7 +4765,7 @@
                                     {% endif %}
                                     {% if m.text and m.text|length == 1024 %}
                                     <div class="truncated-note">
-                                        ⚠ Сообщение обрезано Android до 1024 символов.
+                                        {{ contact_icon('alert-circle') }} Сообщение обрезано Android до 1024 символов.
                                         Откройте {{ m.messenger_name }}, чтобы прочесть целиком.
                                     </div>
                                     {% endif %}
@@ -4784,12 +4789,12 @@
                                         <span class="time">{{ m.time }}</span>
                                         {% if m.tg_ttl_seconds %}
                                         <span class="ttl-mark"
-                                              title="Одноразовое сообщение — собеседник поставил автоудаление через {{ m.tg_ttl_seconds }} с, но мы сохранили">🔥</span>
+                                              title="Одноразовое сообщение — собеседник поставил автоудаление через {{ m.tg_ttl_seconds }} с, но мы сохранили">{{ contact_icon('clock') }}</span>
                                         {% endif %}
                                         {% if m.edit_history %}
                                         <button type="button" class="edited-badge"
                                                 title="Показать историю изменений"
-                                                data-edits-btn="1">📝 ред.{% if m.edit_history|length > 1 %} ×{{ m.edit_history|length }}{% endif %}</button>
+                                                data-edits-btn="1">{{ contact_icon('pencil') }} ред.{% if m.edit_history|length > 1 %} ×{{ m.edit_history|length }}{% endif %}</button>
                                         {% endif %}
                                         {% if m.outgoing and m.tg_message_id %}
                                         <span class="tg-tick{% if m.tg_read_at %} read{% endif %}"
@@ -4827,7 +4832,7 @@
                         <div class="composer-preview" id="composer-preview" hidden></div>
                         {% if reply_via in ['telegram', 'synapse'] %}
                         <button type="button" class="attach-btn" id="composer-attach"
-                                title="Прикрепить файл">📎</button>
+                                title="Прикрепить файл">{{ contact_icon('paperclip') }}</button>
                         <input type="file" id="composer-file" multiple hidden>
                         {% endif %}
                         <textarea id="composer-text" rows="1"
@@ -4856,7 +4861,7 @@
                         </div>
                         <button type="button" class="cn-toggle"
                                 data-muted="{{ '1' if notifications_muted else '0' }}">
-                            {% if notifications_muted %}🔔 Включить уведомления{% else %}🔕 Выключить уведомления{% endif %}
+                            {% if notifications_muted %}{{ contact_icon('bell') }} Включить уведомления{% else %}{{ contact_icon('bell-off') }} Выключить уведомления{% endif %}
                         </button>
                     </div>
                     {% endif %}
@@ -4939,10 +4944,10 @@
 <div class="avatar-lightbox" id="avatar-lightbox" hidden aria-hidden="true">
     <span class="al-close" id="al-close" title="Закрыть">&times;</span>
     <button type="button" class="al-nav al-prev" id="al-prev"
-            aria-label="Предыдущее фото">‹</button>
+            aria-label="Предыдущее фото">{{ contact_icon('chevron-left') }}</button>
     <img id="al-img" src="" alt="фото профиля">
     <button type="button" class="al-nav al-next" id="al-next"
-            aria-label="Следующее фото">›</button>
+            aria-label="Следующее фото">{{ contact_icon('chevron-right') }}</button>
     <div class="al-counter" id="al-counter"></div>
 </div>
 
@@ -4953,12 +4958,12 @@
 <div class="selection-bar" id="selection-bar" hidden role="toolbar"
      aria-label="Действия с выбранными сообщениями">
     <button type="button" class="sb-cancel" id="sb-cancel"
-            aria-label="Отменить выбор">✕</button>
+            aria-label="Отменить выбор">{{ contact_icon('close') }}</button>
     <span class="sb-count" id="sb-count">0 выбрано</span>
     <button type="button" class="sb-forward" id="sb-forward">
-        ↪ Переслать</button>
+        {{ contact_icon('forward') }} Переслать</button>
     <button type="button" class="sb-delete" id="sb-delete">
-        🗑 Удалить</button>
+        {{ contact_icon('trash') }} Удалить</button>
 </div>
 <div class="selection-delete-menu" id="selection-delete-menu" hidden>
     <button type="button" data-scope="self">Удалить у меня</button>
@@ -4967,10 +4972,10 @@
 
 <div class="send-menu" id="send-menu" hidden role="menu">
     <button type="button" data-action="silent">
-        <span class="sm-ico">🔕</span>Отправить без звука
+        <span class="sm-ico">{{ contact_icon('bell-off') }}</span>Отправить без звука
     </button>
     <button type="button" data-action="schedule">
-        <span class="sm-ico">🕓</span>Отправить позже…
+        <span class="sm-ico">{{ contact_icon('clock') }}</span>Отправить позже…
     </button>
 </div>
 
@@ -5015,7 +5020,7 @@
     <form class="cmt-input" id="cmt-input">
         <textarea id="cmt-text" rows="1"
                   placeholder="Написать комментарий…"></textarea>
-        <button type="submit" class="cmt-send" id="cmt-send">▶</button>
+        <button type="submit" class="cmt-send" id="cmt-send" aria-label="Отправить">{{ contact_icon('send') }}</button>
     </form>
 </div>
 
@@ -5272,7 +5277,7 @@
                         + '" controls preload="none"></audio>';
                 } else if (c.media_kind === 'file') {
                     mediaHtml = '<a class="media-file" href="' + url
-                        + '" download><span class="file-ico">📎</span>'
+                        + '" download><span class="file-ico">' + window.synapseIcon('file') + '</span>'
                         + '<span class="file-name">Файл</span></a>';
                 } else {
                     mediaHtml = '<img class="cmt-media" src="' + url
@@ -5318,7 +5323,7 @@
             + '<textarea id="comments-thread-text" rows="1"'
             + ' placeholder="Написать комментарий…"></textarea>'
             + '<button type="submit" class="cmt-send"'
-            + ' id="comments-thread-send">▶</button>'
+            + ' id="comments-thread-send" aria-label="Отправить">' + window.synapseIcon('send') + '</button>'
             + '</form></div>';
         threadList = document.getElementById('comments-thread-list');
         threadForm = document.getElementById('comments-thread-input');
@@ -5529,6 +5534,8 @@
 
 <script src="{{ url_for('static', filename='contacts_media.js') }}"></script>
 <script src="{{ url_for('static', filename='contacts_drafts.js') }}"></script>
+<link rel="stylesheet" href="{{ url_for('static', filename='contacts_folder_menu.css') }}">
+<script src="{{ url_for('static', filename='contacts_folder_menu.js') }}"></script>
 <script>
 // Полноэкранный просмотр фото: клик по .media-img открывает оверлей поверх
 // страницы (не переход по ссылке и не скачивание). Делегирование на document —
@@ -5932,7 +5939,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         notifBtn.hidden = (perm !== 'default');
         if (perm === 'denied') {
             notifBtn.hidden = false;
-            notifBtn.textContent = '🔕';
+            notifBtn.innerHTML = window.synapseIcon('bell-off');
             notifBtn.title = 'Уведомления отключены в настройках браузера';
         }
     }
@@ -6074,7 +6081,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function creatorBadgeHtml(item) {
         if (!item || !item.is_creator) return '';
-        return '<span class="creator-inline">★ '
+        return '<span class="creator-inline">' + window.synapseIcon('crown') + ' '
             + escapeHtml(item.creator_title || 'Создатель') + '</span>';
     }
 
@@ -6227,7 +6234,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const isActive = String(c.id) === String(list.dataset.activeId || '');
             const badge = (c.unread_count && c.unread_count > 0)
                 ? `<span class="badge-unread${c.muted ? ' muted' : ''}">${c.unread_count}</span>` : '';
-            const marks = (c.pinned ? '📌' : '') + (c.muted ? '🔇' : '');
+            const marks = (c.pinned ? window.synapseIcon('pin') : '') + (c.muted ? window.synapseIcon('bell-off') : '');
             const presence = c.presence
                 ? `<div class="contact-presence${c.presence.online ? ' online' : ''}"
                         title="${escapeHtml(c.presence.detail || c.presence.label || '')}">
@@ -6265,7 +6272,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     </div>
                 </a>
                 <button type="button" class="contact-kebab" aria-label="Меню"
-                        onclick="openContactMenu(this, ${c.id})">⋮</button>
+                        onclick="openContactMenu(this, ${c.id})">${window.synapseIcon('more-vertical')}</button>
             </div>`;
         }).join('');
         list.innerHTML = creatorsHtml + rowsHtml;
@@ -6367,6 +6374,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let openMenu = null;
 
     function closeOpenMenu() {
+        if (window.synapseFolderMenu) window.synapseFolderMenu.close();
         if (openMenu) {
             openMenu.remove();
             openMenu = null;
@@ -6386,30 +6394,47 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         window.__skillwoodMenuOpen = true;
         const wrap = button.closest('.contact-row-wrap');
         const menu = document.createElement('div');
-        menu.className = 'popover-menu';
+        menu.className = 'popover-menu contact-context-menu';
+        menu.setAttribute('role', 'menu');
+        menu.setAttribute('aria-label', 'Действия с чатом');
+        menu._contactWrap = wrap;
         menu.dataset.contactId = String(contactId);
-        menu.style.top = (button.offsetTop + button.offsetHeight) + 'px';
-        menu.style.right = '6px';
         const isPinned = wrap.dataset.pinned === '1';
         const isMuted = wrap.dataset.muted === '1';
         const isArchived = wrap.dataset.archived === '1';
         menu.innerHTML =
             '<button class="pin-btn" type="button">'
-                + '<span class="menu-ico">📌</span>'
+                + window.synapseIcon(isPinned ? 'pin-off' : 'pin', 'menu-ico')
                 + (isPinned ? 'Открепить' : 'Закрепить') + '</button>' +
             '<button class="mute-btn" type="button">'
-                + '<span class="menu-ico">' + (isMuted ? '🔔' : '🔇') + '</span>'
+                + window.synapseIcon(isMuted ? 'bell' : 'bell-off', 'menu-ico')
                 + (isMuted ? 'Включить звук' : 'Без звука') + '</button>' +
             '<button class="archive-btn" type="button">'
-                + '<span class="menu-ico">' + (isArchived ? '↩' : '↙') + '</span>'
+                + window.synapseIcon(isArchived ? 'archive-restore' : 'archive', 'menu-ico')
                 + (isArchived ? 'Вернуть из архива' : 'Архивировать') + '</button>' +
+            '<button class="folder-btn" type="button">'
+                + window.synapseIcon('folder-plus', 'menu-ico')
+                + '<span>Добавить в папку</span>'
+                + window.synapseIcon('chevron-right', 'menu-chevron') + '</button>' +
             '<div class="menu-divider"></div>' +
             '<button class="rename-btn" type="button">'
-                + '<span class="menu-ico">✏</span>Переименовать</button>' +
+                + window.synapseIcon('pencil', 'menu-ico') + 'Переименовать</button>' +
             '<button class="delete-btn danger" type="button">'
-                + '<span class="menu-ico">🗑</span>Удалить</button>';
-        wrap.appendChild(menu);
+                + window.synapseIcon('trash', 'menu-ico') + 'Удалить</button>';
+        document.body.appendChild(menu);
         openMenu = menu;
+        const anchorRect = button.getBoundingClientRect();
+        menu.style.left = Math.max(8, Math.min(anchorRect.left,
+            window.innerWidth - menu.offsetWidth - 8)) + 'px';
+        menu.style.top = Math.max(8, Math.min(anchorRect.bottom + 4,
+            window.innerHeight - menu.offsetHeight - 8)) + 'px';
+        const messengers = (wrap.dataset.messengers || '').split(',')
+            .map(value => value.trim()).filter(Boolean);
+        let activeMessenger = '';
+        try { activeMessenger = localStorage.getItem('skillwood:active-folder') || ''; } catch (_) {}
+        window.synapseFolderMenu.attach(menu.querySelector('.folder-btn'), {
+            contactId, messengers, messenger: activeMessenger,
+        });
 
         menu.querySelector('.pin-btn').addEventListener('click', (e) => {
             e.stopPropagation();
@@ -6443,7 +6468,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         wrap.classList.toggle('pinned', !!pinned);
         const marksEl = wrap.querySelector('.contact-row .status-marks');
         if (marksEl) {
-            marksEl.textContent = (pinned ? '📌' : '') + (muted ? '🔇' : '');
+            marksEl.innerHTML = (pinned ? window.synapseIcon('pin') : '')
+                + (muted ? window.synapseIcon('bell-off') : '');
         }
     }
 
@@ -6531,7 +6557,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     function startRename(menu, contactId) {
-        const nameEl = menu.closest('.contact-row-wrap').querySelector('.contact-row .name');
+        window.synapseFolderMenu.close();
+        const nameEl = menu._contactWrap.querySelector('.contact-row .name');
         const currentName = nameEl.textContent.trim();
         menu.innerHTML = '';
         const input = document.createElement('input');
@@ -6601,12 +6628,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     document.addEventListener('click', (e) => {
         if (!openMenu) return;
         if (openMenu.contains(e.target)) return;
-        if (e.target.classList && e.target.classList.contains('contact-kebab')) return;
+        if (e.target.closest('.contact-folder-submenu, .contact-kebab')) return;
         closeOpenMenu();
     });
     document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && openMenu) closeOpenMenu();
+        if (e.key === 'Escape' && !e.defaultPrevented && openMenu) closeOpenMenu();
     });
+    window.addEventListener('synapse:folder-create', closeOpenMenu);
+    window.addEventListener('resize', closeOpenMenu);
 })();
 </script>
 
@@ -6659,15 +6688,15 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             : '';
         const items = [];
         if (isDeleted) {
-            items.push('<div class="menu-note">🗑 В мессенджере это '
+            items.push('<div class="menu-note">' + window.synapseIcon('trash') + ' В мессенджере это '
                 + 'сообщение удалено. Видна только локальная копия — '
                 + 'реакции и редактирование недоступны.</div>');
             items.push('<div class="menu-divider"></div>');
             items.push('<button class="copy-btn" type="button">'
-                + '<span class="menu-ico">📋</span>Копировать</button>');
+                + '<span class="menu-ico">' + window.synapseIcon('copy') + '</span>Копировать</button>');
             items.push('<div class="menu-divider"></div>');
             items.push('<button class="delete-local-btn danger" type="button">'
-                + '<span class="menu-ico">🗑</span>Удалить локальную копию</button>');
+                + '<span class="menu-ico">' + window.synapseIcon('trash') + '</span>Удалить локальную копию</button>');
         } else {
             if (isTelegram) {
                 const emojiRow = '<div class="menu-reactions">' +
@@ -6681,32 +6710,32 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             }
             if (canReply) {
                 items.push('<button class="reply-msg-btn" type="button">'
-                    + '<span class="menu-ico">↩</span>Ответить</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('reply') + '</span>Ответить</button>');
             }
             items.push('<button class="forward-msg-btn" type="button">'
-                + '<span class="menu-ico">↪</span>Переслать…</button>');
+                + '<span class="menu-ico">' + window.synapseIcon('forward') + '</span>Переслать…</button>');
             if (stickerAttachmentId) {
                 items.push('<button class="save-sticker-btn" type="button">'
-                    + '<span class="menu-ico">⭐</span>Сохранить стикер</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('sticker') + '</span>Сохранить стикер</button>');
             }
             if (isTelegram) {
                 items.push('<button class="select-msg-btn" type="button">'
-                    + '<span class="menu-ico">☑</span>Выбрать сообщения</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('check-square') + '</span>Выбрать сообщения</button>');
             }
             items.push('<button class="copy-btn" type="button">'
-                + '<span class="menu-ico">📋</span>Копировать</button>');
+                + '<span class="menu-ico">' + window.synapseIcon('copy') + '</span>Копировать</button>');
             // Перевод доступен только если есть исходный текст; для своих
             // сообщений тоже разрешаем — иногда хочется проверить как
             // звучит фраза на другом языке.
             if (text && text.length > 0) {
                 items.push('<button class="translate-msg-btn" type="button">'
-                    + '<span class="menu-ico">🌐</span>Перевести</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('globe') + '</span>Перевести</button>');
             }
             // Закреп: «Прикрепить» / «Открепить» в зависимости от текущего
             // состояния bubble. Доступно и для исходящих, и для входящих.
             const isPinned = !!(row && row.classList.contains('pinned'));
             items.push('<button class="pin-msg-btn" type="button">'
-                + '<span class="menu-ico">📌</span>'
+                + '<span class="menu-ico">' + window.synapseIcon(isPinned ? 'pin-off' : 'pin') + '</span>'
                 + (isPinned ? 'Открепить' : 'Прикрепить')
                 + '</button>');
             // Комментарии — для постов канала. Бэк сам проверит, что
@@ -6714,11 +6743,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             // покажет уведомление, что комментариев нет.
             if (isTelegram) {
                 items.push('<button class="comments-msg-btn" type="button">'
-                    + '<span class="menu-ico">💬</span>Комментарии</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('message-circle') + '</span>Комментарии</button>');
             }
             if (outgoing) {
                 items.push('<button class="edit-msg-btn" type="button">'
-                    + '<span class="menu-ico">✏</span>Изменить</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('pencil') + '</span>Изменить</button>');
             }
             items.push('<div class="menu-divider"></div>');
             // Telegram: два варианта — у себя / у всех. Для входящих в TG
@@ -6728,17 +6757,17 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (isTelegram) {
                 items.push('<button class="delete-msg-btn danger" type="button"'
                     + ' data-scope="self">'
-                    + '<span class="menu-ico">🗑</span>Удалить у меня</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('trash') + '</span>Удалить у меня</button>');
                 if (outgoing) {
                     items.push('<button class="delete-msg-btn danger" type="button"'
                         + ' data-scope="all">'
-                        + '<span class="menu-ico">🗑</span>'
+                        + '<span class="menu-ico">' + window.synapseIcon('trash') + '</span>'
                         + 'Удалить у всех</button>');
                 }
             } else {
                 items.push('<button class="delete-msg-btn danger" type="button"'
                     + ' data-scope="self">'
-                    + '<span class="menu-ico">🗑</span>Удалить сообщение</button>');
+                    + '<span class="menu-ico">' + window.synapseIcon('trash') + '</span>Удалить сообщение</button>');
             }
         }
         menu.innerHTML = items.join('');
@@ -6869,7 +6898,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 if (existing) { existing.remove(); return; }
                 const box = document.createElement('div');
                 box.className = 'msg-translation';
-                box.innerHTML = '<div class="mt-status">🌐 Переводится…</div>';
+                box.innerHTML = '<div class="mt-status">' + window.synapseIcon('globe') + ' Переводится…</div>';
                 bubble.appendChild(box);
                 try {
                     const r = await fetch('/messages/' + messageId
@@ -6880,10 +6909,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     const d = await r.json().catch(() => ({}));
                     if (r.ok && d.ok && d.text) {
                         box.innerHTML =
-                            '<div class="mt-head">🌐 Перевод ('
+                            '<div class="mt-head">' + window.synapseIcon('globe') + ' Перевод ('
                             + escapeHtml((d.lang || '').toUpperCase())
                             + ') <button type="button" class="mt-close"'
-                            + ' title="Скрыть перевод">×</button></div>'
+                            + ' title="Скрыть перевод">' + window.synapseIcon('close') + '</button></div>'
                             + '<div class="mt-body">'
                             + escapeHtml(d.text)
                             + '</div>';
@@ -7540,7 +7569,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function creatorBadgeHtml(item) {
         if (!item || !item.is_creator) return '';
-        return '<span class="creator-inline">★ '
+        return '<span class="creator-inline">' + window.synapseIcon('crown') + ' '
             + escapeHtml(item.creator_title || 'Создатель') + '</span>';
     }
 
@@ -8019,11 +8048,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const backToTopics = (isForum && topicId)
             ? `<button type="button" class="feed-back-btn"
                        title="Назад к списку тем"
-                       data-back-to-topics="1">📋</button>`
+                       data-back-to-topics="1">${window.synapseIcon('list')}</button>`
             : '';
         if (isForum) {
             subline = topicId
-                ? 'Тема в форуме · нажмите 📋 чтобы вернуться к списку'
+                ? 'Тема в форуме · нажмите кнопку списка, чтобы вернуться к темам'
                 : 'Форум — выберите тему';
         }
 
@@ -8057,7 +8086,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                      data-messengers="${escapeHtml(chatMessengers.join(','))}">
             <div class="feed-header-top">
                 <button type="button" class="feed-back-btn d-md-none"
-                        aria-label="Назад" data-feed-back="1">←</button>
+                        aria-label="Назад" data-feed-back="1">${window.synapseIcon('chevron-left')}</button>
                 ${backToTopics}
                 ${c.avatar_url
                     ? `<span class="avatar"><img src="${escapeHtml(c.avatar_url)}" alt=""></span>`
@@ -8074,7 +8103,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function renderForumPicker(contact) {
         return '<div class="forum-picker" id="forum-picker">'
-            + '<div class="fp-title">📋 Темы форума</div>'
+            + '<div class="fp-title">' + window.synapseIcon('list') + ' Темы форума</div>'
             + '<input type="search" class="fp-search" id="fp-search"'
             +        ' placeholder="Поиск по темам…">'
             + '<div class="fp-status">Загружаю список тем…</div>'
@@ -8182,12 +8211,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     function mediaKindInfo(kind) {
         const normalized = kind === 'photo' ? 'image' : (kind || 'file');
         const byKind = {
-            image: ['📷', 'Фото'],
-            video: ['🎥', 'Видео'],
-            video_note: ['⏺', 'Видеосообщение'],
-            voice: ['🎤', 'Голосовое сообщение'],
-            audio: ['🎵', 'Аудио'],
-            file: ['📎', 'Файл'],
+            image: ['image', 'Фото'],
+            video: ['video', 'Видео'],
+            video_note: ['circle-video', 'Видеосообщение'],
+            voice: ['mic', 'Голосовое сообщение'],
+            audio: ['music', 'Аудио'],
+            file: ['file', 'Файл'],
         };
         const info = byKind[normalized] || byKind.file;
         return {kind: normalized, icon: info[0], title: info[1]};
@@ -8208,7 +8237,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return `<span class="media-remote-wrap kind-${escapeHtml(info.kind)}">`
             + `<button type="button" class="media-video-load media-remote-load"${attrs}`
             + ` title="${canRestore ? 'Загрузить' : 'Недоступно'}: ${escapeHtml(info.title)}">`
-            + `<span class="media-video-load-ico">${info.icon}</span>`
+            + `<span class="media-video-load-ico">${window.synapseIcon(info.icon)}</span>`
             + `<strong>${escapeHtml(info.title)}</strong>`
             + `<small>${hint}</small></button></span>`;
     }
@@ -8278,7 +8307,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             }
             if (mime === 'application/x-tgsticker') {
                 return `<button class="sticker-tgs" type="button"${saveAttr}${packAttr}>`
-                    + `<span>✦</span><span>Анимированный стикер</span></button>`;
+                    + `${window.synapseIcon('sticker')}<span>Анимированный стикер</span></button>`;
             }
             return `<img class="sticker-img" src="/attachments/${a.id}"${saveAttr}${packAttr} loading="lazy" alt="стикер">`;
         }
@@ -8286,7 +8315,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return messages.map(m => {
             const truncated = (m.text || '').length === 1024
                 ? `<div class="truncated-note">
-                    ⚠ Сообщение обрезано Android до 1024 символов.
+                    ${window.synapseIcon('alert-circle')} Сообщение обрезано Android до 1024 символов.
                     Откройте ${escapeHtml(m.messenger_name)}, чтобы прочесть целиком.
                   </div>`
                 : '';
@@ -8310,7 +8339,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                             + `data-video-kind="video_note">`
                             + `<button type="button" class="media-video-load" `
                             + `title="Загрузить видеосообщение">`
-                            + `<span class="media-video-load-ico">▶</span>`
+                            + `<span class="media-video-load-ico">${window.synapseIcon('play')}</span>`
                             + `<strong>Видеосообщение</strong>`
                             + `<small>Нажмите, чтобы загрузить</small>`
                             + `</button></span>`;
@@ -8325,7 +8354,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                             + `data-video-kind="video">`
                             + `<button type="button" class="media-video-load" `
                             + `title="Загрузить видео">`
-                            + `<span class="media-video-load-ico">▶</span>`
+                            + `<span class="media-video-load-ico">${window.synapseIcon('play')}</span>`
                             + `<strong>Видео</strong>`
                             + `<small>Нажмите, чтобы загрузить</small>`
                             + `</button>`
@@ -8337,7 +8366,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                         return `<audio class="media-audio" src="${mediaUrl}" controls preload="none"></audio>`;
                     if (a.kind === 'file')
                         return `<a class="media-file" href="${mediaUrl}" download>`
-                            + `<span class="file-ico">📎</span>`
+                            + `<span class="file-ico">${window.synapseIcon('file')}</span>`
                             + `<span class="file-name">${escapeHtml(a.name || 'Файл')}</span></a>`;
                     return `<img class="media-img" src="${mediaUrl}" data-full="${mediaUrl}" loading="lazy" alt="фото">`;
                 })
@@ -8381,7 +8410,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const fwdHtml = m.fwd_from
                 ? `<div class="fwd-header"
                         title="Это сообщение переслано">`
-                  + `<span class="fwd-ico">↪</span>`
+                  + `<span class="fwd-ico">${window.synapseIcon('forward')}</span>`
                   + `<span class="fwd-label">Переслано от </span>`
                   + (fwdUrl
                       ? `<a class="fwd-name fwd-link" href="${escapeHtml(fwdUrl)}"${fwdAttrs}
@@ -8397,12 +8426,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 : '';
             const ttl = m.ttl_seconds
                 ? `<span class="ttl-mark"
-                         title="Одноразовое сообщение — собеседник поставил автоудаление через ${m.ttl_seconds} с, но мы сохранили">🔥</span>`
+                         title="Одноразовое сообщение — собеседник поставил автоудаление через ${m.ttl_seconds} с, но мы сохранили">${window.synapseIcon('clock')}</span>`
                 : '';
             const delBanner = m.deleted
                 ? `<div class="deleted-banner"
                           title="Сообщение удалили в мессенджере, но мы успели сохранить"
-                   >🗑 ${m.outgoing ? 'Вы удалили это сообщение' : 'Удалено собеседником'}</div>`
+                   >${window.synapseIcon('trash')} ${m.outgoing ? 'Вы удалили это сообщение' : 'Удалено собеседником'}</div>`
                 : '';
             // Если у Telegram-сообщения была разметка (entities), сервер
             // прислал готовый HTML — пропускаем через санитайзер с
@@ -8421,7 +8450,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 ? `<button type="button" class="edited-badge"
                           title="Показать историю изменений (${editsCount} прошлая версия${editsCount === 1 ? '' : ''})"
                           data-edits-btn="1"
-                   >📝 ред.${editsCount > 1 ? ' ×' + editsCount : ''}</button>`
+                   >${window.synapseIcon('pencil')} ред.${editsCount > 1 ? ' ×' + editsCount : ''}</button>`
                 : '';
             const editsJson = editsCount > 0
                 ? ` data-edits-json='${escapeHtml(JSON.stringify(m.edits))}'`
@@ -8736,8 +8765,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             </div>
             <button type="button" class="cn-toggle"
                     data-muted="${muted ? '1' : '0'}">
-                ${muted ? '🔔 Включить уведомления'
-                        : '🔕 Выключить уведомления'}
+                ${window.synapseIcon(muted ? 'bell' : 'bell-off')} ${muted ? 'Включить уведомления'
+                        : 'Выключить уведомления'}
             </button>
         </div>`;
     }
@@ -8757,7 +8786,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const placeholder = 'Сообщение…';
         const attach = hasRichComposer
             ? `<button type="button" class="attach-btn" id="composer-attach"
-                       title="Прикрепить файл">📎</button>
+                       title="Прикрепить файл">${window.synapseIcon('paperclip')}</button>
                <input type="file" id="composer-file" multiple hidden>`
             : '';
         const voice = hasRichComposer
@@ -9145,7 +9174,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                            || galleryKind === 'video_note') {
                     galleryCell.classList.add('video');
                     galleryCell.dataset.video = mediaUrl;
-                    galleryCell.innerHTML = '<span class="ico">🎥</span>';
+                    galleryCell.innerHTML = '<span class="ico">' + window.synapseIcon('video') + '</span>';
                 }
             } else if (galleryItem && mediaUrl
                        && (galleryKind === 'voice'
@@ -9162,7 +9191,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 download.className = 'media-remote-load';
                 download.href = mediaUrl;
                 download.download = '';
-                download.innerHTML = '<span class="media-video-load-ico">📎</span>'
+                download.innerHTML = '<span class="media-video-load-ico">' + window.synapseIcon('file') + '</span>'
                     + '<strong>Файл загружен</strong>'
                     + '<small>Нажмите, чтобы скачать</small>';
                 button.replaceWith(download);
@@ -9442,6 +9471,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let chatFolderLastLoadedAt = 0;
     let chatFolderLastRemoteRefreshAt = 0;
     let chatFolderModalBusy = false;
+    let chatFolderCreateToken = 0;
     let draggedFolder = null;
     let suppressFolderClick = false;
 
@@ -9572,10 +9602,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     function folderGlyph(folder) {
-        const icon = String(folder && folder.icon || '').trim();
-        if (icon) return icon;
-        const title = String(folder && folder.title || '').trim();
-        return title ? title.charAt(0).toUpperCase() : '◆';
+        return window.synapseIcon(folder && folder.read_only ? 'folder-open' : 'folder');
     }
 
     function renderChatFolders(errorText) {
@@ -9595,7 +9622,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         let html = '<button type="button" class="cf-btn'
             + (!activeChatFolderId ? ' active' : '')
             + '" data-chat-folder="" title="Все чаты · '
-            + escapeHtml(activeFolder) + '"><span>💬</span>'
+            + escapeHtml(activeFolder) + '">' + window.synapseIcon('messages')
             + '<span class="cf-label">Все чаты</span></button>';
         const folders = (chatFolderSnapshot.folders || []).slice().sort(
             (a, b) => Number(a.position || 0) - Number(b.position || 0));
@@ -9607,7 +9634,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + (String(activeChatFolderId) === String(folder.id) ? ' active' : '')
                 + '" data-chat-folder="' + escapeHtml(folder.id)
                 + '" title="' + escapeHtml(title) + '">'
-                + '<span aria-hidden="true">' + escapeHtml(folderGlyph(folder)) + '</span>'
+                + '<span aria-hidden="true">' + folderGlyph(folder) + '</span>'
                 + '<span class="cf-label">' + escapeHtml(title) + '</span>'
                 + (members.length
                     ? '<span class="cf-count">' + members.length + '</span>' : '')
@@ -9615,12 +9642,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         });
         if (errorText) {
             html += '<button type="button" class="cf-btn" data-folder-retry="1"'
-                + ' title="' + escapeHtml(errorText) + '"><span>!</span>'
+                + ' title="' + escapeHtml(errorText) + '">' + window.synapseIcon('refresh')
                 + '<span class="cf-label">Повторить</span></button>';
         }
         html += '<button type="button" class="cf-btn manage" data-folder-manage="1"'
             + ' title="Настроить папки ' + escapeHtml(activeFolder) + '">'
-            + '<span>⚙</span><span class="cf-label">Ред.</span></button>';
+            + window.synapseIcon('settings') + '<span class="cf-label">Ред.</span></button>';
         rail.innerHTML = html;
     }
 
@@ -9716,13 +9743,15 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         backdrop.innerHTML = '<section class="folder-modal" role="dialog" aria-modal="true"'
             + ' aria-labelledby="folder-modal-title">'
             + '<div class="folder-modal-head"><div class="folder-modal-title" id="folder-modal-title"></div>'
-            + '<button type="button" class="folder-modal-close" data-folder-close="1" aria-label="Закрыть">×</button></div>'
+            + '<button type="button" class="folder-modal-close" data-folder-close="1" aria-label="Закрыть">'
+            + window.synapseIcon('close') + '</button></div>'
             + '<div class="folder-modal-body" id="folder-modal-body"></div>'
             + '<div class="folder-modal-actions" id="folder-modal-actions"></div>'
             + '</section>';
         document.body.appendChild(backdrop);
         backdrop.addEventListener('click', function(e) {
             if (e.target === backdrop || e.target.closest('[data-folder-close]')) {
+                ++chatFolderCreateToken;
                 backdrop.hidden = true;
             }
         });
@@ -9740,6 +9769,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     function renderFolderManagerList() {
+        ++chatFolderCreateToken;
         const ui = folderModalParts();
         ui.backdrop.hidden = false;
         ui.title.textContent = 'Папки · ' + activeFolder;
@@ -9747,7 +9777,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         ui.body.innerHTML = '<div class="folder-list">'
             + (folders.length ? folders.map(folder =>
                 '<div class="folder-list-row">'
-                + '<span aria-hidden="true">' + escapeHtml(folderGlyph(folder)) + '</span>'
+                + '<span aria-hidden="true">' + folderGlyph(folder) + '</span>'
                 + '<strong>' + escapeHtml(folder.title || 'Папка') + '</strong>'
                 + (folder.read_only ? '<small>только просмотр</small>' : '')
                 + '<button type="button" class="folder-mini-btn" data-folder-edit="'
@@ -9759,11 +9789,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             + '<button type="button" class="folder-primary-btn" data-folder-create="1">Новая папка</button>';
     }
 
-    function renderFolderEditor(folder) {
+    function renderFolderEditor(folder, initialHandleIds) {
         const ui = folderModalParts();
+        ui.backdrop.hidden = false;
         const readOnly = !!(folder && folder.read_only);
         const titleMaxLength = activeFolder === 'Telegram' ? 12 : 64;
-        const selected = new Set((folder && folder.member_handle_ids || [])
+        const selected = new Set((folder && folder.member_handle_ids || initialHandleIds || [])
             .map(value => String(value)));
         ui.title.textContent = folder ? (folder.title || 'Папка') : 'Новая папка';
         const rows = (chatFolderSnapshot.handles || []).map(handle => {
@@ -9942,6 +9973,56 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (window.syncContactNewChatButton) window.syncContactNewChatButton();
         requestAnimationFrame(() => centerActiveFolder('auto'));
     };
+
+    window.addEventListener('synapse:folders-changed', function(event) {
+        const detail = event.detail || {};
+        if (detail.messenger !== activeFolder || !detail.folder) return;
+        ++chatFolderLoadToken;
+        chatFolderLoading = false;
+        // A membership response contains a complete authoritative folder.
+        // Apply it immediately so counts/filtering update without extra GETs.
+        const index = chatFolderSnapshot.folders.findIndex(
+            folder => String(folder.id) === String(detail.folder.id));
+        if (index >= 0) chatFolderSnapshot.folders[index] = detail.folder;
+        else chatFolderSnapshot.folders.push(detail.folder);
+        renderChatFolders();
+        applyFolderFilter();
+    });
+
+    window.addEventListener('synapse:folder-create', async function(event) {
+        const detail = event.detail || {};
+        if (!detail.contactId || !detail.messenger || chatFolderModalBusy) return;
+        const createToken = ++chatFolderCreateToken;
+        const ui = folderModalParts();
+        ui.backdrop.hidden = false;
+        ui.title.textContent = 'Новая папка · ' + detail.messenger;
+        ui.body.textContent = 'Загружаю чаты…';
+        ui.actions.innerHTML = '';
+        try {
+            const response = await fetch('/contacts/folders.json?messenger='
+                + encodeURIComponent(detail.messenger) + '&cached=1',
+                {credentials: 'same-origin'});
+            const data = await response.json();
+            if (!response.ok) throw new Error('Не удалось загрузить чаты');
+            if (ui.backdrop.hidden || createToken !== chatFolderCreateToken) return;
+            activeFolder = detail.messenger;
+            localStorage.setItem(MF_KEY, activeFolder);
+            activeChatFolderId = localStorage.getItem(CF_KEY + activeFolder) || '';
+            ++chatFolderLoadToken;
+            chatFolderSnapshot = {folders: data.folders || [], handles: data.handles || []};
+            chatFolderLoading = false;
+            renderFolders();
+            renderChatFolders();
+            applyFolderFilter();
+            const selected = chatFolderSnapshot.handles.filter(
+                handle => String(handle.contact_id) === String(detail.contactId))
+                .map(handle => handle.id);
+            renderFolderEditor(null, selected);
+        } catch (_) {
+            if (createToken !== chatFolderCreateToken || ui.backdrop.hidden) return;
+            ui.body.textContent = 'Не удалось загрузить чаты. Закройте окно и попробуйте ещё раз.';
+        }
+    });
 
     document.addEventListener('dragstart', function(e) {
         const btn = e.target.closest && e.target.closest('.mf-btn[draggable="true"]');
@@ -11594,13 +11675,13 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + '<button type="button" class="image-editor-btn danger"'
                     + ' data-img-action="cancel">Отмена</button>'
                 + '<button type="button" class="image-editor-btn"'
-                    + ' data-img-mode="crop" title="Обрезка">⌗</button>'
+                    + ' data-img-mode="crop" title="Обрезка">' + window.synapseIcon('crop') + '</button>'
                 + '<button type="button" class="image-editor-btn"'
-                    + ' data-img-action="rotate" title="Повернуть">⟳</button>'
+                    + ' data-img-action="rotate" title="Повернуть">' + window.synapseIcon('rotate') + '</button>'
                 + '<button type="button" class="image-editor-btn"'
-                    + ' data-img-mode="draw" title="Маркер">✎</button>'
+                    + ' data-img-mode="draw" title="Маркер">' + window.synapseIcon('pencil') + '</button>'
                 + '<button type="button" class="image-editor-btn"'
-                    + ' data-img-action="undo" title="Назад">↶</button>'
+                    + ' data-img-action="undo" title="Назад">' + window.synapseIcon('undo') + '</button>'
                 + '<span class="image-editor-swatches">'
                     + '<button type="button" class="image-editor-swatch active"'
                         + ' data-img-color="#ef4444" style="background:#ef4444"'
@@ -12004,7 +12085,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             + '<div class="media-draft-head">'
                 + '<strong data-media-title></strong>'
                 + '<button type="button" class="media-draft-icon"'
-                    + ' data-media-action="cancel" title="Закрыть">×</button>'
+                    + ' data-media-action="cancel" title="Закрыть">' + window.synapseIcon('close') + '</button>'
             + '</div>'
             + '<div class="media-draft-preview" data-media-action="edit"'
                 + ' role="button" tabindex="0"></div>'
@@ -12046,7 +12127,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const preview = modal.querySelector('.media-draft-preview');
         preview.innerHTML = mediaElement(current, 'md-main')
             + (current ? '<button type="button" class="media-draft-remove"'
-                + ' data-media-action="remove" title="Убрать">×</button>' : '');
+                + ' data-media-action="remove" title="Убрать">' + window.synapseIcon('close') + '</button>' : '');
         const thumbs = modal.querySelector('.media-draft-thumbs');
         thumbs.innerHTML = pendingFiles.map((item, idx) =>
             '<button type="button" class="media-draft-thumb'
@@ -12122,18 +12203,18 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             return;
         }
         const item = pendingFiles[0];
-        let thumb = '<span class="cp-ico">🎬</span>';
+        let thumb = '<span class="cp-ico">' + window.synapseIcon('file') + '</span>';
         if (item.file.type && item.file.type.indexOf('image/') === 0) {
             thumb = '<img class="cp-thumb" src="' + item.url + '" alt="">';
         } else {
-            thumb = '<span class="cp-ico">🎬</span>';
+            thumb = '<span class="cp-ico">' + window.synapseIcon('video') + '</span>';
         }
         box.innerHTML = thumb
             + '<span class="cp-name">'
             + escapeHtml(pendingFiles.length > 1
                 ? (pendingFiles.length + ' фото')
                 : item.file.name) + '</span>'
-            + '<button type="button" class="cp-remove" title="Убрать">×</button>';
+            + '<button type="button" class="cp-remove" title="Убрать">' + window.synapseIcon('close') + '</button>';
         box.hidden = false;
     }
 
@@ -12193,10 +12274,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             + '<span class="cf-title">Пересылаем · '
             + escapeHtml(pendingForward.author || 'сообщение') + '</span>'
             + '<span class="cf-text">'
-            + escapeHtml(pendingForward.text || '📎 Вложение') + '</span>'
+            + escapeHtml(pendingForward.text || 'Вложение') + '</span>'
             + '</div>'
             + '<button type="button" class="cf-remove" '
-            + 'title="Отменить пересылку">×</button>';
+            + 'title="Отменить пересылку">' + window.synapseIcon('close') + '</button>';
         box.hidden = false;
         refreshComposerSendState();
     }
@@ -12212,7 +12293,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         pendingForward = {
             id: messageId,
             author: (preview && preview.author) || 'Сообщение',
-            text: (preview && preview.text) || '📎 Вложение',
+            text: (preview && preview.text) || 'Вложение',
         };
         await openContact(targetContactId, targetMessenger || null,
                           {keepPendingForward: true});
@@ -12233,14 +12314,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             + '<span class="cr-text">' + escapeHtml(replyTarget.text) + '</span>'
             + '</div>'
             + '<button type="button" class="cr-remove" '
-            + 'title="Отменить ответ">×</button>';
+            + 'title="Отменить ответ">' + window.synapseIcon('close') + '</button>';
         box.hidden = false;
     }
     function setReply(messageId, author, text) {
         replyTarget = {
             id: messageId,
             author: author || 'сообщение',
-            text: (text || '').slice(0, 200) || '📎 Вложение',
+            text: (text || '').slice(0, 200) || 'Вложение',
         };
         renderReplyBanner();
         const ta = feed.querySelector('#composer-text');
@@ -12379,9 +12460,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 return;
             }
             btn.dataset.muted = d.muted ? '1' : '0';
-            btn.textContent = d.muted
-                ? '🔔 Включить уведомления'
-                : '🔕 Выключить уведомления';
+            btn.innerHTML = window.synapseIcon(d.muted ? 'bell' : 'bell-off')
+                + (d.muted ? ' Включить уведомления' : ' Выключить уведомления');
             if (window.refreshContactsNow) window.refreshContactsNow();
         } catch (err) {
             alert('Сеть недоступна — уведомления не изменены.');
@@ -12556,7 +12636,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         pin.className = 'topics-pin';
         pin.dataset.startId = cur.start_id;
         pin.innerHTML =
-            '<span class="tp-ico">📌</span>'
+            '<span class="tp-ico">' + window.synapseIcon('pin') + '</span>'
             + '<div class="tp-bars">' + bars + '</div>'
             + '<div class="tp-content">'
             +   '<div class="tp-label">'
@@ -12569,7 +12649,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             +   '</div>'
             + '</div>'
             + '<button type="button" class="tp-close"'
-            +         ' data-pin-close="1" title="Скрыть до перезахода">×</button>';
+            +         ' data-pin-close="1" title="Скрыть до перезахода">' + window.synapseIcon('close') + '</button>';
         // Вставляем сразу после feed-header (если есть), иначе в начало feed.
         if (header && header.nextSibling) {
             feed.insertBefore(pin, header.nextSibling);
@@ -12599,7 +12679,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         bar.className = 'pinned-bar';
         bar.dataset.pinnedId = cur.id;
         bar.innerHTML =
-            '<span class="pb-ico">📌</span>'
+            '<span class="pb-ico">' + window.synapseIcon('pin') + '</span>'
             + '<div class="pb-body">'
             +   '<div class="pb-label">Закреплённое '
             +     (pinnedList.length > 1
@@ -12786,17 +12866,17 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 renderTopicsList(d.topics, d.analyzed, d.cached);
             } else if (d.status === 'no_ollama') {
                 renderTopicsStatus(
-                    '🦙 Ollama не запущена.\n\n' + (d.detail || ''),
+                    'Ollama не запущена.\n\n' + (d.detail || ''),
                     true);
             } else if (d.status === 'no_model') {
                 renderTopicsStatus(
-                    '⚠ Модель не скачана.\n\n' + (d.detail || ''),
+                    'Модель не скачана.\n\n' + (d.detail || ''),
                     true);
             } else if (d.status === 'no_messages') {
                 renderTopicsStatus('В чате нет текстовых сообщений.');
             } else if (d.status === 'llm_error') {
                 renderTopicsStatus(
-                    '❌ Ошибка LLM:\n' + (d.detail || ''),
+                    'Ошибка LLM:\n' + (d.detail || ''),
                     true);
             } else {
                 renderTopicsStatus('Не удалось получить темы.', true);
@@ -12813,9 +12893,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         pop.className = 'topics-panel';
         pop.innerHTML =
             '<div class="tp-head">'
-            +   '<div class="tp-title">📑 Темы чата</div>'
+            +   '<div class="tp-title">' + window.synapseIcon('list') + ' Темы чата</div>'
             +   '<button type="button" class="tp-limit" data-tp-refresh="1"'
-            +           ' title="Пересчитать темы заново">🔄</button>'
+            +           ' title="Пересчитать темы заново">' + window.synapseIcon('refresh') + '</button>'
             + '</div>'
             + '<div class="tp-body"></div>'
             + '<div class="tp-footer"></div>';
@@ -13126,7 +13206,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         resultsBox.innerHTML = users.map(u => {
             const username = u.username ? '@' + u.username : 'Synapse';
             const creator = u.is_creator
-                ? '<span class="creator-inline">★ '
+                ? '<span class="creator-inline">' + window.synapseIcon('crown') + ' '
                   + escHtml(u.creator_title || 'Создатель') + '</span>'
                 : '';
             return '<div class="search-result synapse-user-result"'
@@ -14198,13 +14278,13 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             : 'Вверх — закрепить, влево — отменить';
         const actions = locked
             ? '<button type="button" class="voice-action danger"'
-                + ' data-voice-action="cancel" title="Удалить">🗑</button>'
+                + ' data-voice-action="cancel" title="Удалить">' + window.synapseIcon('trash') + '</button>'
               + '<button type="button" class="voice-action"'
-                + ' data-voice-action="preview" title="Пауза">⏸</button>'
+                + ' data-voice-action="preview" title="Пауза">' + window.synapseIcon('pause') + '</button>'
               + '<button type="button" class="voice-action primary"'
-                + ' data-voice-action="send" title="Отправить">➤</button>'
+                + ' data-voice-action="send" title="Отправить">' + window.synapseIcon('send') + '</button>'
             : '<button type="button" class="voice-action"'
-                + ' data-voice-action="lock" title="Закрепить">⌃</button>';
+                + ' data-voice-action="lock" title="Закрепить">' + window.synapseIcon('lock') + '</button>';
         panel.innerHTML =
             '<span class="voice-rec-dot"></span>'
             + '<span class="voice-rec-time">' + fmt(currentElapsed()) + '</span>'
@@ -14246,14 +14326,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         trimEnd = dur;
         panel.innerHTML =
             '<button type="button" class="voice-action danger"'
-                + ' data-voice-action="cancel" title="Удалить">🗑</button>'
+                + ' data-voice-action="cancel" title="Удалить">' + window.synapseIcon('trash') + '</button>'
             + '<audio class="voice-preview-audio" controls preload="metadata"'
                 + ' src="' + previewUrl + '"></audio>'
             + '<span class="voice-rec-actions">'
                 + '<button type="button" class="voice-action"'
-                    + ' data-voice-action="resume" title="Продолжить">🎤</button>'
+                    + ' data-voice-action="resume" title="Продолжить">' + window.synapseIcon('mic') + '</button>'
                 + '<button type="button" class="voice-action primary"'
-                    + ' data-voice-action="send" title="Отправить">➤</button>'
+                    + ' data-voice-action="send" title="Отправить">' + window.synapseIcon('send') + '</button>'
             + '</span>'
             + '<div class="voice-trim">'
                 + '<div class="voice-trim-track" data-voice-trim-track>'
@@ -14699,7 +14779,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function creatorBadgeHtml(item) {
         if (!item || !item.is_creator) return '';
-        return '<span class="creator-inline">★ '
+        return '<span class="creator-inline">' + window.synapseIcon('crown') + ' '
             + escapeHtml(item.creator_title || 'Создатель') + '</span>';
     }
 
@@ -14836,7 +14916,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (ui.phone) {
                 infoRows.push(
                     '<div class="profile-row">'
-                    + '<span class="row-ico">📞</span>'
+                    + '<span class="row-ico">' + window.synapseIcon('phone') + '</span>'
                     + '<div class="row-main">'
                     + '<div class="row-label">+'
                     + escapeHtml(ui.phone) + '</div>'
@@ -14872,12 +14952,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
         const counts = d.media_counts || {};
         const sections = [
-            {bucket: 'photo', ico: '🖼', label: 'Фото'},
-            {bucket: 'video', ico: '🎥', label: 'Видео'},
-            {bucket: 'file',  ico: '📎', label: 'Файлы'},
-            {bucket: 'audio', ico: '🎵', label: 'Аудио'},
-            {bucket: 'voice', ico: '🎤', label: 'Голосовые'},
-            {bucket: 'link',  ico: '🔗', label: 'Ссылки'},
+            {bucket: 'photo', ico: 'image', label: 'Фото'},
+            {bucket: 'video', ico: 'video', label: 'Видео'},
+            {bucket: 'file',  ico: 'file', label: 'Файлы'},
+            {bucket: 'audio', ico: 'music', label: 'Аудио'},
+            {bucket: 'voice', ico: 'mic', label: 'Голосовые'},
+            {bucket: 'link',  ico: 'link', label: 'Ссылки'},
         ].filter(s => (counts[s.bucket] || 0) > 0);
 
         const sectionsHtml = sections.length
@@ -14886,7 +14966,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
               + sections.map(s =>
                   '<div class="profile-row tappable" data-bucket="'
                   + s.bucket + '" data-label="' + escapeHtml(s.label) + '">'
-                  + '<span class="row-ico">' + s.ico + '</span>'
+                  + '<span class="row-ico">' + window.synapseIcon(s.ico) + '</span>'
                   + '<div class="row-main"><div class="row-label">'
                   + escapeHtml(s.label) + '</div></div>'
                   + '<span class="row-count">' + (counts[s.bucket] || 0)
@@ -14909,7 +14989,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                   + ' data-tg-chat-id="' + (g.id || '') + '"'
                   + ' data-title="' + escapeHtml(g.title || '') + '">'
                   + '<span class="row-ico">'
-                  + (g.is_channel ? '📢' : '👥') + '</span>'
+                  + window.synapseIcon(g.is_channel ? 'messages' : 'users') + '</span>'
                   + '<div class="row-main"><div class="row-label">'
                   + escapeHtml(g.title || '—') + '</div>'
                   + (g.participants_count
@@ -14928,7 +15008,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
               + (d.messengers || []).map(m =>
                   '<div class="profile-row tappable handle-row"'
                   + ' data-messenger="' + escapeHtml(m.name || '') + '">'
-                  + '<span class="row-ico">💬</span>'
+                  + '<span class="row-ico">' + window.synapseIcon('message-circle') + '</span>'
                   + '<div class="row-main">'
                   + '<div class="row-label">'
                   + escapeHtml(m.sender_raw || '—') + '</div>'
@@ -14955,7 +15035,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                       + ' data-tg-username="' + escapeHtml(uname) + '"';
                   return '<div class="profile-row tappable member-row"'
                       + dataAttrs + '>'
-                      + '<span class="row-ico">👤</span>'
+                      + '<span class="row-ico">' + window.synapseIcon('user') + '</span>'
                       + '<div class="row-main">'
                       + '<div class="row-label">'
                       + escapeHtml(p.name || '—') + '</div>'
@@ -14973,7 +15053,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
           +   '<div class="profile-head-top">'
           +     '<div class="profile-title">Профиль</div>'
           +     '<button type="button" class="profile-close"'
-          +       ' aria-label="Закрыть" data-action="close">×</button>'
+          +       ' aria-label="Закрыть" data-action="close">' + window.synapseIcon('close') + '</button>'
           +   '</div>'
           +   '<div class="profile-id-block">'
           +     avatarHtml(c)
@@ -14989,30 +15069,33 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
           +   '<button type="button" class="profile-action"'
           +     ' data-action="pin" title="'
           +     (c.pinned ? 'Открепить в списке' : 'Закрепить в списке') + '">'
-          +     '<span class="ico">📌</span><span>'
+          +     '<span class="ico">' + window.synapseIcon(c.pinned ? 'pin-off' : 'pin') + '</span><span>'
           +     (c.pinned ? 'Откреплено' : 'Закрепить') + '</span></button>'
           +   '<button type="button" class="profile-action"'
           +     ' data-action="mute" title="'
           +     (c.muted ? 'Включить звук' : 'Отключить звук') + '">'
-          +     '<span class="ico">' + (c.muted ? '🔔' : '🔇') + '</span>'
+          +     '<span class="ico">' + window.synapseIcon(c.muted ? 'bell' : 'bell-off') + '</span>'
           +     '<span>' + (c.muted ? 'Звук' : 'Без звука') + '</span></button>'
           +   '<button type="button" class="profile-action"'
           +     ' data-action="archive" title="'
           +     (c.archived ? 'Вернуть из архива' : 'Архивировать') + '">'
-          +     '<span class="ico">' + (c.archived ? '↩' : '↙') + '</span>'
+          +     '<span class="ico">' + window.synapseIcon(c.archived ? 'archive-restore' : 'archive') + '</span>'
           +     '<span>' + (c.archived ? 'Вернуть' : 'Архив') + '</span></button>'
           +   '<button type="button" class="profile-action"'
           +     ' data-action="rename" title="Переименовать">'
-          +     '<span class="ico">✏</span><span>Имя</span></button>'
+          +     '<span class="ico">' + window.synapseIcon('pencil') + '</span><span>Имя</span></button>'
+          +   '<button type="button" class="profile-action"'
+          +     ' data-action="folder" title="Добавить в папку" aria-haspopup="menu">'
+          +     '<span class="ico">' + window.synapseIcon('folder-plus') + '</span><span>В папку</span></button>'
           +   '<button type="button" class="profile-action'
           +     (c.blocked ? ' danger' : '') + '"'
           +     ' data-action="block" title="'
           +     (c.blocked ? 'Разблокировать' : 'Заблокировать') + '">'
-          +     '<span class="ico">🚫</span><span>'
+          +     '<span class="ico">' + window.synapseIcon('ban') + '</span><span>'
           +     (c.blocked ? 'Разблок.' : 'Блок') + '</span></button>'
           +   '<button type="button" class="profile-action danger"'
           +     ' data-action="delete" title="Удалить контакт">'
-          +     '<span class="ico">🗑</span><span>Удалить</span></button>'
+          +     '<span class="ico">' + window.synapseIcon('trash') + '</span><span>Удалить</span></button>'
           + '</div>'
           + infoHtml
           + sectionsHtml
@@ -15073,7 +15156,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         content.innerHTML = ''
           + '<div class="profile-gallery-head">'
           +   '<button type="button" class="gallery-back-btn"'
-          +     ' data-action="back">←</button>'
+          +     ' data-action="back" aria-label="Назад">' + window.synapseIcon('chevron-left') + '</button>'
           +   '<div class="gallery-title">' + escapeHtml(label) + '</div>'
           + '</div>'
           + '<div class="gallery-empty" id="gallery-body">Загрузка…</div>';
@@ -15109,11 +15192,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const availability = it.availability || 'local';
         if (availability === 'local') return '';
         const info = {
-            image: ['📷', 'Фото'], video: ['🎥', 'Видео'],
-            video_note: ['⏺', 'Видеосообщение'],
-            voice: ['🎤', 'Голосовое сообщение'], audio: ['🎵', 'Аудио'],
-            file: ['📎', 'Файл'],
-        }[kind] || ['📎', 'Файл'];
+            image: ['image', 'Фото'], video: ['video', 'Видео'],
+            video_note: ['circle-video', 'Видеосообщение'],
+            voice: ['mic', 'Голосовое сообщение'], audio: ['music', 'Аудио'],
+            file: ['file', 'Файл'],
+        }[kind] || ['file', 'Файл'];
         const restoreUrl = it.restore_url
             || (it.id ? '/attachments/' + it.id + '/restore' : '');
         const canRestore = availability === 'remote' && !!restoreUrl;
@@ -15123,7 +15206,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
               + ' data-gallery-kind="' + escapeHtml(kind) + '"'
             : ' disabled';
         return '<button type="button" class="media-remote-load"' + attrs + '>'
-            + '<span class="media-video-load-ico">' + info[0] + '</span>'
+            + '<span class="media-video-load-ico">' + window.synapseIcon(info[0]) + '</span>'
             + '<strong>' + escapeHtml(info[1]) + '</strong>'
             + '<small>' + (canRestore
                 ? 'Не загружено · нажмите, чтобы загрузить'
@@ -15150,7 +15233,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 return '<div class="gallery-cell video"'
                     + ' data-video="' + escapeHtml(it.url) + '"'
                     + ' data-msg-id="' + it.message_id + '">'
-                    + '<span class="ico">🎥</span></div>';
+                    + '<span class="ico">' + window.synapseIcon('video') + '</span></div>';
             }).join('');
             return '<div class="gallery-grid">' + cells + '</div>';
         }
@@ -15160,7 +15243,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const rows = items.map(it =>
                 '<a class="gallery-item" href="' + escapeHtml(it.url) + '"'
                 + ' target="_blank" rel="noopener">'
-                + '<span class="gi-ico">🔗</span>'
+                + '<span class="gi-ico">' + window.synapseIcon('link') + '</span>'
                 + '<div style="min-width:0; flex:1;">'
                 + '<div class="gi-name">' + escapeHtml(it.url) + '</div>'
                 + (it.text_preview
@@ -15173,7 +15256,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         // Аудио и голосовые — встроенный плеер прямо в строке списка.
         // Файл клик качает (тег <a download>).
         const labelByBucket = {
-            file:  '📎', audio: '🎵', voice: '🎤',
+            file: 'file', audio: 'music', voice: 'mic',
         };
         const rows = items.map(it => {
             const name = it.name
@@ -15188,7 +15271,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (unavailable) {
                 return '<div class="gallery-item">'
                     + '<span class="gi-ico">'
-                    + (labelByBucket[bucket] || '📎') + '</span>'
+                    + window.synapseIcon(labelByBucket[bucket] || 'file') + '</span>'
                     + '<div style="min-width:0; flex:1;">'
                     + '<div class="gi-name">' + escapeHtml(name) + '</div>'
                     + (meta ? '<div class="gi-meta">' + escapeHtml(meta)
@@ -15198,7 +15281,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (bucket === 'voice' || bucket === 'audio') {
                 return '<div class="gallery-item gallery-audio">'
                     + '<span class="gi-ico">'
-                    + (labelByBucket[bucket] || '🎵') + '</span>'
+                    + window.synapseIcon(labelByBucket[bucket] || 'music') + '</span>'
                     + '<div style="min-width:0; flex:1;">'
                     + '<div class="gi-name">' + escapeHtml(name) + '</div>'
                     + (meta ? '<div class="gi-meta">' + escapeHtml(meta)
@@ -15211,7 +15294,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             return '<a class="gallery-item" href="' + escapeHtml(it.url) + '"'
                 + ' download>'
                 + '<span class="gi-ico">'
-                + (labelByBucket[bucket] || '📎') + '</span>'
+                + window.synapseIcon(labelByBucket[bucket] || 'file') + '</span>'
                 + '<div style="min-width:0; flex:1;">'
                 + '<div class="gi-name">' + escapeHtml(name) + '</div>'
                 + (meta ? '<div class="gi-meta">' + escapeHtml(meta)
@@ -15304,6 +15387,18 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const act = e.target.closest('.profile-action[data-action]');
         if (!act || !currentContactId) return;
         const action = act.dataset.action;
+        if (action === 'folder') {
+            if (window.synapseFolderMenu) {
+                const composer = document.getElementById('composer');
+                window.synapseFolderMenu.open(act, {
+                    contactId: currentContactId,
+                    messengers: ((cachedProfile && cachedProfile.messengers) || [])
+                        .map(item => item.name).filter(Boolean),
+                    messenger: composer ? composer.dataset.messenger : '',
+                });
+            }
+            return;
+        }
         if (action === 'pin') {
             try {
                 const r = await fetch('/contacts/' + currentContactId + '/pin',

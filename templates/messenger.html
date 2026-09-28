@@ -34,9 +34,9 @@
     .contact-search input:focus {
         border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15);
     }
-    .contact-search::before {
-        content: "🔍"; position: absolute; left: 13px; top: 50%;
-        transform: translateY(-50%); font-size: 13px; opacity: .55;
+    .contact-search > .ui-icon {
+        position: absolute; left: 13px; top: 50%;
+        transform: translateY(-50%); font-size: 15px; opacity: .55;
         pointer-events: none;
     }
     [data-bs-theme="dark"] .contact-search input {
@@ -272,6 +272,7 @@
     .lightbox .lb-close {
         position: fixed; top: 16px; right: 22px; color: #fff; font-size: 34px;
         line-height: 1; cursor: pointer; user-select: none; opacity: .85;
+        padding: 4px; border: 0; background: transparent;
     }
 
     .contact-list, .feed { scrollbar-width: thin; scrollbar-color: #cdd2db transparent; }
@@ -319,6 +320,7 @@
     <div class="row g-3 h-100">
         <div class="col-md-4 h-100 {% if selected_id %}d-none d-md-flex{% endif %}" id="col-list">
             <div class="contact-search">
+                <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#search"></use></svg>
                 <input type="search" id="user-search-input" autocomplete="off"
                        placeholder="Поиск пользователя по User ID…">
             </div>
@@ -361,7 +363,7 @@
         <div class="col-md-8 h-100 {% if not selected_id %}d-none d-md-flex{% endif %}" id="col-feed">
             <div class="feed" id="feed" data-initial-user-id="{{ selected_id or '' }}">
                 <div class="empty-state">
-                    💬 Выберите переписку слева<br>
+                    <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#message-circle"></use></svg> Выберите переписку слева<br>
                     или найдите пользователя по User ID.
                 </div>
             </div>
@@ -370,7 +372,7 @@
 </div>
 
 <div class="lightbox" id="lightbox">
-    <span class="lb-close" id="lb-close">&times;</span>
+    <button type="button" class="lb-close" id="lb-close" aria-label="Закрыть фото"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#close"></use></svg></button>
     <img id="lb-img" src="" alt="фото">
 </div>
 
@@ -542,7 +544,7 @@ document.addEventListener('click', function(e) {
                 return `<audio class="media-audio" src="${src}" controls preload="metadata"></audio>`;
             if (a.kind === 'file')
                 return `<a class="media-file" href="${src}" download>`
-                    + `<span class="file-ico">📎</span>`
+                    + `<span class="file-ico">${window.synapseIcon('file')}</span>`
                     + `<span class="file-name">${escapeHtml(a.name || 'Файл')}</span></a>`;
             return `<img class="media-img" src="${src}" data-full="${src}" loading="lazy" alt="фото">`;
         }).join('');
@@ -568,7 +570,7 @@ document.addEventListener('click', function(e) {
     function headerHtml(p) {
         return `<div class="feed-header" data-user-id="${p.id}">
             <button type="button" class="feed-back-btn d-md-none"
-                    aria-label="Назад" data-feed-back="1">←</button>
+                    aria-label="Назад" data-feed-back="1">${window.synapseIcon('chevron-left')}</button>
             ${avatarHtml(p)}
             <div class="flex-fill" style="min-width:0;">
                 <div class="fw-semibold text-truncate">${escapeHtml(p.display_name)}</div>
@@ -581,7 +583,7 @@ document.addEventListener('click', function(e) {
         return `<form class="composer" id="composer" data-user-id="${p.id}">
             <div class="composer-preview" id="composer-preview" hidden></div>
             <button type="button" class="attach-btn" id="composer-attach"
-                    title="Прикрепить файл">📎</button>
+                    title="Прикрепить файл" aria-label="Прикрепить файл">${window.synapseIcon('paperclip')}</button>
             <input type="file" id="composer-file" hidden>
             <textarea id="composer-text" rows="1"
                       placeholder="Написать сообщение…"></textarea>
@@ -688,7 +690,7 @@ document.addEventListener('click', function(e) {
         setActiveRow();
         setMobileView('list');
         feed.innerHTML = '<div class="empty-state">'
-            + '💬 Выберите переписку слева<br>'
+            + window.synapseIcon('message-circle') + ' Выберите переписку слева<br>'
             + 'или найдите пользователя по User ID.</div>';
         document.title = 'Сообщения';
         if (opts.push !== false) {
@@ -845,13 +847,13 @@ document.addEventListener('click', function(e) {
             pendingUrl = URL.createObjectURL(file);
             thumb = '<img class="cp-thumb" src="' + pendingUrl + '" alt="">';
         } else {
-            const ico = file.type && file.type.indexOf('video/') === 0 ? '🎬'
-                : file.type && file.type.indexOf('audio/') === 0 ? '🎵' : '📎';
-            thumb = '<span class="cp-ico">' + ico + '</span>';
+            const ico = file.type && file.type.indexOf('video/') === 0 ? 'video'
+                : file.type && file.type.indexOf('audio/') === 0 ? 'music' : 'file';
+            thumb = '<span class="cp-ico">' + window.synapseIcon(ico) + '</span>';
         }
         box.innerHTML = thumb
             + '<span class="cp-name">' + escapeHtml(file.name) + '</span>'
-            + '<button type="button" class="cp-remove" title="Убрать">×</button>';
+            + '<button type="button" class="cp-remove" title="Убрать" aria-label="Убрать вложение">' + window.synapseIcon('close') + '</button>';
         box.hidden = false;
     }
 

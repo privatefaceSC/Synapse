@@ -219,7 +219,7 @@
                 {% else %}
                     <span class="ph">{{ user.name[0]|upper if user.name else '?' }}</span>
                 {% endif %}
-                <span class="overlay">✎ Изменить</span>
+                <span class="overlay"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#pencil"></use></svg> Изменить</span>
             </label>
             <div class="flex-grow-1">
                 <h2>Привет, {{ user.name }}!</h2>
@@ -237,12 +237,12 @@
                 {% endif %}
                 <div class="mt-2 d-flex flex-wrap gap-2">
                     <span class="status-pill">
-                        🆔 <span id="uid-value">@{{ username }}</span>
+                        <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#user"></use></svg> <span id="uid-value">@{{ username }}</span>
                         <a href="#" id="uid-edit" title="Изменить User ID"
-                           style="margin-left:2px;">✎</a>
+                           style="margin-left:2px;" aria-label="Изменить User ID"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#pencil"></use></svg></a>
                     </span>
                     <span class="status-pill" title="Язык, на который переводятся чужие сообщения">
-                        🌐
+                        <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#globe"></use></svg>
                         <select id="lang-select" class="lang-inline-select">
                             {% set cur = preferred_lang %}
                             <option value="ru" {% if cur == 'ru' %}selected{% endif %}>Русский</option>
@@ -269,14 +269,14 @@
     <div class="home-card row g-3 mb-3">
         <div class="col-md-6">
             <div class="card-soft stat">
-                <div class="ico c1">👤</div>
+                <div class="ico c1"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#users"></use></svg></div>
                 <div class="label">Контакты</div>
                 <div class="num" data-count="{{ contacts_count }}">{{ contacts_count }}</div>
             </div>
         </div>
         <div class="col-md-6">
             <div class="card-soft stat">
-                <div class="ico c2">💬</div>
+                <div class="ico c2"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#messages"></use></svg></div>
                 <div class="label">Сообщения</div>
                 <div class="num" data-count="{{ messages_count }}">{{ messages_count }}</div>
             </div>
@@ -307,7 +307,7 @@
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть портал мессенджеров</a>
         <a href="/contacts" class="btn btn-primary btn-cta">Открыть контакты</a>
         <a href="/about" class="btn btn-about">Что вообще это за сайт?</a>
-        <a href="/messenger?creators=1" class="btn btn-creator">★ Задать вопрос создателям</a>
+        <a href="/messenger?creators=1" class="btn btn-creator"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#crown"></use></svg> Задать вопрос создателям</a>
     </div>
 </div>
 
@@ -352,7 +352,7 @@
     btn.addEventListener('click', function() {
         var text = code.textContent.trim();
         function done() {
-            btn.textContent = 'Скопировано ✓';
+            btn.innerHTML = 'Скопировано ' + window.synapseIcon('check');
             btn.classList.add('done');
             setTimeout(function() {
                 btn.textContent = 'Копировать';
@@ -392,18 +392,21 @@
             var data = await r.json().catch(function() { return {}; });
             if (r.ok && data.ok) {
                 if (status) {
-                    status.textContent = '✓';
+                    status.innerHTML = window.synapseIcon('check');
+                    status.setAttribute('aria-label', 'Сохранено');
                     status.className = 'lang-status ok';
                 }
             } else {
                 if (status) {
-                    status.textContent = '✗';
+                    status.innerHTML = window.synapseIcon('alert-circle');
+                    status.setAttribute('aria-label', 'Не удалось сохранить');
                     status.className = 'lang-status err';
                 }
             }
         } catch (e) {
             if (status) {
-                status.textContent = '✗';
+                status.innerHTML = window.synapseIcon('alert-circle');
+                status.setAttribute('aria-label', 'Не удалось сохранить');
                 status.className = 'lang-status err';
             }
         }

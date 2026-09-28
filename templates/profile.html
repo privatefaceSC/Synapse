@@ -83,7 +83,7 @@
             <h4>Личные данные</h4>
             {% if user.is_creator %}
             <span class="creator-badge" title="Оригинальный аккаунт создателя Synapse">
-                ★ {{ user.creator_title or 'Создатель' }}
+                <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#crown"></use></svg> {{ user.creator_title or 'Создатель' }}
             </span>
             {% endif %}
         </div>
