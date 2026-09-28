@@ -642,6 +642,41 @@ def _form_bool(value) -> bool:
     return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
 
 
+def _android_notification_created_at(raw_timestamp, dedup_key=None):
+    """Вернуть исходное время Android-уведомления как локальный datetime.
+
+    Клиент 0.7 уже сохраняет время сообщения внутри ``dedup_key`` даже когда
+    запрос несколько минут лежит в офлайн-очереди. Новые клиенты также могут
+    прислать его отдельным полем ``sent_at_ms``. Невалидное или заметно
+    будущее время игнорируем, чтобы сломанные часы устройства не уводили чат
+    вперёд.
+    """
+    candidates = [raw_timestamp]
+    if dedup_key:
+        # Формат клиента: package|notification-key|timestamp-ms|digest.
+        # notification-key сам содержит ``|``, поэтому разбираем с конца.
+        parts = str(dedup_key).rsplit('|', 2)
+        if len(parts) == 3:
+            candidates.append(parts[1])
+
+    now_seconds = time.time()
+    earliest_seconds = datetime(2000, 1, 1).timestamp()
+    for candidate in candidates:
+        try:
+            timestamp_ms = int(str(candidate).strip())
+        except (TypeError, ValueError):
+            continue
+        timestamp_seconds = timestamp_ms / 1000.0
+        if (timestamp_seconds < earliest_seconds
+                or timestamp_seconds > now_seconds + 5 * 60):
+            continue
+        try:
+            return datetime.fromtimestamp(timestamp_seconds)
+        except (OverflowError, OSError, ValueError):
+            continue
+    return None
+
+
 def _archive_mode_from_request() -> bool:
     return _form_bool(request.args.get('archived'))
 
@@ -7905,6 +7940,9 @@ def register_routes(app: Flask) -> None:
         author = (request.form.get('author') or '').strip() or None
         is_group = _form_bool(request.form.get('is_group'))
         dedup_key = (request.form.get('dedup_key') or '').strip() or None
+        created_at = _android_notification_created_at(
+            request.form.get('sent_at_ms') or request.form.get('timestamp'),
+            dedup_key)
 
         if not sender or not text_value or not messenger_name:
             return 'Bad Request', 400
@@ -7923,7 +7961,8 @@ def register_routes(app: Flask) -> None:
                              package_name=package_name, is_group=is_group,
                              contact_avatar_path=chat_avatar_path,
                              author_avatar_path=author_avatar_path,
-                             notification_dedup_key=dedup_key)
+                             notification_dedup_key=dedup_key,
+                             created_at=created_at)
         if msg is not None:
             _notify_webpush_message(msg.id)
         return 'OK', 200
@@ -7942,6 +7981,9 @@ def register_routes(app: Flask) -> None:
         dedup_key = (request.form.get('dedup_key') or '').strip() or None
         message_dedup_key = (
             request.form.get('message_dedup_key') or '').strip() or dedup_key
+        created_at = _android_notification_created_at(
+            request.form.get('sent_at_ms') or request.form.get('timestamp'),
+            message_dedup_key)
         caption = request.form.get('text') or ''
         package_name = (request.form.get('package_name') or '').strip() or None
         author = (request.form.get('author') or '').strip() or None
@@ -7985,7 +8027,8 @@ def register_routes(app: Flask) -> None:
             author=message_author, package_name=package_name,
             is_group=is_group, contact_avatar_path=chat_avatar_path,
             author_avatar_path=author_avatar_path,
-            notification_dedup_key=message_dedup_key)
+            notification_dedup_key=message_dedup_key,
+            created_at=created_at)
         if msg is None:
             return 'OK', 200
 

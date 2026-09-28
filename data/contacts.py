@@ -363,7 +363,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     tg_topic_title=None, tg_is_forum=None,
                     text_html=None, is_group=None, contact_avatar_path=None,
                     author_avatar_path=None, notification_dedup_key=None,
-                    archived=None, muted=None):
+                    archived=None, muted=None, created_at=None):
     """Записывает сообщение.
 
     `sender_raw` — ключ личности (контакта): для лички это имя
@@ -421,7 +421,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
             # назначенный момент приходит реальный NewMessage, превращаем
             # эту запись в обычное сообщение, сохраняя её стабильный id.
             if existing.delivery_status == 'scheduled':
-                now = _dt.datetime.now()
+                now = created_at or _dt.datetime.now()
                 existing.sender = (author if author is not None
                                    else sender_raw)
                 existing.text = text
@@ -465,6 +465,9 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     .order_by(Messages.id.desc())
                     .first())
         if existing is not None:
+            if created_at is not None:
+                existing.created_at = created_at
+                existing.time = created_at.strftime("%H:%M")
             if author_avatar_path and not existing.author_avatar_path:
                 existing.author_avatar_path = author_avatar_path
             if text:
@@ -482,7 +485,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         if prior is not None:
             reply_to_message_id = prior.id
 
-    now = _dt.datetime.now()
+    now = created_at or _dt.datetime.now()
     msg = Messages(
         sender=author if author is not None else sender_raw,
         text=text,
