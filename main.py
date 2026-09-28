@@ -51,6 +51,7 @@ _media_restore_jobs_guard = threading.Lock()
 _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
 _PRESENCE_ONLINE_SECONDS = 75
 _PRESENCE_WRITE_INTERVAL_SECONDS = 20
+_PRESENCE_WRITE_BUSY_TIMEOUT_MS = 100
 _NOTIFICATION_REPLY_MAX_AGE_SECONDS = 180
 _NOTIFICATION_REPLY_RETRY_SECONDS = 12
 _RETRYABLE_NOTIFICATION_REPLY_ERRORS = {
@@ -523,6 +524,10 @@ def _commit_best_effort(db, context: str) -> bool:
     открыть переписку всё равно полезнее, чем вернуть пользователю 500.
     """
     try:
+        # Это некритичные read-receipt/presence-метки. Они не должны
+        # держать HTTP-ответ пять секунд, если SQLite занята.
+        db.connection().exec_driver_sql(
+            f"PRAGMA busy_timeout={_PRESENCE_WRITE_BUSY_TIMEOUT_MS}")
         db.commit()
         return True
     except Exception as exc:  # noqa: BLE001
@@ -2999,10 +3004,56 @@ def _dm_load_conversation(db, me_id, partner, mark_read=False):
 def register_routes(app: Flask) -> None:
     presence_write_guard = threading.Lock()
     presence_written_at = {}
+    presence_pending = {}
+    presence_worker_running = [False]
+
+    def _flush_presence_updates():
+        """Один короткоживущий worker для best-effort presence.
+
+        Обновление «в сети» никогда не должно задерживать открытие
+        страницы. Если SQLite занята, попытка заканчивается через
+        100 мс, а следующий heartbeat повторит её позже.
+        """
+        while True:
+            with presence_write_guard:
+                if not presence_pending:
+                    presence_worker_running[0] = False
+                    return
+                user_id, seen_at = presence_pending.popitem()
+            db = db_sessions.create_session()
+            try:
+                db.connection().exec_driver_sql(
+                    f"PRAGMA busy_timeout={_PRESENCE_WRITE_BUSY_TIMEOUT_MS}")
+                db.query(User).filter(User.id == user_id).update(
+                    {User.last_seen_at: seen_at}, synchronize_session=False)
+                db.commit()
+            except Exception:  # noqa: BLE001
+                # Presence — служебная метка. Не раздуваем uWSGI-лог
+                # traceback-ами и не мешаем очереди Android/сообщений.
+                try:
+                    db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+            finally:
+                db.close()
+
+    def _queue_presence_update(user_id, seen_at):
+        with presence_write_guard:
+            presence_pending[user_id] = seen_at
+            if presence_worker_running[0]:
+                return
+            presence_worker_running[0] = True
+        try:
+            threading.Thread(
+                target=_flush_presence_updates,
+                name='web-presence-writer', daemon=True).start()
+        except RuntimeError:
+            with presence_write_guard:
+                presence_worker_running[0] = False
 
     @app.before_request
     def _record_web_presence():
-        """Пишем активность не чаще раза в 20 секунд на пользователя."""
+        """Ставим активность в фоновую очередь не чаще раза в 20 секунд."""
         user_id = session.get('user_id')
         if not user_id or request.endpoint == 'static':
             return None
@@ -3022,21 +3073,16 @@ def register_routes(app: Flask) -> None:
             # Бронируем интервал до обращения к SQLite. Параллельные запросы
             # одного пользователя больше не создают очередь из UPDATE-lock.
             presence_written_at[user_id] = now_mono
-        now = datetime.now()
-        db = get_db()
-        try:
-            changed = (db.query(User)
-                       .filter(User.id == user_id)
-                       .update({User.last_seen_at: now},
-                               synchronize_session=False))
-            if changed:
-                db.commit()
-        except Exception:
-            db.rollback()
-            with presence_write_guard:
-                presence_written_at.pop(user_id, None)
-            logger.exception('Не удалось обновить web presence пользователя %s',
-                             user_id)
+        seen_at = datetime.now()
+        if app.testing:
+            # В тестах нужен детерминированный heartbeat без гонки
+            # с фоновым потоком. Production всегда идёт через очередь.
+            db = get_db()
+            db.query(User).filter(User.id == user_id).update(
+                {User.last_seen_at: seen_at}, synchronize_session=False)
+            db.commit()
+        else:
+            _queue_presence_update(user_id, seen_at)
         return None
 
     @app.route('/presence/ping', methods=['POST'])

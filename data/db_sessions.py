@@ -49,7 +49,10 @@ def global_init(db_file):
             cursor.close()
 
     __engine = engine
-    __factory = orm.sessionmaker(bind=engine)
+    # Сессии здесь короткоживущие (один HTTP-запрос/событие).
+    # Не просрачиваем все ORM-объекты после commit: иначе рендер
+    # тут же повторно читает те же строки с медленного NFS.
+    __factory = orm.sessionmaker(bind=engine, expire_on_commit=False)
 
     from . import __all_models
 
@@ -145,6 +148,8 @@ def _apply_light_migrations(engine):
             "ON messages(handle_id, created_at DESC, id DESC)",
             "CREATE INDEX IF NOT EXISTS ix_messages_user_tg_handle "
             "ON messages(user_id, tg_message_id, handle_id)",
+            "CREATE INDEX IF NOT EXISTS ix_messages_notification_dedup "
+            "ON messages(user_id, notification_dedup_key)",
             "CREATE INDEX IF NOT EXISTS ix_messages_delivery_recovery "
             "ON messages(delivery_status, tg_message_id, delivery_started_at)",
             "CREATE INDEX IF NOT EXISTS ix_attachments_message "

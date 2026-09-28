@@ -561,15 +561,22 @@ def trim_media_cache(force=False):
         # Бронируем интервал до дорогого os.walk: два WSGI-
         # запроса в одном процессе не запустят два обхода.
         _media_trimmed_at = now
-        with _media_eviction_lock:
-            before = _media_store_usage_bytes(force=True)
-            if before <= target:
-                return {"checked": True, "before": before,
-                        "after": before, "freed": 0}
-            requested = (before - target
-                         + _media_eviction_hysteresis(target))
-            freed = _evict_reloadable_telegram_media(requested)
-            after = _media_store_usage_bytes(force=True)
+        try:
+            with _media_eviction_lock:
+                before = _media_store_usage_bytes(force=True)
+                if before <= target:
+                    return {"checked": True, "before": before,
+                            "after": before, "freed": 0}
+                requested = (before - target
+                             + _media_eviction_hysteresis(target))
+                freed = _evict_reloadable_telegram_media(requested)
+                after = _media_store_usage_bytes(force=True)
+        except Exception:
+            # На старте SQLite может быть занята миграцией или
+            # Telegram catch-up. Не бронируем 30-минутный интервал
+            # после неудачи: startup-retry сможет повторить чистку.
+            _media_trimmed_at = 0.0
+            raise
     if freed:
         logger.info(
             "Automatic Telegram media cache trim: %s -> %s bytes "
@@ -582,14 +589,30 @@ async def _trim_media_cache_async(force=False):
     return await asyncio.to_thread(trim_media_cache, force)
 
 
+async def _trim_media_cache_after_startup():
+    """Пережить краткую SQLite-блокировку во время старта."""
+    for attempt, delay in enumerate((0, 10, 30), start=1):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            return await _trim_media_cache_async(force=True)
+        except Exception as exc:  # noqa: BLE001
+            if attempt >= 3:
+                logger.warning(
+                    "Automatic Telegram media cache trim failed after "
+                    "%s attempts: %s", attempt, exc)
+    return None
+
+
 def _schedule_media_cache_trim(force=False):
     """Запустить одну неблокирующую чистку после старта WSGI."""
     global _media_cleanup_future
     if (_media_cleanup_future is not None
             and not _media_cleanup_future.done()):
         return _media_cleanup_future
-    _media_cleanup_future = asyncio.run_coroutine_threadsafe(
-        _trim_media_cache_async(force=force), _loop)
+    coro = (_trim_media_cache_after_startup() if force
+            else _trim_media_cache_async(force=False))
+    _media_cleanup_future = asyncio.run_coroutine_threadsafe(coro, _loop)
     return _media_cleanup_future
 
 
