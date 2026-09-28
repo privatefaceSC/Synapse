@@ -15,9 +15,10 @@
 import asyncio
 import base64
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass
 import hashlib
+import inspect
 import json
 import logging
 import math
@@ -43,6 +44,10 @@ _auth_locks = {}
 _client_locks = {}
 _handler_locks = {}
 _sync_locks = {}
+_dialog_folder_locks = {}
+_dialog_folder_refresh_at = {}
+_dialog_folder_refresh_futures = {}
+_dialog_folder_refresh_errors = {}
 _recent_sync_futures = {}
 _lifecycle_generation = {}
 _auth_retry_after = {}
@@ -467,6 +472,15 @@ class MediaStoreFullError(OSError):
 
 class TelegramMediaUnavailableError(RuntimeError):
     """Медиа нельзя безопасно докачать из Telegram."""
+
+
+class TelegramFolderError(RuntimeError):
+    """Безопасная ошибка CRUD папок, которую можно показать в UI."""
+
+    def __init__(self, code, detail):
+        super().__init__(detail)
+        self.code = code
+        self.detail = detail
 
 
 def media_reference_guard():
@@ -895,6 +909,10 @@ def _handler_lock_for(owner):
 
 def _sync_lock_for(owner):
     return _async_lock_for(_sync_locks, owner)
+
+
+def _dialog_folder_lock_for(owner):
+    return _async_lock_for(_dialog_folder_locks, owner)
 
 
 def _lifecycle_token(owner):
@@ -2248,6 +2266,24 @@ async def _register_handler_unlocked(user_id=None, client=None,
         except Exception as exc:  # noqa: BLE001
             state["error"] = f"folder_peers: {exc}"
 
+    # Пользовательские Telegram-папки (dialog filters) не имеют отношения к
+    # UpdateFolderPeers/архиву. Изменения с другого Telegram-клиента приходят
+    # этими тремя update-типами; полный refetch также сохраняет их порядок.
+    from telethon.tl.types import (UpdateDialogFilter,
+                                    UpdateDialogFilterOrder,
+                                    UpdateDialogFilters)
+
+    @client.on(events.Raw([
+            UpdateDialogFilter, UpdateDialogFilterOrder,
+            UpdateDialogFilters]))
+    async def _on_dialog_filters(_update):
+        if _lifecycle_token(owner) != registration_token:
+            return
+        try:
+            await _refresh_dialog_folders(owner, client=client, force=True)
+        except Exception as exc:  # noqa: BLE001
+            state["error"] = f"dialog_filters: {exc}"
+
     # Редактирование сообщений (мои с другого устройства и собеседника).
     # Telegram в UI показывает только финальный текст с пометкой «ред.»;
     # мы храним ВСЕ прошлые версии в `message_edits`, чтобы видеть, что
@@ -3187,6 +3223,815 @@ async def _handle_folder_peers_update(update, user_id=None):
             allowed_types=_archive_handle_types_for_peer(peer))
 
 
+_DIALOG_FILTER_FLAGS = (
+    "contacts", "non_contacts", "groups", "broadcasts", "bots",
+    "exclude_muted", "exclude_read", "exclude_archived",
+    "title_noanimate",
+)
+
+
+def _dialog_folder_title(value):
+    title = getattr(value, "text", value)
+    return str(title or "").strip()
+
+
+def _dialog_folder_peer_id(peer):
+    try:
+        from telethon import utils
+        return int(utils.get_peer_id(peer))
+    except Exception:  # noqa: BLE001
+        for attr in ("user_id", "chat_id", "channel_id"):
+            value = getattr(peer, attr, None)
+            if value is None:
+                continue
+            try:
+                value = int(value)
+            except (TypeError, ValueError):
+                continue
+            name = peer.__class__.__name__.lower()
+            if "channel" in name:
+                return -(1_000_000_000_000 + abs(value))
+            if "chat" in name:
+                return -abs(value)
+            return abs(value)
+    return None
+
+
+def _dialog_folder_peer_ids(peers):
+    result = []
+    for peer in peers or ():
+        peer_id = _dialog_folder_peer_id(peer)
+        if peer_id is not None and peer_id not in result:
+            result.append(peer_id)
+    return result
+
+
+def _normalize_dialog_folder(remote_filter):
+    kind = ("chatlist" if remote_filter.__class__.__name__
+            == "DialogFilterChatlist" else "regular")
+    data = {
+        "remote_id": int(getattr(remote_filter, "id", 0) or 0),
+        "kind": kind,
+        "title": _dialog_folder_title(
+            getattr(remote_filter, "title", "")),
+        "icon": getattr(remote_filter, "emoticon", None),
+        "color": getattr(remote_filter, "color", None),
+        "pinned_peer_ids": _dialog_folder_peer_ids(
+            getattr(remote_filter, "pinned_peers", ())),
+        "include_peer_ids": _dialog_folder_peer_ids(
+            getattr(remote_filter, "include_peers", ())),
+        "exclude_peer_ids": _dialog_folder_peer_ids(
+            getattr(remote_filter, "exclude_peers", ())),
+    }
+    for field in _DIALOG_FILTER_FLAGS:
+        data[field] = bool(getattr(remote_filter, field, False))
+    return data
+
+
+def _dialog_matches_folder(dialog, remote_filter, *, pinned_ids=None,
+                           include_ids=None, exclude_ids=None):
+    """Apply Telegram's dialog-filter rules to one already loaded dialog.
+
+    Explicit include/pin entries stay visible despite mute/read/archive
+    exclusions; an explicit exclude entry wins over everything.  This is the
+    same useful precedence Telegram exposes in its folder editor.
+    """
+    try:
+        dialog_id = int(dialog.id)
+    except (TypeError, ValueError, AttributeError):
+        return False
+    pinned_ids = set(
+        _dialog_folder_peer_ids(getattr(remote_filter, "pinned_peers", ()))
+        if pinned_ids is None else pinned_ids)
+    include_ids = set(
+        _dialog_folder_peer_ids(getattr(remote_filter, "include_peers", ()))
+        if include_ids is None else include_ids)
+    exclude_ids = set(
+        _dialog_folder_peer_ids(getattr(remote_filter, "exclude_peers", ()))
+        if exclude_ids is None else exclude_ids)
+    if dialog_id in exclude_ids:
+        return False
+    if dialog_id in pinned_ids or dialog_id in include_ids:
+        return True
+    if remote_filter.__class__.__name__ == "DialogFilterChatlist":
+        return False
+
+    entity = getattr(dialog, "entity", None)
+    is_bot = bool(getattr(entity, "bot", False))
+    is_user = bool(getattr(dialog, "is_user", False))
+    is_group = bool(getattr(dialog, "is_group", False))
+    is_channel = bool(getattr(dialog, "is_channel", False))
+    category_match = False
+    if is_group:
+        category_match = bool(getattr(remote_filter, "groups", False))
+    elif is_channel:
+        category_match = bool(getattr(remote_filter, "broadcasts", False))
+    elif is_user or entity is not None:
+        if is_bot:
+            category_match = bool(getattr(remote_filter, "bots", False))
+        elif bool(getattr(entity, "contact", False)):
+            category_match = bool(getattr(remote_filter, "contacts", False))
+        else:
+            category_match = bool(
+                getattr(remote_filter, "non_contacts", False))
+    if not category_match:
+        return False
+    if (bool(getattr(remote_filter, "exclude_muted", False))
+            and _is_muted(dialog)):
+        return False
+    if bool(getattr(remote_filter, "exclude_read", False)):
+        unread = int(getattr(dialog, "unread_count", 0) or 0)
+        unread_mark = bool(getattr(
+            getattr(dialog, "dialog", None), "unread_mark", False))
+        if unread <= 0 and not unread_mark:
+            return False
+    if (bool(getattr(remote_filter, "exclude_archived", False))
+            and int(getattr(dialog, "folder_id", 0) or 0) == 1):
+        return False
+    return True
+
+
+async def _get_dialog_filters(client):
+    from telethon.tl import functions
+    response = await client(functions.messages.GetDialogFiltersRequest())
+    if isinstance(response, (list, tuple)):
+        return list(response)
+    return list(getattr(response, "filters", ()) or ())
+
+
+async def _get_existing_handle_dialogs(owner, client):
+    """Fetch dialog metadata only for Telegram handles already in our DB.
+
+    ``iter_dialogs(limit=None)`` may walk hundreds of pages and take minutes.
+    Folder materialization only needs locally known chats, so use the bounded
+    ``GetPeerDialogs`` request in small batches and never import history or
+    create new contacts as a side effect.
+    """
+    from types import SimpleNamespace
+
+    from telethon import utils
+    from telethon.tl import functions, types
+
+    from data import db_sessions
+    from data.contacts import MessengerHandle
+
+    db = db_sessions.create_session()
+    try:
+        chat_ids = [int(value) for (value,) in (
+            db.query(MessengerHandle.tg_chat_id)
+            .filter(MessengerHandle.user_id == owner,
+                    MessengerHandle.messenger_name == "Telegram",
+                    MessengerHandle.tg_chat_id.isnot(None))
+            .distinct().all())]
+    finally:
+        db.close()
+    input_peers = []
+    for chat_id in chat_ids:
+        try:
+            input_peers.append(await client.get_input_entity(chat_id))
+        except Exception:  # noqa: BLE001
+            # A deleted/inaccessible dialog remains in the normalized filter
+            # JSON, but cannot participate in the visible local membership.
+            continue
+    dialogs = []
+    for offset in range(0, len(input_peers), 100):
+        batch = input_peers[offset:offset + 100]
+        response = await client(functions.messages.GetPeerDialogsRequest(
+            peers=[types.InputDialogPeer(peer=peer) for peer in batch]))
+        entities = {}
+        for entity in (list(getattr(response, "users", ()) or ())
+                       + list(getattr(response, "chats", ()) or ())):
+            try:
+                entities[int(utils.get_peer_id(entity))] = entity
+            except Exception:  # noqa: BLE001
+                continue
+        for raw_dialog in getattr(response, "dialogs", ()) or ():
+            try:
+                dialog_id = int(utils.get_peer_id(raw_dialog.peer))
+            except Exception:  # noqa: BLE001
+                continue
+            entity = entities.get(dialog_id)
+            class_name = entity.__class__.__name__ if entity is not None else ""
+            is_user = class_name in {"User", "UserEmpty"}
+            is_group = (class_name in {"Chat", "ChatForbidden"}
+                        or bool(getattr(entity, "megagroup", False))
+                        or bool(getattr(entity, "gigagroup", False)))
+            is_channel = class_name in {"Channel", "ChannelForbidden"}
+            dialogs.append(SimpleNamespace(
+                id=dialog_id,
+                entity=entity,
+                is_user=is_user,
+                is_group=is_group,
+                is_channel=is_channel,
+                folder_id=getattr(raw_dialog, "folder_id", None),
+                unread_count=getattr(raw_dialog, "unread_count", 0),
+                dialog=raw_dialog,
+            ))
+    return dialogs
+
+
+def _folder_handle_maps(handles):
+    exact = {}
+    variants = {}
+    for handle in handles:
+        if handle.tg_chat_id is None:
+            continue
+        try:
+            chat_id = int(handle.tg_chat_id)
+        except (TypeError, ValueError):
+            continue
+        exact.setdefault(chat_id, []).append(handle)
+        for variant in _chat_id_variants(chat_id):
+            variants.setdefault(variant, []).append(handle)
+    return exact, variants
+
+
+def _folder_handles_for_peer(peer_id, dialog_type, exact, variants):
+    candidates = list(exact.get(peer_id, ()))
+    if not candidates:
+        candidates = list(variants.get(peer_id, ()))
+    if not dialog_type:
+        return candidates
+    typed = [handle for handle in candidates
+             if not handle.tg_chat_type
+             or handle.tg_chat_type == dialog_type]
+    return typed or candidates
+
+
+def _write_dialog_folder_snapshot(owner, filters, dialogs):
+    """Persist a fully fetched Telegram snapshot in one short transaction."""
+    import datetime as _dt
+
+    from data import db_sessions
+    from data.chat_folders import ChatFolder, ChatFolderMember
+    from data.contacts import MessengerHandle
+
+    normalized = []
+    for position, remote_filter in enumerate(filters):
+        remote_id = getattr(remote_filter, "id", None)
+        if remote_id is None:  # DialogFilterDefault ("All chats")
+            continue
+        definition = _normalize_dialog_folder(remote_filter)
+        if not definition["remote_id"]:
+            continue
+        normalized.append((position, remote_filter, definition))
+
+    db = db_sessions.create_session()
+    try:
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.user_id == owner,
+                           MessengerHandle.messenger_name == "Telegram",
+                           MessengerHandle.tg_chat_id.isnot(None))
+                   .all())
+        exact, variants = _folder_handle_maps(handles)
+        existing = (db.query(ChatFolder)
+                    .filter(ChatFolder.user_id == owner,
+                            ChatFolder.messenger_name == "Telegram",
+                            ChatFolder.source == "telegram")
+                    .all())
+        by_remote = {int(folder.remote_id): folder for folder in existing
+                     if folder.remote_id is not None}
+        seen_remote_ids = set()
+        now = _dt.datetime.now()
+
+        for position, remote_filter, definition in normalized:
+            remote_id = definition["remote_id"]
+            seen_remote_ids.add(remote_id)
+            folder = by_remote.get(remote_id)
+            is_new = folder is None
+            if folder is None:
+                folder = ChatFolder(
+                    user_id=owner, messenger_name="Telegram",
+                    source="telegram", remote_id=remote_id)
+                db.add(folder)
+                by_remote[remote_id] = folder
+            folder.remote_kind = definition["kind"]
+            folder.title = definition["title"] or "Telegram"
+            folder.icon = definition["icon"]
+            folder.color = definition["color"]
+            folder.position = position
+            folder.read_only = definition["kind"] == "chatlist"
+            folder.definition_json = json.dumps(
+                definition, ensure_ascii=False, sort_keys=True)
+            folder.synced_at = now
+            if is_new:
+                db.flush()
+
+            desired = {}
+            pinned_ids = set(definition["pinned_peer_ids"])
+            explicit_ids = pinned_ids | set(definition["include_peer_ids"])
+            seen_dialog_ids = set()
+            for dialog_position, dialog in enumerate(dialogs):
+                try:
+                    dialog_id = int(dialog.id)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                seen_dialog_ids.add(dialog_id)
+                if not _dialog_matches_folder(dialog, remote_filter):
+                    continue
+                dialog_type = _chat_type_from_entity(
+                    getattr(dialog, "entity", None))
+                for handle in _folder_handles_for_peer(
+                        dialog_id, dialog_type, exact, variants):
+                    desired[handle.id] = {
+                        "position": dialog_position,
+                        "pinned": dialog_id in pinned_ids,
+                        "membership_source": (
+                            "explicit" if dialog_id in explicit_ids
+                            else "rule"),
+                    }
+            # Keep explicit peers visible even if Telegram did not return a
+            # Dialog wrapper (for example, a temporarily inaccessible chat).
+            trailing_position = len(dialogs)
+            for peer_id in explicit_ids - seen_dialog_ids:
+                for handle in _folder_handles_for_peer(
+                        peer_id, None, exact, variants):
+                    desired.setdefault(handle.id, {
+                        "position": trailing_position,
+                        "pinned": peer_id in pinned_ids,
+                        "membership_source": "explicit",
+                    })
+                    trailing_position += 1
+
+            current = {member.handle_id: member
+                       for member in list(folder.members)}
+            for handle_id, member in current.items():
+                if handle_id not in desired:
+                    db.delete(member)
+            for handle_id, values in desired.items():
+                member = current.get(handle_id)
+                if member is None:
+                    member = ChatFolderMember(
+                        folder_id=folder.id, handle_id=handle_id)
+                    db.add(member)
+                member.position = values["position"]
+                member.pinned = values["pinned"]
+                member.membership_source = values["membership_source"]
+
+        stale = [folder for folder in existing
+                 if int(folder.remote_id or 0) not in seen_remote_ids]
+        for folder in stale:
+            # Explicit delete keeps old SQLite databases safe even if foreign
+            # key enforcement was disabled when they were created.
+            db.query(ChatFolderMember).filter(
+                ChatFolderMember.folder_id == folder.id).delete(
+                    synchronize_session=False)
+            db.delete(folder)
+        db.commit()
+        return len(normalized)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _dialog_folder_shared_path(owner, suffix):
+    root = os.path.join(os.getcwd(), "db")
+    os.makedirs(root, exist_ok=True)
+    return os.path.join(root, f".telegram-folders-{int(owner)}.{suffix}")
+
+
+@contextmanager
+def _dialog_folder_process_lock(owner):
+    """Serialize Telegram folder refreshes across uWSGI workers.
+
+    The lock is non-blocking because this code runs on the shared Telegram
+    event loop.  A caller that cannot acquire it retries asynchronously.
+    Windows tests only need the per-process asyncio lock above.
+    """
+    if os.name == "nt":
+        yield True
+        return
+    try:
+        import fcntl
+    except ImportError:
+        yield True
+        return
+    lock_file = open(_dialog_folder_shared_path(owner, "lock"), "a+b")
+    acquired = False
+    try:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError:
+            yield False
+            return
+        yield True
+    finally:
+        if acquired:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        lock_file.close()
+
+
+@asynccontextmanager
+async def _dialog_folder_process_guard(owner):
+    """Wait asynchronously for the folder lock shared by all WSGI workers."""
+    for _attempt in range(40):
+        with _dialog_folder_process_lock(owner) as acquired:
+            if acquired:
+                yield
+                return
+        await asyncio.sleep(0.5)
+    raise TelegramFolderError(
+        "telegram_sync_busy",
+        "Папки Telegram уже обновляются. Попробуйте ещё раз чуть позже.")
+
+
+def _dialog_folder_process_busy(owner):
+    """Report a refresh running in another WSGI process without waiting."""
+    if os.name == "nt":
+        return False
+    with _dialog_folder_process_lock(owner) as acquired:
+        return not acquired
+
+
+def _serialize_dialog_folder_process(operation):
+    """Serialize refresh and mutations across all AlwaysData workers."""
+    operation_signature = inspect.signature(operation)
+
+    async def serialized(*args, **kwargs):
+        bound = operation_signature.bind_partial(*args, **kwargs)
+        user_id = bound.arguments.get("user_id")
+        owner = _normalize_user_id(user_id)
+        async with _dialog_folder_process_guard(owner):
+            return await operation(*args, **kwargs)
+    return serialized
+
+
+def _shared_dialog_folder_refresh_is_recent(owner, interval=60):
+    if os.name == "nt":
+        return (time.monotonic()
+                - _dialog_folder_refresh_at.get(owner, 0) < interval)
+    try:
+        age = time.time() - os.path.getmtime(
+            _dialog_folder_shared_path(owner, "stamp"))
+    except OSError:
+        return False
+    return 0 <= age < interval
+
+
+def _mark_shared_dialog_folder_refresh(owner):
+    _dialog_folder_refresh_at[owner] = time.monotonic()
+    if os.name == "nt":
+        return
+    path = _dialog_folder_shared_path(owner, "stamp")
+    with open(path, "ab"):
+        pass
+    os.utime(path, None)
+
+
+@_serialize_dialog_folder_process
+async def _refresh_dialog_folders(user_id=None, client=None, force=False):
+    owner = _normalize_user_id(user_id)
+    async with _dialog_folder_lock_for(owner):
+        # Another worker may have completed while this coroutine waited for
+        # the process-shared lock.
+        if not force and _shared_dialog_folder_refresh_is_recent(owner):
+            return 0
+        if client is None:
+            client = await _get_client(owner)
+        if not await client.is_user_authorized():
+            raise TelegramFolderError(
+                "telegram_not_authorized", "Telegram не авторизован")
+        filters = await _get_dialog_filters(client)
+        dialogs = await _get_existing_handle_dialogs(owner, client)
+        # Snapshot persistence may wait on SQLite/NFS.  Keep that work away
+        # from Telethon's event loop so incoming messages and typing events
+        # continue to be handled while the short transaction completes.
+        result = await asyncio.to_thread(
+            _write_dialog_folder_snapshot, owner, filters, dialogs)
+        _mark_shared_dialog_folder_refresh(owner)
+        return result
+
+
+def _validated_dialog_folder_title(title):
+    title = str(title or "").strip()
+    if not title:
+        raise TelegramFolderError(
+            "invalid_title", "Введите название папки")
+    if len(title) > 12:
+        raise TelegramFolderError(
+            "invalid_title", "Название папки Telegram — не более 12 символов")
+    return title
+
+
+def _remote_filter_by_id(filters, remote_id):
+    remote_id = int(remote_id)
+    for remote_filter in filters:
+        if int(getattr(remote_filter, "id", 0) or 0) == remote_id:
+            return remote_filter
+    raise TelegramFolderError("folder_not_found", "Папка Telegram не найдена")
+
+
+async def _resolve_input_peers(client, chat_ids, known_peers=()):
+    peer_by_id = {}
+    for peer in known_peers or ():
+        peer_id = _dialog_folder_peer_id(peer)
+        if peer_id is not None:
+            peer_by_id[peer_id] = peer
+    result = []
+    for raw_id in chat_ids:
+        chat_id = int(raw_id)
+        peer = peer_by_id.get(chat_id)
+        if peer is None:
+            peer = await client.get_input_entity(chat_id)
+        if _dialog_folder_peer_id(peer) not in {
+                _dialog_folder_peer_id(item) for item in result}:
+            result.append(peer)
+    return result
+
+
+def _remote_filter_has_inclusion(remote_filter):
+    if (getattr(remote_filter, "pinned_peers", None)
+            or getattr(remote_filter, "include_peers", None)):
+        return True
+    return any(bool(getattr(remote_filter, field, False)) for field in (
+        "contacts", "non_contacts", "groups", "broadcasts", "bots"))
+
+
+@_serialize_dialog_folder_process
+async def _create_dialog_folder(title, chat_ids, user_id=None):
+    from telethon.tl import functions, types
+
+    owner = _normalize_user_id(user_id)
+    async with _dialog_folder_lock_for(owner):
+        client = await _get_client(owner)
+        if not await client.is_user_authorized():
+            raise TelegramFolderError(
+                "telegram_not_authorized", "Telegram не авторизован")
+        title = _validated_dialog_folder_title(title)
+        chat_ids = list(dict.fromkeys(int(value) for value in chat_ids))
+        if not chat_ids:
+            raise TelegramFolderError(
+                "folder_requires_chats",
+                "Добавьте хотя бы один чат в папку Telegram")
+        filters = await _get_dialog_filters(client)
+        used_ids = {int(getattr(item, "id", 0) or 0) for item in filters}
+        remote_id = next((value for value in range(2, 256)
+                          if value not in used_ids), None)
+        if remote_id is None:
+            raise TelegramFolderError(
+                "folder_limit", "Достигнут лимит папок Telegram")
+        peers = await _resolve_input_peers(client, chat_ids)
+        remote_filter = types.DialogFilter(
+            id=remote_id,
+            title=types.TextWithEntities(text=title, entities=[]),
+            pinned_peers=[], include_peers=peers, exclude_peers=[])
+        await client(functions.messages.UpdateDialogFilterRequest(
+            id=remote_id, filter=remote_filter))
+        # We already own the lock, so refresh inline instead of reacquiring it.
+        fresh_filters = await _get_dialog_filters(client)
+        dialogs = await _get_existing_handle_dialogs(owner, client)
+        await asyncio.to_thread(
+            _write_dialog_folder_snapshot, owner, fresh_filters, dialogs)
+        _mark_shared_dialog_folder_refresh(owner)
+        return remote_id
+
+
+@_serialize_dialog_folder_process
+async def _update_dialog_folder(remote_id, *, title=None,
+                                member_chat_ids=None, known_chat_ids=None,
+                                user_id=None):
+    from telethon.tl import functions, types
+
+    owner = _normalize_user_id(user_id)
+    async with _dialog_folder_lock_for(owner):
+        client = await _get_client(owner)
+        if not await client.is_user_authorized():
+            raise TelegramFolderError(
+                "telegram_not_authorized", "Telegram не авторизован")
+        filters = await _get_dialog_filters(client)
+        remote_filter = _remote_filter_by_id(filters, remote_id)
+        if remote_filter.__class__.__name__ == "DialogFilterChatlist":
+            raise TelegramFolderError(
+                "folder_read_only",
+                "Общая папка Telegram пока доступна только для просмотра")
+        if title is not None:
+            title = _validated_dialog_folder_title(title)
+            remote_filter.title = types.TextWithEntities(
+                text=title, entities=[])
+
+        if member_chat_ids is not None:
+            desired_ids = set(int(value) for value in member_chat_ids)
+            known_ids = set(int(value) for value in (
+                known_chat_ids if known_chat_ids is not None
+                else member_chat_ids))
+            all_existing_peers = list(
+                getattr(remote_filter, "pinned_peers", ()) or ()) + list(
+                getattr(remote_filter, "include_peers", ()) or ()) + list(
+                getattr(remote_filter, "exclude_peers", ()) or ())
+
+            def peer_matches(peer, values):
+                peer_id = _dialog_folder_peer_id(peer)
+                if peer_id is None:
+                    return False
+                variants_for_peer = _chat_id_variants(peer_id)
+                return any(variants_for_peer & _chat_id_variants(value)
+                           for value in values)
+
+            def is_known(peer):
+                return peer_matches(peer, known_ids)
+
+            # Preserve remote peers not represented by a local handle.  The
+            # web editor can only authoritatively replace its visible scope.
+            pinned_peers = [peer for peer in
+                            (getattr(remote_filter, "pinned_peers", ()) or ())
+                            if (not is_known(peer)
+                                or peer_matches(peer, desired_ids))]
+            include_peers = [peer for peer in
+                             (getattr(remote_filter, "include_peers", ()) or ())
+                             if (not is_known(peer)
+                                 or peer_matches(peer, desired_ids))]
+            exclude_peers = [peer for peer in
+                             (getattr(remote_filter, "exclude_peers", ()) or ())
+                             if not is_known(peer)]
+            already_included = set(_dialog_folder_peer_ids(
+                pinned_peers + include_peers))
+            missing_desired = [chat_id for chat_id in sorted(desired_ids)
+                               if not any(
+                                   _chat_id_variants(chat_id)
+                                   & _chat_id_variants(included_id)
+                                   for included_id in already_included)]
+            include_peers.extend(await _resolve_input_peers(
+                client, missing_desired, all_existing_peers))
+
+            # If a deselected local chat is included by a dynamic rule, add a
+            # Telegram exclusion.  Do not grow exclude_peers for chats which
+            # already fail all dynamic rules.
+            dialogs = await _get_existing_handle_dialogs(owner, client)
+            dialogs_by_variant = {}
+            for dialog in dialogs:
+                try:
+                    dialog_id = int(dialog.id)
+                except (TypeError, ValueError, AttributeError):
+                    continue
+                for variant in _chat_id_variants(dialog_id):
+                    dialogs_by_variant.setdefault(variant, dialog)
+            base_pinned_ids = set(_dialog_folder_peer_ids(pinned_peers))
+            base_include_ids = set(_dialog_folder_peer_ids(include_peers))
+            base_exclude_ids = set(_dialog_folder_peer_ids(exclude_peers))
+            excluded_ids = known_ids - desired_ids
+            to_exclude = []
+            for chat_id in sorted(excluded_ids):
+                dialog = next((dialogs_by_variant.get(variant)
+                               for variant in _chat_id_variants(chat_id)
+                               if dialogs_by_variant.get(variant) is not None),
+                              None)
+                if dialog is not None and _dialog_matches_folder(
+                        dialog, remote_filter,
+                        pinned_ids=base_pinned_ids,
+                        include_ids=base_include_ids,
+                        exclude_ids=base_exclude_ids):
+                    to_exclude.append(chat_id)
+            exclude_peers.extend(await _resolve_input_peers(
+                client, to_exclude, all_existing_peers))
+            remote_filter.pinned_peers = pinned_peers
+            remote_filter.include_peers = include_peers
+            remote_filter.exclude_peers = exclude_peers
+
+        if not _remote_filter_has_inclusion(remote_filter):
+            raise TelegramFolderError(
+                "folder_requires_chats",
+                "В папке Telegram должен остаться хотя бы один чат или тип чатов")
+        await client(functions.messages.UpdateDialogFilterRequest(
+            id=int(remote_id), filter=remote_filter))
+        fresh_filters = await _get_dialog_filters(client)
+        dialogs = await _get_existing_handle_dialogs(owner, client)
+        await asyncio.to_thread(
+            _write_dialog_folder_snapshot, owner, fresh_filters, dialogs)
+        _mark_shared_dialog_folder_refresh(owner)
+
+
+@_serialize_dialog_folder_process
+async def _delete_dialog_folder(remote_id, user_id=None):
+    from telethon.tl import functions
+
+    owner = _normalize_user_id(user_id)
+    async with _dialog_folder_lock_for(owner):
+        client = await _get_client(owner)
+        if not await client.is_user_authorized():
+            raise TelegramFolderError(
+                "telegram_not_authorized", "Telegram не авторизован")
+        filters = await _get_dialog_filters(client)
+        remote_filter = _remote_filter_by_id(filters, remote_id)
+        if remote_filter.__class__.__name__ == "DialogFilterChatlist":
+            raise TelegramFolderError(
+                "folder_read_only",
+                "Общую папку Telegram нужно покинуть через Telegram")
+        await client(functions.messages.UpdateDialogFilterRequest(
+            id=int(remote_id), filter=None))
+        fresh_filters = await _get_dialog_filters(client)
+        dialogs = await _get_existing_handle_dialogs(owner, client)
+        await asyncio.to_thread(
+            _write_dialog_folder_snapshot, owner, fresh_filters, dialogs)
+        _mark_shared_dialog_folder_refresh(owner)
+
+
+def _call_dialog_folder(coro, timeout=60):
+    if not is_configured() or not telethon_available():
+        coro.close()
+        raise TelegramFolderError(
+            "telegram_unavailable", "Telegram-мост не настроен")
+    try:
+        return _call(coro, timeout=timeout)
+    except TelegramFolderError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Telegram folder operation failed")
+        raise TelegramFolderError(
+            "telegram_unavailable",
+            "Не удалось изменить папку Telegram. Попробуйте позже.") from exc
+
+
+def refresh_dialog_folders(user_id=None):
+    return _call_dialog_folder(
+        _refresh_dialog_folders(user_id=user_id), timeout=120)
+
+
+async def _safe_refresh_dialog_folders(user_id=None, force=False):
+    owner = _normalize_user_id(user_id)
+    _dialog_folder_refresh_errors.pop(owner, None)
+    try:
+        return await _refresh_dialog_folders(
+            user_id=owner, force=force)
+    except TelegramFolderError as exc:
+        _dialog_folder_refresh_errors[owner] = {
+            "code": exc.code,
+            "detail": exc.detail,
+            "at": time.monotonic(),
+        }
+        return None
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Telegram folder background refresh failed for user_id=%s",
+            owner)
+        _dialog_folder_refresh_errors[owner] = {
+            "code": "telegram_unavailable",
+            "detail": "Не удалось обновить папки Telegram. Попробуйте позже.",
+            "at": time.monotonic(),
+        }
+        return None
+
+
+def queue_dialog_folder_refresh(user_id=None, force=False):
+    """Start a coalesced refresh without occupying an HTTP worker."""
+    if not is_configured() or not telethon_available():
+        raise TelegramFolderError(
+            "telegram_unavailable", "Telegram-мост не настроен")
+    owner = _normalize_user_id(user_id)
+    current = _dialog_folder_refresh_futures.get(owner)
+    if current is not None and not current.done():
+        return True
+    _ensure_loop()
+    future = asyncio.run_coroutine_threadsafe(
+        _safe_refresh_dialog_folders(owner, force=bool(force)), _loop)
+    _dialog_folder_refresh_futures[owner] = future
+
+    def _forget(done_future):
+        if _dialog_folder_refresh_futures.get(owner) is done_future:
+            # Keep the completed future out of the long-lived user map; the
+            # sanitized error, if any, lives separately until the next try.
+            _dialog_folder_refresh_futures.pop(owner, None)
+
+    future.add_done_callback(_forget)
+    return True
+
+
+def dialog_folder_refresh_status(user_id=None):
+    owner = _normalize_user_id(user_id)
+    future = _dialog_folder_refresh_futures.get(owner)
+    error = _dialog_folder_refresh_errors.get(owner)
+    return {
+        # The file-lock check makes status meaningful even when the browser's
+        # next request lands on another uWSGI worker.
+        "pending": bool((future is not None and not future.done())
+                        or _dialog_folder_process_busy(owner)),
+        "error": ({"code": error["code"], "detail": error["detail"]}
+                  if error else None),
+    }
+
+
+def create_dialog_folder(title, chat_ids, user_id=None):
+    return _call_dialog_folder(
+        _create_dialog_folder(title, chat_ids, user_id=user_id), timeout=90)
+
+
+def update_dialog_folder(remote_id, *, title=None, member_chat_ids=None,
+                         known_chat_ids=None, user_id=None):
+    return _call_dialog_folder(_update_dialog_folder(
+        remote_id, title=title, member_chat_ids=member_chat_ids,
+        known_chat_ids=known_chat_ids, user_id=user_id), timeout=120)
+
+
+def delete_dialog_folder(remote_id, user_id=None):
+    return _call_dialog_folder(
+        _delete_dialog_folder(remote_id, user_id=user_id), timeout=90)
+
+
 async def _refresh_filter_cache(user_id=None, client=None):
     """Пересобирает кэши Telegram-состояний, влияющих на контакты."""
     global _skip_chat_ids
@@ -3785,6 +4630,7 @@ async def _reset_login(user_id=None):
         _clear_pending_code(state, keep_phone=True)
         state["authorized"] = False
         state["error"] = None
+        _dialog_folder_refresh_at.pop(owner, None)
 
 
 def reset_login(user_id=None):
@@ -3829,6 +4675,7 @@ async def _logout(user_id=None):
             _client = None
             _refresh_task = None
         _skip_chat_ids = set()
+        _dialog_folder_refresh_at.pop(owner, None)
         state.update(dict(_STATE_TEMPLATE))
         if owner == _owner_user_id():
             _state.update(dict(_STATE_TEMPLATE))

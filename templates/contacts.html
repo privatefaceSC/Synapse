@@ -160,6 +160,131 @@
     [data-bs-theme="dark"] .mf-btn.active {
         background: #3b82f6; color: #fff; border-color: #3b82f6;
     }
+    .chat-list-stage {
+        flex: 1 1 auto; min-height: 0; display: flex; gap: 7px;
+    }
+    .chat-folder-rail {
+        flex: 0 0 70px; width: 70px; min-height: 0;
+        display: flex; flex-direction: column; align-items: center;
+        gap: 7px; padding: 7px 4px; overflow-x: hidden; overflow-y: auto;
+        border: 1px solid #e5e7eb; border-radius: 15px;
+        background: rgba(248,250,252,.94);
+        scrollbar-width: none;
+    }
+    .chat-folder-rail[hidden] { display: none !important; }
+    .chat-folder-rail::-webkit-scrollbar { display: none; }
+    .cf-btn {
+        position: relative; flex: 0 0 auto; width: 60px; min-height: 52px;
+        padding: 0; border-radius: 14px; border: 1px solid transparent;
+        background: transparent; color: #64748b; cursor: pointer;
+        display: inline-flex; flex-direction: column; gap: 1px;
+        align-items: center; justify-content: center;
+        font-size: 18px; font-weight: 750;
+        transition: transform .14s ease, background .14s ease,
+                    color .14s ease, box-shadow .14s ease;
+    }
+    .cf-btn:hover { background: #e8eef8; color: #2563eb; transform: translateY(-1px); }
+    .cf-btn.active {
+        color: #fff; background: linear-gradient(145deg, #60a5fa, #2563eb);
+        box-shadow: 0 7px 18px rgba(37,99,235,.28);
+    }
+    .cf-btn.manage { margin-top: auto; font-size: 17px; }
+    .cf-btn .cf-label {
+        display: block; width: 54px; padding: 0 2px;
+        overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+        font-size: 9px; line-height: 1.15; font-weight: 650;
+    }
+    .cf-btn .cf-count {
+        position: absolute; right: -2px; top: -3px; min-width: 17px; height: 17px;
+        padding: 0 4px; border-radius: 9px; background: #ef4444; color: #fff;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 9px; line-height: 1; font-weight: 800;
+        border: 2px solid #f8fafc;
+    }
+    .cf-divider { width: 32px; height: 1px; flex: 0 0 auto; background: #dbe2ea; }
+    .folder-modal-backdrop {
+        position: fixed; inset: 0; z-index: 2600; display: flex;
+        align-items: center; justify-content: center; padding: 18px;
+        background: rgba(2,6,23,.64); backdrop-filter: blur(6px);
+    }
+    .folder-modal-backdrop[hidden] { display: none !important; }
+    .folder-modal {
+        width: min(540px, 100%); max-height: min(720px, 90dvh);
+        display: flex; flex-direction: column; overflow: hidden;
+        border: 1px solid #dbe3ef; border-radius: 22px; background: #fff;
+        box-shadow: 0 30px 80px rgba(2,6,23,.35);
+    }
+    .folder-modal-head, .folder-modal-actions {
+        display: flex; align-items: center; gap: 10px; padding: 15px 18px;
+    }
+    .folder-modal-head { border-bottom: 1px solid #edf0f5; }
+    .folder-modal-title { flex: 1; font-size: 17px; font-weight: 800; }
+    .folder-modal-close {
+        border: 0; border-radius: 10px; background: transparent;
+        color: #64748b; padding: 6px 9px; font-size: 20px;
+    }
+    .folder-modal-body { padding: 16px 18px; overflow-y: auto; }
+    .folder-field { display: block; margin-bottom: 14px; }
+    .folder-field > span { display: block; margin-bottom: 6px; color: #64748b; font-size: 12px; }
+    .folder-field input[type="text"], .folder-member-search {
+        width: 100%; padding: 10px 12px; border: 1px solid #dbe3ef;
+        border-radius: 12px; background: #f8fafc; color: #0f172a; outline: none;
+    }
+    .folder-field input:focus, .folder-member-search:focus {
+        border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(59,130,246,.13);
+    }
+    .folder-list { display: grid; gap: 8px; }
+    .folder-list-row {
+        display: flex; align-items: center; gap: 10px; padding: 10px 11px;
+        border: 1px solid #e5eaf1; border-radius: 13px; background: #f8fafc;
+    }
+    .folder-list-row strong { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; }
+    .folder-mini-btn, .folder-primary-btn, .folder-danger-btn {
+        border: 0; border-radius: 10px; padding: 8px 11px; cursor: pointer;
+        font-weight: 700; font-size: 13px;
+    }
+    .folder-mini-btn { background: #e7edf6; color: #334155; }
+    .folder-primary-btn { background: #2563eb; color: #fff; }
+    .folder-danger-btn { background: #fee2e2; color: #b91c1c; }
+    .folder-modal-actions { justify-content: flex-end; border-top: 1px solid #edf0f5; }
+    .folder-member-list { display: grid; gap: 5px; margin-top: 10px; }
+    .folder-member-row {
+        display: flex; align-items: center; gap: 9px; padding: 8px 9px;
+        border-radius: 10px; cursor: pointer;
+    }
+    .folder-member-row:hover { background: #f1f5f9; }
+    .folder-member-row input { width: 18px; height: 18px; accent-color: #2563eb; }
+    .folder-modal-status { min-height: 20px; color: #64748b; font-size: 12px; margin-top: 10px; }
+    [data-bs-theme="dark"] .chat-folder-rail {
+        background: rgba(17,24,39,.78); border-color: rgba(148,163,184,.14);
+    }
+    [data-bs-theme="dark"] .cf-btn { color: #94a3b8; }
+    [data-bs-theme="dark"] .cf-btn:hover { background: #202b3d; color: #93c5fd; }
+    [data-bs-theme="dark"] .cf-btn .cf-count { border-color: #111827; }
+    [data-bs-theme="dark"] .folder-modal {
+        background: #121821; border-color: #2a3443; color: #e5e7eb;
+    }
+    [data-bs-theme="dark"] .folder-modal-head,
+    [data-bs-theme="dark"] .folder-modal-actions { border-color: #263140; }
+    [data-bs-theme="dark"] .folder-field input[type="text"],
+    [data-bs-theme="dark"] .folder-member-search,
+    [data-bs-theme="dark"] .folder-list-row {
+        color: #e5e7eb; background: #18212d; border-color: #2b3747;
+    }
+    [data-bs-theme="dark"] .folder-member-row:hover { background: #1d2938; }
+    [data-bs-theme="dark"] .folder-mini-btn { background: #263447; color: #dbeafe; }
+    @media (max-width: 767.98px) {
+        .chat-list-stage { flex-direction: column; gap: 0; }
+        .chat-folder-rail {
+            width: 100%; flex: 0 0 auto; min-height: 56px;
+            flex-direction: row; justify-content: flex-start;
+            padding: 6px 12px 8px; border: 0; border-radius: 0;
+            overflow-x: auto; overflow-y: hidden;
+        }
+        .cf-btn { width: 58px; min-height: 48px; border-radius: 13px; }
+        .cf-btn.manage { margin-top: 0; margin-left: auto; }
+        .cf-divider { width: 1px; height: 30px; }
+    }
     .search-results {
         position: absolute; left: 0; right: 0; top: calc(100% + 6px);
         background: #fff; border: 1px solid #ecedf1; border-radius: 12px;
@@ -341,7 +466,7 @@
         pointer-events: none;
     }
     .contact-list {
-        flex: 1 1 auto; min-height: 0;
+        flex: 1 1 auto; min-width: 0; min-height: 0;
         overflow-y: auto; background: #fff;
         border: 1px solid #ecedf1; border-radius: 16px;
         box-shadow: 0 1px 3px rgba(16,24,40,.06), 0 1px 2px rgba(16,24,40,.04);
@@ -399,6 +524,11 @@
         margin-top: 1px;
     }
     .contact-row .list-tg-tick.read { color: #3b82f6; }
+    .contact-preview-content.has-local-draft .list-tg-tick { display: none; }
+    .contact-row .preview.draft-preview { color: #ef4444; }
+    [data-bs-theme="dark"] .contact-row .preview.draft-preview {
+        color: #fb7185;
+    }
     .contact-row .time {
         font-size: 11px; color: #9ca3af; flex: 0 0 auto;
         letter-spacing: .02em;
@@ -4280,10 +4410,14 @@
                 <div class="search-results" id="search-results" role="listbox"></div>
             </div>
             <div class="messenger-folders" id="messenger-folders"></div>
+            <div class="chat-list-stage">
+            <nav class="chat-folder-rail" id="chat-folder-bar"
+                 aria-label="Папки чатов" hidden></nav>
             <div class="contact-list" id="contact-list"
                  data-active-id="{{ selected.id if selected else '' }}"
                  data-archive-mode="{{ '1' if archive_mode else '0' }}"
-                 data-creator-mode="{{ '1' if creator_mode else '0' }}">
+                 data-creator-mode="{{ '1' if creator_mode else '0' }}"
+                 data-user-id="{{ session.get('user_id', '') }}">
                 {% if creator_mode %}
                 <div class="creator-suggestions" data-creator-suggestions>
                     <div class="creator-suggestions-title">Создатели Synapse</div>
@@ -4387,6 +4521,7 @@
                     </div>
                 {% endif %}
             </div>
+            </div>
         </div>
 
         <div class="contacts-resizer d-none d-md-block" id="contacts-resizer"
@@ -4451,9 +4586,6 @@
                                     </span>
                                 </div>
                             </div>
-                            <button type="button" class="topics-btn"
-                                    data-topics-btn="1"
-                                    title="📑 Темы чата (анализирует Ollama)">📑</button>
                             {% if _expandable %}
                                 <span class="chevron" aria-hidden="true">▾</span>
                             {% endif %}
@@ -5396,6 +5528,7 @@
 </script>
 
 <script src="{{ url_for('static', filename='contacts_media.js') }}"></script>
+<script src="{{ url_for('static', filename='contacts_drafts.js') }}"></script>
 <script>
 // Полноэкранный просмотр фото: клик по .media-img открывает оверлей поверх
 // страницы (не переход по ссылке и не скачивание). Делегирование на document —
@@ -6085,6 +6218,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 (archiveMode ? 'В архиве пока пусто.'
                              : 'Контактов пока нет. Пришлите первое уведомление с устройства.') +
                 '</div>';
+            if (window.__skillwoodDrafts) {
+                window.__skillwoodDrafts.applyToContactList(list);
+            }
             return;
         }
         const rowsHtml = contacts.map(c => {
@@ -6136,6 +6272,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         // После перерисовки списка — пересчитать счётчики папок и
         // применить активный фильтр.
         if (window._refreshFolders) window._refreshFolders();
+        if (window.__skillwoodDrafts) {
+            window.__skillwoodDrafts.applyToContactList(list);
+        }
     }
 
     async function poll() {
@@ -7254,6 +7393,77 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let outgoingActivity = null;
     let outgoingActivityTimer = null;
     let lastTypingSignalAt = 0;
+    const draftStore = window.__skillwoodDrafts || null;
+    let draftSaveTimer = null;
+
+    function composerDraftContext(form) {
+        if (!form) return null;
+        const contactId = form.dataset.contactId || currentContactId || '';
+        if (!contactId) return null;
+        return {
+            contactId: String(contactId),
+            messenger: form.dataset.messenger || currentMessenger || '',
+            topicId: currentTopicId || '',
+        };
+    }
+
+    function saveComposerDraft(form) {
+        if (!draftStore || !form) return null;
+        const ta = form.querySelector('#composer-text');
+        const context = composerDraftContext(form);
+        if (!ta || !context) return null;
+        // Подпись уже ушла в оптимистичную загрузку, но её результат ещё не
+        // известен. Пустое поле при переходе в другой чат не должно удалить
+        // сохранённую подпись: при сбое пользователь сможет к ней вернуться.
+        if (!ta.value.trim() && form.dataset.mediaDraftPending === '1') {
+            return draftStore.get(context);
+        }
+        return draftStore.save(Object.assign(context, {text: ta.value}));
+    }
+
+    function flushComposerDraft(form) {
+        if (draftSaveTimer) {
+            clearTimeout(draftSaveTimer);
+            draftSaveTimer = null;
+        }
+        return saveComposerDraft(form || feed.querySelector('#composer'));
+    }
+
+    function scheduleComposerDraftSave(form) {
+        if (!draftStore || !form) return;
+        if (draftSaveTimer) clearTimeout(draftSaveTimer);
+        draftSaveTimer = setTimeout(() => {
+            draftSaveTimer = null;
+            if (form.isConnected && feed.contains(form)) {
+                saveComposerDraft(form);
+            }
+        }, 220);
+    }
+
+    function restoreComposerDraft(form) {
+        if (!draftStore || !form) return null;
+        const ta = form.querySelector('#composer-text');
+        const context = composerDraftContext(form);
+        if (!ta || !context) return null;
+        const draft = draftStore.get(context);
+        if (!draft) return null;
+        ta.value = draft.text;
+        try {
+            ta.selectionStart = ta.selectionEnd = ta.value.length;
+        } catch (_) {}
+        syncComposerTextState(ta, {keepClientSendKey: true});
+        return draft;
+    }
+
+    function clearComposerDraftIfUnchanged(snapshot) {
+        if (!draftStore || !snapshot) return false;
+        return draftStore.removeIfUnchanged(snapshot);
+    }
+
+    window.addEventListener('pagehide', () => flushComposerDraft());
+    document.addEventListener('visibilitychange', () => {
+        if (document.hidden) flushComposerDraft();
+    });
 
     function composerActivityTarget() {
         const form = feed.querySelector('#composer');
@@ -7856,8 +8066,6 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     <div class="fw-semibold text-truncate">${escapeHtml(c.display_name)}${creatorBadgeHtml(c)}</div>
                     <div class="text-muted small text-truncate feed-header-subline${activity ? ' is-typing' : ''}">${presenceHtml}</div>
                 </div>
-                <button type="button" class="topics-btn" data-topics-btn="1"
-                        title="📑 Темы чата (анализирует Ollama)">📑</button>
                 ${chevron}
             </div>
             ${panel}
@@ -9049,6 +9257,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     async function openContact(id, messenger, opts) {
         opts = opts || {};
+        // Сохраняем старое поле до смены destination и уничтожения composer.
+        flushComposerDraft(feed.querySelector('#composer'));
         const token = ++navToken;
         clearOutgoingActivity();
         if (contactLoadController) contactLoadController.abort();
@@ -9101,31 +9311,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             olderMessages = [];
             hasOlderMessages = !!data.has_older;
             paint(data.contact, data.messages);
+            restoreComposerDraft(feed.querySelector('#composer'));
             renderForwardBanner();
-            // Закреплённые «темы чата» — если уже анализировались, сразу
-            // показываем пин-бар сверху. Сервер их хранит в БД.
-            setPinnedTopics(data.topics || []);
             // Закреплённые сообщения чата — плашка «📌 Закреплённое».
             setPinnedMessages(data.pinned_messages || []);
-            // Защитный fetch: если основной запрос почему-то не отдал
-            // темы (race, baked-in старый JS, частичная ошибка), отдельно
-            // тянем сохранённые темы из БД для текущего (contact, topic).
-            // cached_only=1 не дёргает LLM, поэтому быстрый.
-            if (!(data.topics && data.topics.length)) {
-                const _tidp = currentTopicId
-                    ? '&topic_id=' + encodeURIComponent(currentTopicId) : '';
-                fetch('/contacts/' + id + '/topics.json?cached_only=1'
-                      + _tidp, {credentials: 'same-origin'})
-                    .then(r => r.ok ? r.json() : null)
-                    .then(d => {
-                        if (token !== navToken) return;
-                        if (d && d.status === 'ok'
-                                && Array.isArray(d.topics)
-                                && d.topics.length) {
-                            setPinnedTopics(d.topics);
-                        }
-                    }).catch(() => {});
-            }
             // Сигнатура — та же что в pollMessages: id+text+time+tg_read+
             // deleted+reactions. Иначе первый же tick пересоберёт ленту впустую.
             lastSig = messagePollSignature(data.messages);
@@ -9178,6 +9367,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function showList(opts) {
         opts = opts || {};
+        flushComposerDraft(feed.querySelector('#composer'));
         clearOutgoingActivity();
         navToken += 1;
         if (contactLoadController) contactLoadController.abort();
@@ -9242,7 +9432,16 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     // (раньше тут был picker — он удалён, см. ниже).
     const MF_KEY = 'skillwood:active-folder';
     const MF_ORDER_KEY = 'skillwood:folder-order';
+    const FOLDER_USER = list.dataset.userId || '0';
+    const CF_KEY = 'skillwood:chat-folder:' + FOLDER_USER + ':';
     let activeFolder = localStorage.getItem(MF_KEY) || '';  // '' = «Все»
+    let activeChatFolderId = '';
+    let chatFolderSnapshot = {folders: [], handles: []};
+    let chatFolderLoading = false;
+    let chatFolderLoadToken = 0;
+    let chatFolderLastLoadedAt = 0;
+    let chatFolderLastRemoteRefreshAt = 0;
+    let chatFolderModalBusy = false;
     let draggedFolder = null;
     let suppressFolderClick = false;
 
@@ -9288,13 +9487,24 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         requestAnimationFrame(() => centerActiveFolder('smooth'));
     }
     function countByMessenger(m) {
-        return list.querySelectorAll(
-            '.contact-row-wrap[data-messengers*="' + m + '"]').length;
+        let count = 0;
+        list.querySelectorAll('.contact-row-wrap').forEach(function(wrap) {
+            const messengers = (wrap.dataset.messengers || '')
+                .split(',').map(value => value.trim()).filter(Boolean);
+            if (messengers.includes(m)) count += 1;
+        });
+        return count;
     }
     function renderFolders() {
         const box = document.getElementById('messenger-folders');
         if (!box) return;
         const msgrs = orderMessengers(collectMessengers());
+        if (activeFolder && !msgrs.includes(activeFolder)) {
+            activeFolder = '';
+            activeChatFolderId = '';
+            chatFolderSnapshot = {folders: [], handles: []};
+            localStorage.removeItem(MF_KEY);
+        }
         if (!msgrs.length) {
             box.innerHTML = '';
             return;
@@ -9326,21 +9536,353 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         });
     }
     function applyFolderFilter() {
+        const selectedFolder = activeChatFolderId
+            ? chatFolderSnapshot.folders.find(f => String(f.id) === String(activeChatFolderId))
+            : null;
+        const memberIds = new Set((selectedFolder && selectedFolder.member_contact_ids || [])
+            .map(value => String(value)));
         list.querySelectorAll('.contact-row-wrap').forEach(function(w) {
             if (!activeFolder) { w.hidden = false; return; }
             const msgrs = (w.dataset.messengers || '')
                 .split(',').filter(Boolean);
-            w.hidden = !msgrs.includes(activeFolder);
+            const wrongMessenger = !msgrs.includes(activeFolder);
+            const outsideFolder = !!selectedFolder
+                && !memberIds.has(String(w.dataset.contactId || ''));
+            w.hidden = wrongMessenger || outsideFolder;
         });
     }
     function setActiveFolder(m) {
+        const previousMessenger = activeFolder;
         activeFolder = m || '';
+        if (previousMessenger !== activeFolder) {
+            chatFolderSnapshot = {folders: [], handles: []};
+        }
         if (activeFolder) localStorage.setItem(MF_KEY, activeFolder);
         else localStorage.removeItem(MF_KEY);
+        activeChatFolderId = activeFolder
+            ? (localStorage.getItem(CF_KEY + activeFolder) || '') : '';
         renderFolders();
         applyFolderFilter();
+        if (window.__skillwoodDrafts) {
+            window.__skillwoodDrafts.applyToContactList(list);
+        }
+        loadChatFolders(activeFolder);
         if (window.syncContactNewChatButton) window.syncContactNewChatButton();
         requestAnimationFrame(() => centerActiveFolder('smooth'));
+    }
+
+    function folderGlyph(folder) {
+        const icon = String(folder && folder.icon || '').trim();
+        if (icon) return icon;
+        const title = String(folder && folder.title || '').trim();
+        return title ? title.charAt(0).toUpperCase() : '◆';
+    }
+
+    function renderChatFolders(errorText) {
+        const rail = document.getElementById('chat-folder-bar');
+        if (!rail) return;
+        if (!activeFolder) {
+            rail.hidden = true;
+            rail.innerHTML = '';
+            return;
+        }
+        rail.hidden = false;
+        if (chatFolderLoading && !chatFolderSnapshot.folders.length) {
+            rail.innerHTML = '<button type="button" class="cf-btn" title="Загружаю папки" disabled>'
+                + '<span>…</span><span class="cf-label">Папки</span></button>';
+            return;
+        }
+        let html = '<button type="button" class="cf-btn'
+            + (!activeChatFolderId ? ' active' : '')
+            + '" data-chat-folder="" title="Все чаты · '
+            + escapeHtml(activeFolder) + '"><span>💬</span>'
+            + '<span class="cf-label">Все чаты</span></button>';
+        const folders = (chatFolderSnapshot.folders || []).slice().sort(
+            (a, b) => Number(a.position || 0) - Number(b.position || 0));
+        if (folders.length) html += '<span class="cf-divider" aria-hidden="true"></span>';
+        folders.forEach(function(folder) {
+            const members = folder.member_contact_ids || [];
+            const title = folder.title || 'Папка';
+            html += '<button type="button" class="cf-btn'
+                + (String(activeChatFolderId) === String(folder.id) ? ' active' : '')
+                + '" data-chat-folder="' + escapeHtml(folder.id)
+                + '" title="' + escapeHtml(title) + '">'
+                + '<span aria-hidden="true">' + escapeHtml(folderGlyph(folder)) + '</span>'
+                + '<span class="cf-label">' + escapeHtml(title) + '</span>'
+                + (members.length
+                    ? '<span class="cf-count">' + members.length + '</span>' : '')
+                + '</button>';
+        });
+        if (errorText) {
+            html += '<button type="button" class="cf-btn" data-folder-retry="1"'
+                + ' title="' + escapeHtml(errorText) + '"><span>!</span>'
+                + '<span class="cf-label">Повторить</span></button>';
+        }
+        html += '<button type="button" class="cf-btn manage" data-folder-manage="1"'
+            + ' title="Настроить папки ' + escapeHtml(activeFolder) + '">'
+            + '<span>⚙</span><span class="cf-label">Ред.</span></button>';
+        rail.innerHTML = html;
+    }
+
+    async function loadChatFolders(messenger, force, cachedOnly, syncAttempt) {
+        messenger = messenger || '';
+        syncAttempt = Number(syncAttempt) || 0;
+        const loadToken = ++chatFolderLoadToken;
+        if (!messenger) {
+            chatFolderSnapshot = {folders: [], handles: []};
+            activeChatFolderId = '';
+            chatFolderLoading = false;
+            renderChatFolders();
+            applyFolderFilter();
+            return;
+        }
+        const requested = messenger;
+        if (!cachedOnly) chatFolderLastRemoteRefreshAt = Date.now();
+        chatFolderLoading = true;
+        renderChatFolders();
+        try {
+            const r = await fetch('/contacts/folders.json?messenger='
+                + encodeURIComponent(requested)
+                + (cachedOnly ? '&cached=1' : '')
+                + (force ? '&force=1' : ''),
+                {credentials: 'same-origin'});
+            const data = await r.json().catch(() => ({}));
+            if (loadToken !== chatFolderLoadToken || requested !== activeFolder) return;
+            if (!r.ok) throw new Error(data.detail || data.error || 'Не удалось загрузить папки');
+            chatFolderSnapshot = {
+                folders: Array.isArray(data.folders) ? data.folders : [],
+                handles: Array.isArray(data.handles) ? data.handles : [],
+            };
+            chatFolderLastLoadedAt = Date.now();
+            if (activeChatFolderId && !data.sync_pending
+                    && !chatFolderSnapshot.folders.some(
+                        f => String(f.id) === String(activeChatFolderId))) {
+                activeChatFolderId = '';
+                localStorage.removeItem(CF_KEY + activeFolder);
+            }
+            chatFolderLoading = false;
+            renderChatFolders(data.sync_error && data.sync_error.detail);
+            applyFolderFilter();
+            const syncDelays = [1200, 2200, 3500, 5000, 8000, 12000];
+            // One extra cached read also covers the tiny interval between a
+            // different WSGI worker queueing the job and taking the file lock.
+            const shouldPoll = !!data.sync_pending
+                || (requested === 'Telegram' && syncAttempt === 1);
+            if (shouldPoll && syncAttempt < syncDelays.length) {
+                // Сервер уже обновляет Telegram-папки в фоне. Подхватываем
+                // свежий снимок без нового сетевого запроса к Telegram. Число
+                // попыток ограничено, чтобы зависший мост не создавал спам.
+                window.setTimeout(function() {
+                    if (requested === activeFolder
+                            && loadToken === chatFolderLoadToken) {
+                        loadChatFolders(
+                            requested, false, true, syncAttempt + 1);
+                    }
+                }, syncDelays[syncAttempt]);
+            } else if (data.sync_pending) {
+                renderChatFolders(
+                    'Обновление папок занимает больше обычного. Повторите позже.');
+            }
+        } catch (err) {
+            if (loadToken !== chatFolderLoadToken || requested !== activeFolder) return;
+            chatFolderLoading = false;
+            renderChatFolders((err && err.message) || 'Ошибка загрузки папок');
+            applyFolderFilter();
+        } finally {
+            if (loadToken === chatFolderLoadToken && requested === activeFolder) {
+                chatFolderLoading = false;
+            }
+        }
+    }
+
+    function setActiveChatFolder(folderId) {
+        activeChatFolderId = folderId == null ? '' : String(folderId);
+        if (activeFolder && activeChatFolderId) {
+            localStorage.setItem(CF_KEY + activeFolder, activeChatFolderId);
+        } else if (activeFolder) {
+            localStorage.removeItem(CF_KEY + activeFolder);
+        }
+        renderChatFolders();
+        applyFolderFilter();
+    }
+
+    function ensureFolderModal() {
+        let backdrop = document.getElementById('folder-modal-backdrop');
+        if (backdrop) return backdrop;
+        backdrop = document.createElement('div');
+        backdrop.id = 'folder-modal-backdrop';
+        backdrop.className = 'folder-modal-backdrop';
+        backdrop.hidden = true;
+        backdrop.innerHTML = '<section class="folder-modal" role="dialog" aria-modal="true"'
+            + ' aria-labelledby="folder-modal-title">'
+            + '<div class="folder-modal-head"><div class="folder-modal-title" id="folder-modal-title"></div>'
+            + '<button type="button" class="folder-modal-close" data-folder-close="1" aria-label="Закрыть">×</button></div>'
+            + '<div class="folder-modal-body" id="folder-modal-body"></div>'
+            + '<div class="folder-modal-actions" id="folder-modal-actions"></div>'
+            + '</section>';
+        document.body.appendChild(backdrop);
+        backdrop.addEventListener('click', function(e) {
+            if (e.target === backdrop || e.target.closest('[data-folder-close]')) {
+                backdrop.hidden = true;
+            }
+        });
+        return backdrop;
+    }
+
+    function folderModalParts() {
+        const backdrop = ensureFolderModal();
+        return {
+            backdrop,
+            title: backdrop.querySelector('#folder-modal-title'),
+            body: backdrop.querySelector('#folder-modal-body'),
+            actions: backdrop.querySelector('#folder-modal-actions'),
+        };
+    }
+
+    function renderFolderManagerList() {
+        const ui = folderModalParts();
+        ui.backdrop.hidden = false;
+        ui.title.textContent = 'Папки · ' + activeFolder;
+        const folders = chatFolderSnapshot.folders || [];
+        ui.body.innerHTML = '<div class="folder-list">'
+            + (folders.length ? folders.map(folder =>
+                '<div class="folder-list-row">'
+                + '<span aria-hidden="true">' + escapeHtml(folderGlyph(folder)) + '</span>'
+                + '<strong>' + escapeHtml(folder.title || 'Папка') + '</strong>'
+                + (folder.read_only ? '<small>только просмотр</small>' : '')
+                + '<button type="button" class="folder-mini-btn" data-folder-edit="'
+                + escapeHtml(folder.id) + '">' + (folder.read_only ? 'Посмотреть' : 'Изменить') + '</button>'
+                + '</div>').join('')
+                : '<div class="text-muted small">Папок пока нет.</div>')
+            + '</div><div class="folder-modal-status" id="folder-modal-status"></div>';
+        ui.actions.innerHTML = '<button type="button" class="folder-mini-btn" data-folder-close="1">Закрыть</button>'
+            + '<button type="button" class="folder-primary-btn" data-folder-create="1">Новая папка</button>';
+    }
+
+    function renderFolderEditor(folder) {
+        const ui = folderModalParts();
+        const readOnly = !!(folder && folder.read_only);
+        const titleMaxLength = activeFolder === 'Telegram' ? 12 : 64;
+        const selected = new Set((folder && folder.member_handle_ids || [])
+            .map(value => String(value)));
+        ui.title.textContent = folder ? (folder.title || 'Папка') : 'Новая папка';
+        const rows = (chatFolderSnapshot.handles || []).map(handle => {
+            const hid = String(handle.id);
+            const title = handle.title || handle.contact_name || handle.sender_raw || ('Чат ' + hid);
+            return '<label class="folder-member-row" data-member-title="'
+                + escapeHtml(title.toLowerCase()) + '"><input type="checkbox" value="'
+                + escapeHtml(hid) + '"' + (selected.has(hid) ? ' checked' : '')
+                + (readOnly ? ' disabled' : '') + '><span>' + escapeHtml(title) + '</span></label>';
+        }).join('');
+        ui.body.innerHTML = '<label class="folder-field"><span>Название</span>'
+            + '<input type="text" id="folder-title-input" maxlength="'
+            + titleMaxLength + '" value="'
+            + escapeHtml(folder && folder.title || '') + '"'
+            + (readOnly ? ' disabled' : '') + '></label>'
+            + '<input type="search" class="folder-member-search" id="folder-member-search"'
+            + ' placeholder="Найти чат…">'
+            + '<div class="folder-member-list" id="folder-member-list">'
+            + (rows || '<div class="text-muted small">В этом мессенджере пока нет чатов.</div>')
+            + '</div><div class="folder-modal-status" id="folder-modal-status">'
+            + (activeFolder === 'Telegram'
+                ? 'Изменения синхронизируются с папками Telegram.' : '')
+            + '</div>';
+        ui.actions.innerHTML = '<button type="button" class="folder-mini-btn" data-folder-back="1">Назад</button>'
+            + (folder && !readOnly
+                ? '<button type="button" class="folder-danger-btn" data-folder-delete="'
+                  + escapeHtml(folder.id) + '">Удалить</button>' : '')
+            + (!readOnly
+                ? '<button type="button" class="folder-primary-btn" data-folder-save="'
+                  + escapeHtml(folder && folder.id || '') + '">Сохранить</button>' : '');
+        const search = ui.body.querySelector('#folder-member-search');
+        if (search) search.addEventListener('input', function() {
+            const query = search.value.trim().toLowerCase();
+            ui.body.querySelectorAll('.folder-member-row').forEach(row => {
+                row.hidden = !!query && !(row.dataset.memberTitle || '').includes(query);
+            });
+        });
+    }
+
+    function folderModalStatus(text, isError) {
+        const el = document.getElementById('folder-modal-status');
+        if (!el) return;
+        el.textContent = text || '';
+        el.style.color = isError ? '#ef4444' : '';
+    }
+
+    function setFolderModalBusy(busy) {
+        chatFolderModalBusy = !!busy;
+        const backdrop = document.getElementById('folder-modal-backdrop');
+        if (!backdrop) return;
+        backdrop.querySelectorAll(
+            '[data-folder-save], [data-folder-delete], [data-folder-create]')
+            .forEach(button => { button.disabled = chatFolderModalBusy; });
+    }
+
+    async function saveFolderFromModal(folderId) {
+        if (chatFolderModalBusy) return;
+        const titleEl = document.getElementById('folder-title-input');
+        const title = (titleEl && titleEl.value || '').trim();
+        if (!title) {
+            folderModalStatus('Введите название папки.', true);
+            if (titleEl) titleEl.focus();
+            return;
+        }
+        const memberIds = Array.from(document.querySelectorAll(
+            '#folder-member-list input[type="checkbox"]:checked'))
+            .map(input => Number(input.value)).filter(Number.isFinite);
+        folderModalStatus(activeFolder === 'Telegram'
+            ? 'Синхронизирую с Telegram…' : 'Сохраняю…');
+        setFolderModalBusy(true);
+        try {
+            const url = folderId ? '/contacts/folders/' + encodeURIComponent(folderId)
+                                 : '/contacts/folders';
+            const r = await fetch(url, {
+                method: folderId ? 'PATCH' : 'POST',
+                credentials: 'same-origin',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({
+                    messenger: activeFolder,
+                    title,
+                    member_handle_ids: memberIds,
+                }),
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || data.error || 'Не удалось сохранить папку');
+            // CRUD already refreshed and committed the Telegram snapshot.
+            // Read that cache instead of launching a duplicate MTProto pass.
+            await loadChatFolders(activeFolder, false, true);
+            renderFolderManagerList();
+        } catch (err) {
+            folderModalStatus((err && err.message) || 'Ошибка сохранения', true);
+        } finally {
+            setFolderModalBusy(false);
+        }
+    }
+
+    async function deleteFolderFromModal(folderId) {
+        if (chatFolderModalBusy) return;
+        const folder = chatFolderSnapshot.folders.find(
+            f => String(f.id) === String(folderId));
+        if (!folder || folder.read_only) return;
+        if (!window.confirm('Удалить папку «' + (folder.title || 'Папка') + '»?')) return;
+        folderModalStatus(activeFolder === 'Telegram'
+            ? 'Удаляю папку и синхронизирую Telegram…' : 'Удаляю…');
+        setFolderModalBusy(true);
+        try {
+            const r = await fetch('/contacts/folders/' + encodeURIComponent(folderId), {
+                method: 'DELETE', credentials: 'same-origin',
+            });
+            const data = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(data.detail || data.error || 'Не удалось удалить папку');
+            if (String(activeChatFolderId) === String(folderId)) setActiveChatFolder('');
+            await loadChatFolders(activeFolder, false, true);
+            renderFolderManagerList();
+        } catch (err) {
+            folderModalStatus((err && err.message) || 'Ошибка удаления', true);
+        } finally {
+            setFolderModalBusy(false);
+        }
     }
     // Какой мессенджер открыть для данного контакта: если активная папка
     // совпадает с одним из его мессенджеров — открываем именно её, иначе
@@ -9374,6 +9916,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     document.addEventListener('DOMContentLoaded', function() {
         renderFolders();
         applyFolderFilter();
+        loadChatFolders(activeFolder);
         requestAnimationFrame(() => centerActiveFolder('auto'));
     });
     // Выставляем во внешний IIFE — список контактов перерисовывается
@@ -9381,7 +9924,21 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     // папок и заново применить фильтр.
     window._refreshFolders = function() {
         renderFolders();
+        renderChatFolders();
         applyFolderFilter();
+        if (activeFolder && !chatFolderLoading) {
+            const now = Date.now();
+            if (activeFolder === 'Telegram'
+                    && now - chatFolderLastRemoteRefreshAt > 300000) {
+                // Редкая неблокирующая сверка нужна и для динамических
+                // Telegram-папок (например, «Непрочитанные»): их состав
+                // может измениться без события редактирования самой папки.
+                loadChatFolders(activeFolder, false, false);
+            } else if (now - chatFolderLastLoadedAt > 60000) {
+                // В остальное время читаем только локальный снимок.
+                loadChatFolders(activeFolder, false, true);
+            }
+        }
         if (window.syncContactNewChatButton) window.syncContactNewChatButton();
         requestAnimationFrame(() => centerActiveFolder('auto'));
     };
@@ -9443,6 +10000,52 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             setActiveFolder(fbtn.dataset.folder || '');
             return;
         }
+        const cfbtn = e.target.closest('.cf-btn[data-chat-folder]');
+        if (cfbtn) {
+            e.preventDefault();
+            setActiveChatFolder(cfbtn.dataset.chatFolder || '');
+            return;
+        }
+        if (e.target.closest('[data-folder-retry]')) {
+            e.preventDefault();
+            loadChatFolders(activeFolder, true);
+            return;
+        }
+        if (e.target.closest('[data-folder-manage]')) {
+            e.preventDefault();
+            renderFolderManagerList();
+            return;
+        }
+        if (e.target.closest('[data-folder-create]')) {
+            e.preventDefault();
+            renderFolderEditor(null);
+            return;
+        }
+        const editFolder = e.target.closest('[data-folder-edit]');
+        if (editFolder) {
+            e.preventDefault();
+            const folder = chatFolderSnapshot.folders.find(
+                f => String(f.id) === String(editFolder.dataset.folderEdit));
+            if (folder) renderFolderEditor(folder);
+            return;
+        }
+        if (e.target.closest('[data-folder-back]')) {
+            e.preventDefault();
+            renderFolderManagerList();
+            return;
+        }
+        const saveFolder = e.target.closest('[data-folder-save]');
+        if (saveFolder) {
+            e.preventDefault();
+            saveFolderFromModal(saveFolder.dataset.folderSave || '');
+            return;
+        }
+        const deleteFolder = e.target.closest('[data-folder-delete]');
+        if (deleteFolder) {
+            e.preventDefault();
+            deleteFolderFromModal(deleteFolder.dataset.folderDelete || '');
+            return;
+        }
         const back = e.target.closest('.feed-back-btn');
         if (back && feed.contains(back)) {
             e.preventDefault();
@@ -9498,6 +10101,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (!ta || !btn) return;
         const text = ta.value.trim();
         if (!text && !pendingForward) return;
+        const draftAtSend = flushComposerDraft(form);
         clearOutgoingActivity();
         const cid = form.dataset.contactId;
         const destinationKeyAtSend = uploadDestinationKey(
@@ -9534,6 +10138,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             });
             const data = await r.json().catch(() => ({}));
             if (r.ok && data.ok) {
+                clearComposerDraftIfUnchanged(draftAtSend);
                 // Отложенная отправка: локально ничего не рендерим
                 // (echo придёт когда сообщение реально уйдёт), просто
                 // сообщаем пользователю «запланировано на …».
@@ -10362,6 +10967,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (!items.length) return;
         const ta = form.querySelector('#composer-text');
         const caption = ta ? ta.value.trim() : '';
+        const draftAtSend = flushComposerDraft(form);
+        if (draftAtSend) form.dataset.mediaDraftPending = '1';
         const sendOpts = {
             replyTo: replyTarget ? replyTarget.id : '',
             forwardMessageId: pendingForward ? pendingForward.id : '',
@@ -10423,7 +11030,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         // тяжёлого ресайза фотографии.
         await new Promise(resolve => requestAnimationFrame(resolve));
         setOutgoingActivity(uploadActivityKind(items), true);
+        let completedAll = false;
         try {
+            let allSucceeded = true;
             if (albumBatches.length) {
                 for (let i = 0; i < albumBatches.length; i++) {
                     const batch = albumBatches[i];
@@ -10434,16 +11043,31 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                             active.albumCaption = i === 0 ? caption : '';
                         }
                     });
-                    await transmitOptimisticAlbum(
+                    const sent = await transmitOptimisticAlbum(
                         batch, i === 0 ? caption : '', form, sendOpts);
+                    allSucceeded = !!sent && allSucceeded;
                 }
             } else {
                 for (let i = 0; i < items.length; i++) {
-                    await transmitOptimisticUpload(
+                    const sent = await transmitOptimisticUpload(
                         items[i], i === 0 ? caption : '', form, sendOpts);
+                    allSucceeded = !!sent && allSucceeded;
                 }
             }
+            completedAll = allSucceeded;
         } finally {
+            if (completedAll) {
+                clearComposerDraftIfUnchanged(draftAtSend);
+            } else if (draftAtSend && form.isConnected) {
+                const currentText = form.querySelector('#composer-text');
+                // Загрузка не удалась: возвращаем подпись в поле, если за
+                // это время пользователь не начал набирать новый текст.
+                if (currentText && !currentText.value) {
+                    currentText.value = draftAtSend.text;
+                    syncComposerTextState(currentText);
+                }
+            }
+            delete form.dataset.mediaDraftPending;
             clearOutgoingActivity();
         }
     }
@@ -11708,6 +12332,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         caption.style.height = 'auto';
         caption.style.height = Math.min(caption.scrollHeight, 104) + 'px';
         refreshComposerSendState(form);
+        scheduleComposerDraftSave(form);
     });
 
     // Кнопка «прикрепить» открывает выбор файла; «×» убирает выбранное.
@@ -12325,6 +12950,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (!ta) return;
             syncComposerTextState(ta);
             if (eventName === 'input' || eventName === 'compositionend') {
+                scheduleComposerDraftSave(ta.closest('#composer'));
                 signalComposerTyping(ta);
             }
         });
@@ -12347,6 +12973,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     if (currentContactId) {
         currentMessenger = messengerFromUrl();
         currentTopicId = topicIdFromUrl();
+        restoreComposerDraft(feed.querySelector('#composer'));
         history.replaceState(
             {contactId: String(currentContactId),
              messenger: currentMessenger,
@@ -12354,22 +12981,6 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             '', location.pathname + location.search);
         scrollToBottomSticky();
         startPolling();
-        // Подгружаем сохранённые «темы чата» (если уже анализировались)
-        // для прямого захода /contacts/<id>. cached_only=1 — НЕ дёргаем
-        // LLM, просто читаем БД; если тем нет — pin-бар не появится.
-        // Для форум-чата запрашиваем темы конкретной открытой темы форума.
-        const _tidParam0 = currentTopicId
-            ? '&topic_id=' + encodeURIComponent(currentTopicId) : '';
-        fetch('/contacts/' + currentContactId
-              + '/topics.json?cached_only=1' + _tidParam0,
-              {credentials: 'same-origin'})
-            .then(r => r.ok ? r.json() : null)
-            .then(d => {
-                if (d && d.status === 'ok' && Array.isArray(d.topics)) {
-                    setPinnedTopics(d.topics);
-                }
-            })
-            .catch(() => {});
     } else {
         history.replaceState({contactId: null}, '', location.pathname);
     }

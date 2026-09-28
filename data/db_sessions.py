@@ -14,7 +14,7 @@ __engine = None
 __schema_thread_lock = threading.Lock()
 # Увеличивать при каждом изменении wanted/indexes ниже. Первый WSGI worker
 # применяет миграции, остальные после общего file-lock читают только PRAGMA.
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 @contextmanager
@@ -220,6 +220,12 @@ def _apply_light_migrations(engine):
             "ON direct_attachments(message_id)",
             "CREATE INDEX IF NOT EXISTS ix_pending_replies_device_queue "
             "ON pending_replies(user_id, status, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_chat_folders_user_messenger "
+            "ON chat_folders(user_id, messenger_name, position)",
+            "CREATE INDEX IF NOT EXISTS ix_chat_folder_members_folder "
+            "ON chat_folder_members(folder_id, position)",
+            "CREATE INDEX IF NOT EXISTS ix_chat_folder_members_handle "
+            "ON chat_folder_members(handle_id)",
         )
         existing_indexes = {
             row[0] for row in conn.exec_driver_sql(

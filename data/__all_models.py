@@ -11,3 +11,4 @@ from . import topic_reads
 from . import discussion_groups
 from . import webpush_subscriptions
 from . import stickers
+from . import chat_folders

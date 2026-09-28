@@ -705,6 +705,153 @@ def _filter_archived_contacts(contacts, archive_mode: bool):
             if bool(getattr(c, 'archived', False)) == bool(archive_mode)]
 
 
+def _normalize_folder_messenger(value) -> str:
+    messenger = str(value or '').strip()
+    if not messenger or len(messenger) > 80:
+        raise ValueError('invalid_messenger')
+    if messenger.casefold() == 'telegram':
+        return 'Telegram'
+    return messenger
+
+
+def _normalize_folder_title(value, messenger: str) -> str:
+    title = str(value or '').strip()
+    max_length = 12 if messenger == 'Telegram' else 64
+    if not title or len(title) > max_length:
+        raise ValueError('invalid_title')
+    return title
+
+
+def _folder_member_ids(payload, *, required=False):
+    marker = object()
+    values = payload.get('member_handle_ids', marker)
+    if values is marker:
+        if required:
+            return []
+        return None
+    if not isinstance(values, list) or len(values) > 1000:
+        raise ValueError('invalid_member_handles')
+    result = []
+    for value in values:
+        if isinstance(value, bool):
+            raise ValueError('invalid_member_handles')
+        try:
+            handle_id = int(value)
+        except (TypeError, ValueError):
+            raise ValueError('invalid_member_handles') from None
+        if handle_id <= 0:
+            raise ValueError('invalid_member_handles')
+        if handle_id not in result:
+            result.append(handle_id)
+    return result
+
+
+def _owned_folder_handles(db, user_id: int, messenger: str, handle_ids):
+    from data.contacts import MessengerHandle
+    if not handle_ids:
+        return []
+    handles = (db.query(MessengerHandle)
+               .filter(MessengerHandle.user_id == user_id,
+                       MessengerHandle.messenger_name == messenger,
+                       MessengerHandle.id.in_(handle_ids))
+               .all())
+    by_id = {handle.id: handle for handle in handles}
+    # One generic validation error avoids disclosing whether a handle exists
+    # under another account or merely has another messenger.
+    if set(by_id) != set(handle_ids):
+        raise ValueError('invalid_member_handles')
+    return [by_id[handle_id] for handle_id in handle_ids]
+
+
+def _replace_local_folder_members(db, folder, handles):
+    from data.chat_folders import ChatFolderMember
+    current = {member.handle_id: member for member in list(folder.members)}
+    wanted_ids = {handle.id for handle in handles}
+    for handle_id, member in current.items():
+        if handle_id not in wanted_ids:
+            db.delete(member)
+    for position, handle in enumerate(handles):
+        member = current.get(handle.id)
+        if member is None:
+            member = ChatFolderMember(
+                folder_id=folder.id, handle_id=handle.id,
+                membership_source='explicit')
+            db.add(member)
+        member.position = position
+        member.pinned = False
+        member.membership_source = 'explicit'
+
+
+def _chat_folders_json(db, user_id: int, messenger=None):
+    from data.chat_folders import ChatFolder, ChatFolderMember
+    from data.contacts import Contact, MessengerHandle
+
+    folder_query = db.query(ChatFolder).filter(ChatFolder.user_id == user_id)
+    handle_query = db.query(MessengerHandle).filter(
+        MessengerHandle.user_id == user_id)
+    if messenger is not None:
+        folder_query = folder_query.filter(
+            ChatFolder.messenger_name == messenger)
+        handle_query = handle_query.filter(
+            MessengerHandle.messenger_name == messenger)
+    folders = (folder_query
+               .order_by(ChatFolder.position.asc(), ChatFolder.id.asc())
+               .all())
+    handles = handle_query.order_by(MessengerHandle.id.asc()).all()
+    contact_ids = {handle.contact_id for handle in handles}
+    contacts = ({contact.id: contact for contact in
+                 db.query(Contact).filter(Contact.id.in_(contact_ids)).all()}
+                if contact_ids else {})
+    handle_by_id = {handle.id: handle for handle in handles}
+    members_by_folder = {folder.id: [] for folder in folders}
+    folder_ids = [folder.id for folder in folders]
+    if folder_ids:
+        members = (db.query(ChatFolderMember)
+                   .filter(ChatFolderMember.folder_id.in_(folder_ids))
+                   .order_by(ChatFolderMember.position.asc(),
+                             ChatFolderMember.id.asc()).all())
+        for member in members:
+            # Stale/corrupt cross-user membership must never leak through the
+            # API even if an old SQLite database lacks FK enforcement.
+            handle = handle_by_id.get(member.handle_id)
+            if handle is not None:
+                members_by_folder.setdefault(member.folder_id, []).append(
+                    member)
+    folder_rows = []
+    for folder in folders:
+        members = members_by_folder.get(folder.id, [])
+        member_handle_ids = [member.handle_id for member in members]
+        member_contact_ids = []
+        for member in members:
+            contact_id = handle_by_id[member.handle_id].contact_id
+            if contact_id not in member_contact_ids:
+                member_contact_ids.append(contact_id)
+        folder_rows.append({
+            'id': folder.id,
+            'title': folder.title,
+            'messenger': folder.messenger_name,
+            'source': folder.source,
+            'read_only': bool(folder.read_only),
+            'remote_kind': folder.remote_kind,
+            'icon': folder.icon,
+            'color': folder.color,
+            'member_handle_ids': member_handle_ids,
+            'member_contact_ids': member_contact_ids,
+            'position': int(folder.position or 0),
+        })
+    handle_rows = []
+    for handle in handles:
+        contact = contacts.get(handle.contact_id)
+        handle_rows.append({
+            'id': handle.id,
+            'contact_id': handle.contact_id,
+            'title': (contact.display_name if contact is not None
+                      else handle.sender_raw),
+            'messenger': handle.messenger_name,
+        })
+    return {'folders': folder_rows, 'handles': handle_rows}
+
+
 def _reply_channel(handles):
     """Какой канал ответа доступен для этих хэндлов.
 
@@ -3436,9 +3583,11 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/home/lang', methods=['POST'])
     def change_lang():
-        """Сменить язык, на который Ollama переводит чужие сообщения.
-        Принимает ISO-код, валидирует против whitelist (любая отсебятина
-        отвалится — мы не хотим, чтобы LLM получала мусор в target_lang)."""
+        """Сменить язык, на который переводятся сообщения.
+
+        Принимает ISO-код и валидирует его против списка языков,
+        поддерживаемого серверным адаптером перевода.
+        """
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
         allowed = {'ru', 'en', 'es', 'de', 'fr', 'it', 'pt',
@@ -3951,9 +4100,8 @@ def register_routes(app: Flask) -> None:
             confirm_password = request.form.get('confirm_password')
             sex = request.form.get('sex')
             username = _normalize_username(request.form.get('username'))
-            # ISO-код языка для перевода чужих сообщений через Ollama.
-            # Поддерживаем закрытый список — иначе пользователь введёт
-            # «русский», и потом LLM получит мусор в `target_lang`.
+            # ISO-код языка для перевода сообщений. Закрытый список совпадает
+            # со списком, который принимает серверный адаптер перевода.
             allowed_langs = {'ru', 'en', 'es', 'de', 'fr', 'it', 'pt',
                              'uk', 'tr', 'zh', 'ja', 'ko', 'ar'}
             preferred_lang = (request.form.get('preferred_lang') or '').strip().lower()
@@ -4030,6 +4178,285 @@ def register_routes(app: Flask) -> None:
     @app.route('/messages')
     def messages():
         return redirect('/contacts')
+
+    def _chat_folder_error_response(exc):
+        from data import telegram_bridge
+        code = getattr(exc, 'code', 'telegram_unavailable')
+        detail = getattr(
+            exc, 'detail',
+            'Не удалось изменить папку Telegram. Попробуйте позже.')
+        if code in {'invalid_title', 'folder_requires_chats'}:
+            status = 400
+        elif code == 'folder_not_found':
+            status = 404
+        elif code == 'folder_read_only':
+            status = 409
+        elif isinstance(exc, telegram_bridge.TelegramFolderError):
+            status = 503
+        else:
+            status = 500
+        return jsonify({'error': code, 'detail': detail}), status
+
+    def _single_folder_json(db, user_id, folder_id):
+        payload = _chat_folders_json(db, user_id)
+        return next((row for row in payload['folders']
+                     if row['id'] == folder_id), None)
+
+    @app.route('/contacts/folders.json')
+    def contacts_folders_json():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        raw_messenger = request.args.get('messenger')
+        try:
+            messenger = (_normalize_folder_messenger(raw_messenger)
+                         if raw_messenger is not None else None)
+        except ValueError:
+            return jsonify({'error': 'invalid_messenger'}), 400
+        sync_error = None
+        sync_pending = False
+        if messenger == 'Telegram':
+            # Always return the last committed snapshot immediately.  A
+            # Telegram round-trip can take many seconds and must not occupy a
+            # WSGI worker or keep a SQLite transaction open while it waits.
+            from data import telegram_bridge
+            if request.args.get('cached') != '1':
+                try:
+                    telegram_bridge.queue_dialog_folder_refresh(
+                        user_id=session['user_id'],
+                        force=request.args.get('force') == '1')
+                except telegram_bridge.TelegramFolderError as exc:
+                    sync_error = {'code': exc.code, 'detail': exc.detail}
+            status = telegram_bridge.dialog_folder_refresh_status(
+                user_id=session['user_id'])
+            sync_pending = bool(status.get('pending'))
+            if sync_error is None and status.get('error'):
+                sync_error = status['error']
+        result = _chat_folders_json(
+            get_db(), session['user_id'], messenger=messenger)
+        if messenger == 'Telegram':
+            result['sync_pending'] = sync_pending
+        if sync_error is not None:
+            result['sync_error'] = sync_error
+        return jsonify(result)
+
+    @app.route('/contacts/folders', methods=['POST'])
+    def contacts_folder_create():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({'error': 'invalid_json'}), 400
+        try:
+            messenger = _normalize_folder_messenger(
+                payload.get('messenger'))
+            title = _normalize_folder_title(
+                payload.get('title'), messenger)
+            member_ids = _folder_member_ids(payload, required=True)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        from data.chat_folders import ChatFolder, ChatFolderMember
+        db = get_db()
+        user_id = session['user_id']
+        try:
+            handles = _owned_folder_handles(
+                db, user_id, messenger, member_ids)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+
+        if messenger == 'Telegram':
+            from data import telegram_bridge
+            chat_ids = []
+            for handle in handles:
+                if handle.tg_chat_id is None:
+                    return jsonify({'error': 'invalid_member_handles'}), 400
+                chat_ids.append(int(handle.tg_chat_id))
+            # Release the read transaction before the bridge writes its
+            # snapshot through a separate short-lived SQLAlchemy session.
+            db.rollback()
+            try:
+                remote_id = telegram_bridge.create_dialog_folder(
+                    title, chat_ids, user_id=user_id)
+            except telegram_bridge.TelegramFolderError as exc:
+                return _chat_folder_error_response(exc)
+            db.expire_all()
+            folder = (db.query(ChatFolder)
+                      .filter(ChatFolder.user_id == user_id,
+                              ChatFolder.messenger_name == 'Telegram',
+                              ChatFolder.source == 'telegram',
+                              ChatFolder.remote_id == remote_id).first())
+            if folder is None:
+                return jsonify({
+                    'error': 'telegram_snapshot_missing',
+                    'detail': 'Telegram создал папку, но её снимок ещё не получен.',
+                }), 503
+        else:
+            from sqlalchemy import func
+            max_position = (db.query(func.max(ChatFolder.position))
+                            .filter(ChatFolder.user_id == user_id,
+                                    ChatFolder.messenger_name == messenger)
+                            .scalar())
+            folder = ChatFolder(
+                user_id=user_id, messenger_name=messenger,
+                source='local', title=title,
+                position=int(max_position if max_position is not None
+                             else -1) + 1,
+                read_only=False)
+            db.add(folder)
+            db.flush()
+            _replace_local_folder_members(db, folder, handles)
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                app.logger.exception('Local chat folder creation failed')
+                return jsonify({'error': 'folder_save_failed'}), 503
+        row = _single_folder_json(db, user_id, folder.id)
+        return jsonify({'ok': True, 'folder': row}), 201
+
+    @app.route('/contacts/folders/<int:folder_id>', methods=['PATCH'])
+    def contacts_folder_update(folder_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            return jsonify({'error': 'invalid_json'}), 400
+        from data.chat_folders import ChatFolder
+        from data.contacts import MessengerHandle
+        db = get_db()
+        user_id = session['user_id']
+        folder = (db.query(ChatFolder)
+                  .filter(ChatFolder.id == folder_id,
+                          ChatFolder.user_id == user_id).first())
+        if folder is None:
+            return jsonify({'error': 'folder_not_found'}), 404
+        if 'messenger' in payload:
+            try:
+                requested_messenger = _normalize_folder_messenger(
+                    payload.get('messenger'))
+            except ValueError:
+                return jsonify({'error': 'invalid_messenger'}), 400
+            if requested_messenger != folder.messenger_name:
+                return jsonify({'error': 'immutable_messenger'}), 400
+        if not any(key in payload for key in (
+                'title', 'member_handle_ids', 'position')):
+            return jsonify({'error': 'empty_patch'}), 400
+        try:
+            title = (_normalize_folder_title(
+                payload.get('title'), folder.messenger_name)
+                     if 'title' in payload else None)
+            member_ids = _folder_member_ids(payload)
+            if ('position' in payload
+                    and (isinstance(payload.get('position'), bool)
+                         or payload.get('position') is None)):
+                raise ValueError('invalid_position')
+            position = (int(payload.get('position'))
+                        if 'position' in payload else None)
+            if position is not None and not 0 <= position <= 10000:
+                raise ValueError('invalid_position')
+            handles = (_owned_folder_handles(
+                db, user_id, folder.messenger_name, member_ids)
+                       if member_ids is not None else None)
+        except (TypeError, ValueError) as exc:
+            code = str(exc)
+            if code not in {
+                    'invalid_title', 'invalid_member_handles',
+                    'invalid_position'}:
+                code = 'invalid_folder'
+            return jsonify({'error': code}), 400
+
+        if folder.source == 'telegram':
+            from data import telegram_bridge
+            if folder.read_only:
+                return jsonify({
+                    'error': 'folder_read_only',
+                    'detail': ('Общая папка Telegram пока доступна '
+                               'только для просмотра'),
+                }), 409
+            if position is not None:
+                return jsonify({'error': 'telegram_order_requires_list'}), 400
+            remote_id = int(folder.remote_id)
+            desired_chat_ids = None
+            if handles is not None:
+                if any(handle.tg_chat_id is None for handle in handles):
+                    return jsonify({'error': 'invalid_member_handles'}), 400
+                desired_chat_ids = [int(handle.tg_chat_id)
+                                    for handle in handles]
+            known_chat_ids = [int(value) for (value,) in (
+                db.query(MessengerHandle.tg_chat_id)
+                .filter(MessengerHandle.user_id == user_id,
+                        MessengerHandle.messenger_name == 'Telegram',
+                        MessengerHandle.tg_chat_id.isnot(None)).all())]
+            db.rollback()
+            try:
+                telegram_bridge.update_dialog_folder(
+                    remote_id, title=title,
+                    member_chat_ids=desired_chat_ids,
+                    known_chat_ids=known_chat_ids,
+                    user_id=user_id)
+            except telegram_bridge.TelegramFolderError as exc:
+                return _chat_folder_error_response(exc)
+            db.expire_all()
+        elif folder.source == 'local':
+            if title is not None:
+                folder.title = title
+            if position is not None:
+                folder.position = position
+            if handles is not None:
+                _replace_local_folder_members(db, folder, handles)
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                app.logger.exception('Local chat folder update failed')
+                return jsonify({'error': 'folder_save_failed'}), 503
+        else:
+            return jsonify({'error': 'folder_read_only'}), 409
+        row = _single_folder_json(db, user_id, folder_id)
+        if row is None:
+            return jsonify({'error': 'folder_not_found'}), 404
+        return jsonify({'ok': True, 'folder': row})
+
+    @app.route('/contacts/folders/<int:folder_id>', methods=['DELETE'])
+    def contacts_folder_delete(folder_id):
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.chat_folders import ChatFolder, ChatFolderMember
+        db = get_db()
+        user_id = session['user_id']
+        folder = (db.query(ChatFolder)
+                  .filter(ChatFolder.id == folder_id,
+                          ChatFolder.user_id == user_id).first())
+        if folder is None:
+            return jsonify({'error': 'folder_not_found'}), 404
+        if folder.source == 'telegram':
+            from data import telegram_bridge
+            if folder.read_only:
+                return jsonify({
+                    'error': 'folder_read_only',
+                    'detail': 'Общую папку Telegram нужно покинуть через Telegram',
+                }), 409
+            remote_id = int(folder.remote_id)
+            db.rollback()
+            try:
+                telegram_bridge.delete_dialog_folder(
+                    remote_id, user_id=user_id)
+            except telegram_bridge.TelegramFolderError as exc:
+                return _chat_folder_error_response(exc)
+            db.expire_all()
+        elif folder.source == 'local':
+            db.query(ChatFolderMember).filter(
+                ChatFolderMember.folder_id == folder.id).delete(
+                    synchronize_session=False)
+            db.delete(folder)
+            try:
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                app.logger.exception('Local chat folder deletion failed')
+                return jsonify({'error': 'folder_save_failed'}), 503
+        else:
+            return jsonify({'error': 'folder_read_only'}), 409
+        return jsonify({'ok': True})
 
     @app.route('/contacts')
     def contacts_index():
@@ -4476,15 +4903,6 @@ def register_routes(app: Flask) -> None:
         _attach_reactions(db, msgs)
         _attach_forwards(db, msgs, user_id)
         _attach_edits(db, msgs)
-        # Подгружаем сохранённые «темы чата» (если уже анализировались):
-        # отдадим клиенту, чтобы он сразу мог показать пин-бар сверху без
-        # отдельного запроса.
-        from data.chat_topics import get_topics as _get_topics
-        # Для форум-чата отдаём темы LLM ТОЛЬКО открытой темы форума:
-        # соседние темы форума имеют свои закрепы. Для обычного чата —
-        # как раньше (topic_id=None).
-        saved_topics = [] if before_id else _topics_with_time(
-            db, _get_topics(db, contact_id, topic_id_int), handle_ids)
         return jsonify({
             'contact': {
                 'id': contact.id,
@@ -4510,7 +4928,10 @@ def register_routes(app: Flask) -> None:
                 'presence': selected_presence,
                 'activity': selected_activity,
             },
-            'topics': saved_topics,
+            # Поле оставлено пустым для совместимости со старым клиентом.
+            # Локальные Ollama-темы больше не показываются и не должны
+            # добавлять SQL-запрос к каждому открытию/опросу чата.
+            'topics': [],
             'has_older': has_older,
             'older_before_id': msgs[0].id if msgs else None,
             'messages': [
@@ -6221,6 +6642,7 @@ def register_routes(app: Flask) -> None:
     def contact_delete(contact_id):
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
+        from data.chat_folders import ChatFolderMember
         from data.contacts import Contact, MessengerHandle
         db = get_db()
         user_id = session['user_id']
@@ -6231,6 +6653,12 @@ def register_routes(app: Flask) -> None:
         handle_ids = [h.id for h in db.query(MessengerHandle)
                       .filter(MessengerHandle.contact_id == contact.id).all()]
         if handle_ids:
+            # SQLite installations created before FK enforcement do not
+            # cascade this automatically.  Remove memberships explicitly so
+            # folder counts cannot accumulate orphan rows.
+            db.query(ChatFolderMember).filter(
+                ChatFolderMember.handle_id.in_(handle_ids)).delete(
+                    synchronize_session=False)
             db.query(Messages).filter(Messages.handle_id.in_(handle_ids)).delete(
                 synchronize_session=False)
         db.query(MessengerHandle).filter(
@@ -7357,13 +7785,15 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/messages/<int:message_id>/translate', methods=['POST'])
     def message_translate(message_id):
-        """Перевести текст сообщения через локальную Ollama на язык
-        пользователя (`User.preferred_lang`). НЕ кэшируем результат —
-        пользователь может сменить целевой язык, и переводить заново
-        дешевле, чем городить инвалидацию."""
+        """Перевести текст сообщения на язык пользователя.
+
+        Провайдер задаётся на сервере и получает только текст сообщения и
+        ISO-код целевого языка. Контракт успешного ответа сохранён для
+        существующего интерфейса: ``{ok, text, lang}``.
+        """
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data import ollama as _ollama
+        from data import translator as _translator
         db = get_db()
         user_id = session['user_id']
         msg = db.query(Messages).filter(
@@ -7375,17 +7805,23 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'empty'}), 400
         user = db.query(User).filter(User.id == user_id).first()
         target = (user.preferred_lang if user else None) or 'ru'
-        if not _ollama.is_available():
-            return jsonify({
-                'status': 'no_ollama',
-                'detail': 'Перевод требует локальной Ollama. '
-                          'Запустите её и попробуйте снова.',
-            }), 503
+        # The external provider may need up to several seconds.  Do not keep
+        # SQLite's read transaction alive while waiting for the network: on
+        # AlwaysData that would delay incoming messages and Android polling.
+        db.rollback()
         try:
-            translated = _ollama.translate(text, target)
-        except RuntimeError as exc:
-            return jsonify({'status': 'llm_error',
-                            'detail': str(exc)}), 502
+            translated = _translator.translate(text, target)
+        except _translator.TranslationError as exc:
+            return jsonify({'status': exc.code,
+                            'detail': exc.public_detail}), exc.http_status
+        except Exception:  # noqa: BLE001 - never expose provider internals
+            # Не прикладываем traceback: исключение стороннего SDK может
+            # содержать URL, тело ответа или фрагмент ключа провайдера.
+            app.logger.error('Unexpected translation provider error')
+            return jsonify({
+                'status': 'translation_error',
+                'detail': 'Не удалось перевести сообщение. Попробуйте позже.',
+            }), 502
         return jsonify({'ok': True,
                         'text': translated,
                         'lang': target})
