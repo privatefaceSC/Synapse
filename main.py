@@ -26,6 +26,39 @@ from data.users import Messages, User
 logger = logging.getLogger(__name__)
 
 
+def _detect_build_revision():
+    """Коммит, код которого реально загружен текущим WSGI-процессом."""
+    configured = (os.environ.get('SYNAPSE_BUILD_REVISION') or '').strip()
+    if configured:
+        return configured[:12]
+    git_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.git')
+    try:
+        with open(os.path.join(git_dir, 'HEAD'), encoding='ascii') as stream:
+            head = stream.read().strip()
+        if not head.startswith('ref: '):
+            return head[:12]
+        ref_name = head[5:].strip()
+        try:
+            with open(os.path.join(git_dir, *ref_name.split('/')),
+                      encoding='ascii') as stream:
+                return stream.read().strip()[:12]
+        except OSError:
+            with open(os.path.join(git_dir, 'packed-refs'),
+                      encoding='ascii') as stream:
+                for line in stream:
+                    if line.startswith(('#', '^')):
+                        continue
+                    sha, _, name = line.strip().partition(' ')
+                    if name == ref_name:
+                        return sha[:12]
+    except OSError:
+        pass
+    return 'unknown'
+
+
+_BUILD_REVISION = _detect_build_revision()
+
+
 _AVATAR_PALETTE = [
     "#ef4444", "#f59e0b", "#10b981", "#3b82f6",
     "#8b5cf6", "#ec4899", "#14b8a6", "#f97316",
@@ -1095,6 +1128,13 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE='Lax',
     )
+
+    @app.after_request
+    def _add_build_revision_header(response):
+        # Позволяет отличить реально загруженный uWSGI-код от новых файлов
+        # на диске, когда мягкий reload AlwaysData оставил старый процесс.
+        response.headers['X-Synapse-Revision'] = _BUILD_REVISION
+        return response
 
     @app.teardown_appcontext
     def _close_db(_exc):
@@ -8207,7 +8247,8 @@ def register_routes(app: Flask) -> None:
 
     @app.route('/api/ping')
     def api_ping():
-        return jsonify({'ok': True, 'service': 'skillwood'})
+        return jsonify({'ok': True, 'service': 'skillwood',
+                        'revision': _BUILD_REVISION})
 
     @app.route('/api/connect', methods=['POST'])
     def api_connect():
