@@ -386,6 +386,12 @@
         display: flex; align-items: center; gap: 4px;
         min-width: 0; flex: 1 1 auto;
     }
+    .contact-preview-content {
+        display: flex; align-items: center; gap: 4px;
+        min-width: 0; flex: 1 1 auto;
+    }
+    .contact-row-wrap.has-activity .contact-preview-content { display: none; }
+    .contact-row-wrap:not(.has-activity) .contact-activity { display: none; }
     .contact-row .list-tg-tick {
         flex: 0 0 auto; font-size: 13px; line-height: 1;
         color: #94a3b8;
@@ -627,8 +633,32 @@
         padding: 16px 22px 14px;
         transition: background .15s ease;
     }
-    .feed-header .is-typing { color: #3b82f6; font-style: italic; }
-    [data-bs-theme="dark"] .feed-header .is-typing { color: #60a5fa; }
+    .chat-activity {
+        display: inline-flex; align-items: center; gap: 5px;
+        min-width: 0; max-width: 100%; color: #2381d8;
+        font-style: normal; font-weight: 500;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .chat-activity__dots {
+        display: inline-flex; align-items: center; gap: 2px;
+        flex: 0 0 auto; height: 10px;
+    }
+    .chat-activity__dots > i {
+        display: block; width: 3px; height: 3px; border-radius: 50%;
+        background: currentColor; opacity: .3;
+        animation: chat-activity-dot 1.15s ease-in-out infinite;
+    }
+    .chat-activity__dots > i:nth-child(2) { animation-delay: .15s; }
+    .chat-activity__dots > i:nth-child(3) { animation-delay: .30s; }
+    .chat-activity__label {
+        min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    }
+    .contact-activity { font-size: 13px; line-height: 1.25; }
+    @keyframes chat-activity-dot {
+        0%, 60%, 100% { opacity: .28; transform: translateY(0); }
+        30% { opacity: 1; transform: translateY(-2px); }
+    }
+    [data-bs-theme="dark"] .chat-activity { color: #53a9f5; }
     .feed-header-subline {
         display: flex; align-items: center; gap: 5px; min-width: 0;
         white-space: nowrap; overflow: hidden;
@@ -654,7 +684,7 @@
     .feed-header-subline.is-typing .feed-header-presence,
     .feed-header-subline.is-typing .feed-header-context { display: none; }
     .feed-header-subline.is-typing .feed-header-typing {
-        display: inline; overflow: hidden; text-overflow: ellipsis;
+        display: inline-flex; overflow: hidden; text-overflow: ellipsis;
     }
     [data-bs-theme="dark"] .feed-header-presence { color: #94a3b8; }
     [data-bs-theme="dark"] .feed-header-presence.online { color: #6ee7b7; }
@@ -662,6 +692,7 @@
         .feed-header-presence.online .feed-header-presence__dot {
             animation: none;
         }
+        .chat-activity__dots > i { animation: none; opacity: .8; }
     }
     .feed-header .feed-header-top { cursor: pointer; user-select: none; }
     .feed-header .feed-header-top:hover { background: rgba(0,0,0,.025); }
@@ -4291,7 +4322,7 @@
                 {% endif %}
                 {% if contacts %}
                     {% for c in contacts %}
-                    <div class="contact-row-wrap{% if c.pinned_at %} pinned{% endif %}"
+                    <div class="contact-row-wrap{% if c.pinned_at %} pinned{% endif %}{% if c.activity and c.activity.active %} has-activity{% endif %}"
                          data-contact-id="{{ c.id }}"
                          data-messengers="{{ c.messengers|join(',') }}"
                          data-pinned="{{ '1' if c.pinned_at else '0' }}"
@@ -4322,11 +4353,18 @@
                                 {% endif %}
                                 <div class="d-flex justify-content-between align-items-center">
                                     <div class="preview-line">
-                                        {% if c.last_outgoing and c.last_tg_read is not none %}
-                                        <span class="list-tg-tick{% if c.last_tg_read %} read{% endif %}"
-                                              title="{% if c.last_tg_read %}Прочитано{% else %}Доставлено{% endif %}">{% if c.last_tg_read %}✓✓{% else %}✓{% endif %}</span>
-                                        {% endif %}
-                                        <div class="preview">{{ c.last_preview or 'Нет сообщений' }}</div>
+                                        <span class="contact-preview-content">
+                                            {% if c.last_outgoing and c.last_tg_read is not none %}
+                                            <span class="list-tg-tick{% if c.last_tg_read %} read{% endif %}"
+                                                  title="{% if c.last_tg_read %}Прочитано{% else %}Доставлено{% endif %}">{% if c.last_tg_read %}✓✓{% else %}✓{% endif %}</span>
+                                            {% endif %}
+                                            <span class="preview">{{ c.last_preview or 'Нет сообщений' }}</span>
+                                        </span>
+                                        <span class="contact-activity chat-activity"
+                                              data-activity-kind="{{ c.activity.kind if c.activity and c.activity.active else '' }}">
+                                            <span class="chat-activity__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                                            <span class="chat-activity__label">{{ c.activity.text if c.activity and c.activity.active else '' }}</span>
+                                        </span>
                                     </div>
                                     {% if c.unread_count and c.unread_count > 0 %}
                                         <span class="badge-unread{% if c.muted %} muted{% endif %}">{{ c.unread_count }}</span>
@@ -4388,8 +4426,12 @@
                             <div class="flex-fill" style="min-width:0;">
                                 <div class="fw-semibold text-truncate">{{ selected.display_name }}{% if selected.is_creator %}<span
                                     class="creator-inline">★ {{ selected.creator_title }}</span>{% endif %}</div>
-                                <div class="text-muted small text-truncate feed-header-subline">
-                                    <span class="feed-header-typing"></span>
+                                <div class="text-muted small text-truncate feed-header-subline{% if selected_activity and selected_activity.active %} is-typing{% endif %}">
+                                    <span class="feed-header-typing chat-activity"
+                                          data-activity-kind="{{ selected_activity.kind if selected_activity and selected_activity.active else '' }}">
+                                        <span class="chat-activity__dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                                        <span class="chat-activity__label">{{ selected_activity.text if selected_activity and selected_activity.active else '' }}</span>
+                                    </span>
                                     <span class="feed-header-presence{% if selected_presence and selected_presence.online %} online{% endif %}"
                                           {% if not selected_presence %}hidden{% endif %}
                                           title="{{ selected_presence.detail if selected_presence else '' }}">
@@ -5964,6 +6006,36 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 >${read ? '✓✓' : '✓'}</span>`;
     }
 
+    function activityHtml(activity, className) {
+        const active = activity && activity.active;
+        const kind = active ? (activity.kind || 'typing') : '';
+        const text = active ? (activity.text || 'печатает') : '';
+        return `<span class="${className || ''} chat-activity"`
+            + ` data-activity-kind="${escapeHtml(kind)}">`
+            + '<span class="chat-activity__dots" aria-hidden="true">'
+            + '<i></i><i></i><i></i></span>'
+            + `<span class="chat-activity__label">${escapeHtml(text)}</span>`
+            + '</span>';
+    }
+
+    window.__skillwoodActivityHtml = activityHtml;
+    window.__skillwoodSetContactActivity = function(contactId, activity) {
+        const wrap = list.querySelector(
+            '.contact-row-wrap[data-contact-id="' + contactId + '"]');
+        if (!wrap) return;
+        const active = !!(activity && activity.active);
+        wrap.classList.toggle('has-activity', active);
+        const indicator = wrap.querySelector('.contact-activity');
+        const label = indicator
+            && indicator.querySelector('.chat-activity__label');
+        if (indicator) {
+            indicator.dataset.activityKind = active
+                ? (activity.kind || 'typing') : '';
+        }
+        if (label) label.textContent = active
+            ? (activity.text || 'печатает') : '';
+    };
+
     function contactsJsonUrl() {
         return '/contacts.json' + (archiveMode ? '?archived=1' : '');
     }
@@ -6027,7 +6099,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                        <span>${escapeHtml(c.presence.detail || c.presence.label || '')}</span>
                    </div>`
                 : '';
-            return `<div class="contact-row-wrap${c.pinned ? ' pinned' : ''}"
+            const activity = c.activity && c.activity.active
+                ? c.activity : null;
+            return `<div class="contact-row-wrap${c.pinned ? ' pinned' : ''}${activity ? ' has-activity' : ''}"
                 data-contact-id="${c.id}"
                 data-messengers="${escapeHtml((c.messengers || []).join(','))}"
                 data-pinned="${c.pinned ? '1' : '0'}"
@@ -6044,8 +6118,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                         ${presence}
                         <div class="d-flex justify-content-between align-items-center">
                             <div class="preview-line">
-                                ${listTick(c)}
-                                <div class="preview">${escapeHtml(c.last_preview || 'Нет сообщений')}</div>
+                                <span class="contact-preview-content">
+                                    ${listTick(c)}
+                                    <span class="preview">${escapeHtml(c.last_preview || 'Нет сообщений')}</span>
+                                </span>
+                                ${activityHtml(activity, 'contact-activity')}
                             </div>
                             ${badge}
                         </div>
@@ -6093,7 +6170,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                       c.archived ? 1 : 0, c.is_creator ? 1 : 0,
                        c.creator_title || '',
                        c.presence ? (c.presence.online ? 1 : 0) : null,
-                       c.presence ? (c.presence.detail || '') : '']));
+                       c.presence ? (c.presence.detail || '') : '',
+                       c.activity && c.activity.active ? 1 : 0,
+                       c.activity ? (c.activity.kind || '') : '',
+                       c.activity ? (c.activity.text || '') : '']));
             if (sig !== lastSig) {
                 render(data.contacts);
                 lastSig = sig;
@@ -7171,6 +7251,76 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     const clearClientSendKey = window.__skillwoodClearClientSendKey;
     const startComposerSend = window.__skillwoodStartComposerSend;
     const finishComposerSend = window.__skillwoodFinishComposerSend;
+    let outgoingActivity = null;
+    let outgoingActivityTimer = null;
+    let lastTypingSignalAt = 0;
+
+    function composerActivityTarget() {
+        const form = feed.querySelector('#composer');
+        const contactId = (form && form.dataset.contactId)
+            || currentContactId;
+        const messenger = (form && form.dataset.messenger)
+            || currentMessenger || '';
+        if (!contactId || messenger !== 'Synapse') return null;
+        return {contactId: String(contactId), messenger};
+    }
+
+    function postOutgoingActivity(target, kind, keepalive) {
+        if (!target) return Promise.resolve();
+        return fetch('/contacts/' + target.contactId + '/activity', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'X-Requested-With': 'XMLHttpRequest'},
+            body: new URLSearchParams({
+                kind: kind || 'cancel',
+                messenger: target.messenger,
+            }),
+            keepalive: !!keepalive,
+        }).catch(() => {});
+    }
+
+    function clearOutgoingActivity() {
+        if (outgoingActivityTimer) clearInterval(outgoingActivityTimer);
+        outgoingActivityTimer = null;
+        const previous = outgoingActivity;
+        outgoingActivity = null;
+        if (previous) postOutgoingActivity(previous, 'cancel', true);
+    }
+
+    function setOutgoingActivity(kind, persistent) {
+        const target = composerActivityTarget();
+        if (!target) {
+            clearOutgoingActivity();
+            return;
+        }
+        if (outgoingActivityTimer) clearInterval(outgoingActivityTimer);
+        outgoingActivityTimer = null;
+        outgoingActivity = Object.assign({kind}, target);
+        postOutgoingActivity(outgoingActivity, kind, false);
+        if (persistent) {
+            outgoingActivityTimer = setInterval(() => {
+                if (!outgoingActivity) return;
+                postOutgoingActivity(outgoingActivity,
+                                     outgoingActivity.kind, false);
+            }, 3000);
+        }
+    }
+
+    function signalComposerTyping(textarea) {
+        if (!textarea || !textarea.value.trim()) {
+            clearOutgoingActivity();
+            return;
+        }
+        const now = Date.now();
+        if (outgoingActivity && outgoingActivity.kind === 'typing'
+                && now - lastTypingSignalAt < 1200) return;
+        lastTypingSignalAt = now;
+        setOutgoingActivity('typing', false);
+    }
+
+    window.__skillwoodSetOutgoingActivity = setOutgoingActivity;
+    window.__skillwoodClearOutgoingActivity = clearOutgoingActivity;
+    window.addEventListener('pagehide', clearOutgoingActivity);
 
     function escapeHtml(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
@@ -7668,9 +7818,18 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
 
         const presence = c.presence || null;
+        const activity = c.activity && c.activity.active ? c.activity : null;
         const presenceText = presence
             ? (presence.detail || presence.label || '') : '';
-        const presenceHtml = `<span class="feed-header-typing"></span>`
+        const activityHtml = window.__skillwoodActivityHtml
+            ? window.__skillwoodActivityHtml(
+                activity, 'feed-header-typing')
+            : '<span class="feed-header-typing chat-activity">'
+                + '<span class="chat-activity__dots" aria-hidden="true">'
+                + '<i></i><i></i><i></i></span>'
+                + '<span class="chat-activity__label">'
+                + escapeHtml(activity ? activity.text : '') + '</span></span>';
+        const presenceHtml = activityHtml
             + `<span class="feed-header-presence${presence && presence.online ? ' online' : ''}"`
             + `${presence ? '' : ' hidden'}`
             + ` title="${escapeHtml(presenceText)}">`
@@ -7695,7 +7854,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     : `<span class="avatar" style="background: ${escapeHtml(c.avatar_color)};">${escapeHtml(c.initial)}</span>`}
                 <div class="flex-fill" style="min-width:0;">
                     <div class="fw-semibold text-truncate">${escapeHtml(c.display_name)}${creatorBadgeHtml(c)}</div>
-                    <div class="text-muted small text-truncate feed-header-subline">${presenceHtml}</div>
+                    <div class="text-muted small text-truncate feed-header-subline${activity ? ' is-typing' : ''}">${presenceHtml}</div>
                 </div>
                 <button type="button" class="topics-btn" data-topics-btn="1"
                         title="📑 Темы чата (анализирует Ollama)">📑</button>
@@ -8555,16 +8714,20 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
-    function setTyping(on, text) {
+    function setTyping(on, text, kind) {
         const sub = feed.querySelector('.feed-header-subline');
         if (!sub) return;
         const typing = sub.querySelector('.feed-header-typing');
+        const label = typing
+            && typing.querySelector('.chat-activity__label');
         if (on) {
-            if (typing) typing.textContent = text || 'печатает…';
+            if (typing) typing.dataset.activityKind = kind || 'typing';
+            if (label) label.textContent = text || 'печатает';
             sub.classList.add('is-typing');
         } else {
             sub.classList.remove('is-typing');
-            if (typing) typing.textContent = '';
+            if (typing) typing.dataset.activityKind = '';
+            if (label) label.textContent = '';
         }
     }
 
@@ -8594,7 +8757,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (String(idAtStart) !== String(currentContactId)) return;
             typingPollFailures = 0;
             setHeaderPresence(data.presence || null);
-            setTyping(!!data.typing, data.text || '');
+            setTyping(!!(data.active || data.typing), data.text || '',
+                      data.kind || 'typing');
+            if (window.__skillwoodSetContactActivity) {
+                window.__skillwoodSetContactActivity(idAtStart, data);
+            }
         } catch (e) {
             typingPollFailures += 1;
         } finally {
@@ -8638,6 +8805,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             messagePollFailures = 0;
             if (data.contact) {
                 setHeaderPresence(data.contact.presence || null);
+                setTyping(!!(data.contact.activity
+                             && data.contact.activity.active),
+                          data.contact.activity
+                              ? data.contact.activity.text : '',
+                          data.contact.activity
+                              ? data.contact.activity.kind : 'typing');
             }
             // Серверная запись с тем же ключом заменяет локальную bubble.
             // Удаляем optimistic-версию только после того, как реальное
@@ -8877,6 +9050,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     async function openContact(id, messenger, opts) {
         opts = opts || {};
         const token = ++navToken;
+        clearOutgoingActivity();
         if (contactLoadController) contactLoadController.abort();
         contactLoadController = window.AbortController
             ? new AbortController() : null;
@@ -9004,6 +9178,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function showList(opts) {
         opts = opts || {};
+        clearOutgoingActivity();
         navToken += 1;
         if (contactLoadController) contactLoadController.abort();
         contactLoadController = null;
@@ -9323,6 +9498,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (!ta || !btn) return;
         const text = ta.value.trim();
         if (!text && !pendingForward) return;
+        clearOutgoingActivity();
         const cid = form.dataset.contactId;
         const destinationKeyAtSend = uploadDestinationKey(
             cid, form.dataset.messenger || '', currentTopicId);
@@ -10110,6 +10286,34 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    function uploadActivityKind(items) {
+        const kinds = (items || []).map(item => {
+            if (item.kind === 'voice') return 'voice';
+            const file = item.file || {};
+            const mime = file.type || '';
+            const name = file.name || '';
+            if (mime.indexOf('image/') === 0
+                    || /\.(?:jpe?g|png|gif|webp|heic|heif|bmp)$/i.test(name)) {
+                return 'photo';
+            }
+            if (mime.indexOf('video/') === 0
+                    || /\.(?:mp4|mov|m4v|webm)$/i.test(name)) {
+                return 'video';
+            }
+            return 'file';
+        });
+        if (kinds.length && kinds.every(kind => kind === 'voice')) {
+            return 'uploading_voice';
+        }
+        if (kinds.length && kinds.every(kind => kind === 'photo')) {
+            return 'uploading_photo';
+        }
+        if (kinds.length && kinds.every(kind => kind === 'video')) {
+            return 'uploading_video';
+        }
+        return 'uploading_file';
+    }
+
     async function queueVoiceUpload(form, blob, sendKey) {
         if (!form || !blob) return false;
         const ext = (blob.type || '').includes('ogg') ? 'ogg'
@@ -10143,7 +10347,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             window.__skillwoodResetSendFlags(form);
         }
         await new Promise(resolve => requestAnimationFrame(resolve));
-        return transmitOptimisticUpload(item, '', form, sendOpts);
+        setOutgoingActivity('uploading_voice', true);
+        try {
+            return await transmitOptimisticUpload(item, '', form, sendOpts);
+        } finally {
+            clearOutgoingActivity();
+        }
     }
 
     window.__skillwoodQueueVoiceUpload = queueVoiceUpload;
@@ -10213,24 +10422,29 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         // Даём браузеру закрыть окно и нарисовать превью до потенциально
         // тяжёлого ресайза фотографии.
         await new Promise(resolve => requestAnimationFrame(resolve));
-        if (albumBatches.length) {
-            for (let i = 0; i < albumBatches.length; i++) {
-                const batch = albumBatches[i];
-                batch.forEach(item => {
-                    const active = activeUploads.get(item.sendKey);
-                    if (active) {
-                        active.albumItems = batch;
-                        active.albumCaption = i === 0 ? caption : '';
-                    }
-                });
-                await transmitOptimisticAlbum(
-                    batch, i === 0 ? caption : '', form, sendOpts);
+        setOutgoingActivity(uploadActivityKind(items), true);
+        try {
+            if (albumBatches.length) {
+                for (let i = 0; i < albumBatches.length; i++) {
+                    const batch = albumBatches[i];
+                    batch.forEach(item => {
+                        const active = activeUploads.get(item.sendKey);
+                        if (active) {
+                            active.albumItems = batch;
+                            active.albumCaption = i === 0 ? caption : '';
+                        }
+                    });
+                    await transmitOptimisticAlbum(
+                        batch, i === 0 ? caption : '', form, sendOpts);
+                }
+            } else {
+                for (let i = 0; i < items.length; i++) {
+                    await transmitOptimisticUpload(
+                        items[i], i === 0 ? caption : '', form, sendOpts);
+                }
             }
-        } else {
-            for (let i = 0; i < items.length; i++) {
-                await transmitOptimisticUpload(
-                    items[i], i === 0 ? caption : '', form, sendOpts);
-            }
+        } finally {
+            clearOutgoingActivity();
         }
     }
 
@@ -12110,8 +12324,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const ta = e.target.closest('#composer-text');
             if (!ta) return;
             syncComposerTextState(ta);
+            if (eventName === 'input' || eventName === 'compositionend') {
+                signalComposerTyping(ta);
+            }
         });
     });
+    feed.addEventListener('blur', function(e) {
+        if (e.target.closest('#composer-text')) clearOutgoingActivity();
+    }, true);
     // Enter — отправить, Shift+Enter — перенос строки.
     feed.addEventListener('keydown', function(e) {
         const ta = e.target.closest('#composer-text');
@@ -13026,6 +13246,15 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     async function renderPickerTab(picker, tab) {
         picker.dataset.activeTab = tab;
+        if (window.__skillwoodSetOutgoingActivity
+                && window.__skillwoodClearOutgoingActivity) {
+            if (tab === 'stickers') {
+                window.__skillwoodSetOutgoingActivity(
+                    'choosing_sticker', true);
+            } else {
+                window.__skillwoodClearOutgoingActivity();
+            }
+        }
         picker.querySelectorAll('.emoji-picker-tab').forEach(btn => {
             btn.classList.toggle('active', btn.dataset.tab === tab);
         });
@@ -13110,6 +13339,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const picker = getPicker(form);
             if (!picker) return;
             picker.hidden = !picker.hidden;
+            if (picker.hidden && window.__skillwoodClearOutgoingActivity) {
+                window.__skillwoodClearOutgoingActivity();
+            }
             return;
         }
         const tabBtn = e.target.closest('.emoji-picker-tab[data-tab]');
@@ -13127,6 +13359,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (ta) insertAtCursor(ta, emoji.dataset.emoji);
             const picker = emoji.closest('.emoji-picker');
             if (picker) picker.hidden = true;
+            if (window.__skillwoodClearOutgoingActivity) {
+                window.__skillwoodClearOutgoingActivity();
+            }
             return;
         }
         const sticker = e.target.closest('.emoji-picker [data-sticker-id]');
@@ -13138,6 +13373,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             }
             const form = sticker.closest('#composer');
             await sendSticker(form, sticker.dataset.stickerId, sticker);
+            if (window.__skillwoodClearOutgoingActivity) {
+                window.__skillwoodClearOutgoingActivity();
+            }
             return;
         }
         // Клик где-то снаружи — закрываем все открытые picker'ы.
@@ -13145,6 +13383,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             document.querySelectorAll('.emoji-picker').forEach(p => {
                 p.hidden = true;
             });
+            if (window.__skillwoodClearOutgoingActivity) {
+                window.__skillwoodClearOutgoingActivity();
+            }
         }
     });
 })();
@@ -13313,6 +13554,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
 
     function cleanupUi() {
         stopTimer();
+        if (window.__skillwoodClearOutgoingActivity) {
+            window.__skillwoodClearOutgoingActivity();
+        }
         if (activeBtn) {
             activeBtn.classList.remove('recording');
             syncVoiceButton(activeBtn);
@@ -13456,6 +13700,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (e.data && e.data.size > 0) chunks.push(e.data);
         });
         recorder.start(250);
+        if (window.__skillwoodSetOutgoingActivity) {
+            window.__skillwoodSetOutgoingActivity(
+                captureMode === 'video'
+                    ? 'recording_video_note' : 'recording_voice', true);
+        }
         startedAt = Date.now();
         startTimer();
         return true;
@@ -13477,6 +13726,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 recorder = null;
                 stopTimer();
                 stopStream();
+                if (window.__skillwoodClearOutgoingActivity) {
+                    window.__skillwoodClearOutgoingActivity();
+                }
                 resolve(blob);
             }, {once: true});
             try {

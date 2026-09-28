@@ -68,8 +68,9 @@ _recent_self_sent = []
 # Точные Telegram-id отправленных web-медиа. В отличие от подписи (часто
 # пустой) такой ключ не может случайно поглотить нативную отправку пользователя.
 _recent_self_sent_ids = []
-# chat_id -> typing state. Старый формат float ещё поддерживается ниже:
-# {expires: monotonic, authors: {user_id_or_name: display_name}}.
+# (owner_id, chat_id) -> live activity. Старые ключи chat_id и формат float
+# ещё поддерживаются ниже для плавного обновления запущенных процессов.
+# {expires: monotonic, authors: {user_id_or_name: {name, kind, expires}}}.
 _typing = {}
 # Онлайн/последнее посещение Telegram. Ключ включает владельца Telegram-
 # сессии, иначе одинаковые chat_id разных аккаунтов пересекались бы.
@@ -2128,11 +2129,37 @@ async def _register_handler_unlocked(user_id=None, client=None,
                              or getattr(event, "chat_id", None))
             if event_status is not None and event_user_id is not None:
                 _remember_presence(owner, event_user_id, event_status)
-            if getattr(event, "typing", False):
+            action = getattr(event, "action", None)
+            activity_kind = _telegram_activity_kind(action)
+            if action is not None and (activity_kind is not None
+                                       or action.__class__.__name__
+                                       == "SendMessageCancelAction"):
                 chat_id = int(event.chat_id)
+                typing_key = (owner, chat_id)
                 exp = time.monotonic() + 6
-                name = None
                 user_key = getattr(event, "user_id", None)
+                state = _typing.get(typing_key)
+                if not isinstance(state, dict):
+                    # После горячего обновления мог остаться старый ключ без
+                    # owner_id. Переносим его только как совместимый fallback.
+                    state = _typing.get(chat_id)
+                if not isinstance(state, dict):
+                    state = {"expires": exp, "authors": {}}
+                authors = state.setdefault("authors", {})
+                if activity_kind is None:
+                    authors.pop(user_key, None)
+                    if authors:
+                        state["expires"] = max(
+                            info.get("expires", 0)
+                            for info in authors.values()
+                            if isinstance(info, dict))
+                        _typing[typing_key] = state
+                    else:
+                        _typing.pop(typing_key, None)
+                        _typing.pop(chat_id, None)
+                    return
+
+                name = None
                 try:
                     user = await event.get_user()
                     if user is not None:
@@ -2143,15 +2170,13 @@ async def _register_handler_unlocked(user_id=None, client=None,
                     name = None
                 if not name:
                     name = "Собеседник"
-                state = _typing.get(chat_id)
-                if not isinstance(state, dict):
-                    state = {"expires": exp, "authors": {}}
                 state["expires"] = exp
-                state.setdefault("authors", {})[user_key or name] = {
+                authors[user_key or name] = {
                     "name": name,
+                    "kind": activity_kind,
                     "expires": exp,
                 }
-                _typing[chat_id] = state
+                _typing[typing_key] = state
         except Exception:  # noqa: BLE001
             pass
 
@@ -2486,21 +2511,54 @@ async def _handle_read_outbox(update, user_id=None):
         db.close()
 
 
-def is_typing(chat_id) -> bool:
-    """True, если собеседник в этом чате печатает прямо сейчас."""
-    return typing_status(chat_id)["typing"]
+def _telegram_activity_kind(action):
+    """Нормализовать MTProto SendMessage*Action без жёсткой зависимости.
+
+    Сравнение по имени класса сохраняет совместимость с разными версиями
+    Telethon: набор TL-классов менялся, а сам мост должен импортироваться и
+    без установленного Telethon.
+    """
+    if action is None:
+        return None
+    return {
+        "SendMessageTypingAction": "typing",
+        "SendMessageRecordAudioAction": "recording_voice",
+        "SendMessageRecordVideoAction": "recording_video",
+        "SendMessageRecordRoundAction": "recording_video_note",
+        "SendMessageUploadPhotoAction": "uploading_photo",
+        "SendMessageUploadVideoAction": "uploading_video",
+        "SendMessageUploadRoundAction": "uploading_video_note",
+        "SendMessageUploadAudioAction": "uploading_voice",
+        "SendMessageUploadDocumentAction": "uploading_file",
+        "SendMessageChooseStickerAction": "choosing_sticker",
+        "SendMessageChooseContactAction": "choosing_contact",
+        "SendMessageGeoLocationAction": "choosing_location",
+        "SendMessageGamePlayAction": "playing_game",
+    }.get(action.__class__.__name__)
 
 
-def typing_status(chat_id) -> dict:
-    """Статус печати с именами авторов, если Telegram их прислал."""
+def is_typing(chat_id, user_id=None) -> bool:
+    """True, если собеседник выполняет действие в этом чате прямо сейчас."""
+    return typing_status(chat_id, user_id=user_id)["typing"]
+
+
+def typing_status(chat_id, user_id=None) -> dict:
+    """Живое действие с именами авторов, если Telegram их прислал."""
     try:
-        state = _typing.get(int(chat_id))
+        chat_key = int(chat_id)
     except (TypeError, ValueError):
-        return {"typing": False, "authors": []}
+        return {"active": False, "typing": False, "authors": [],
+                "actors": [], "kind": None}
+    owner = _normalize_user_id(user_id) if user_id is not None else None
+    state = (_typing.get((owner, chat_key))
+             if owner is not None else None)
+    if state is None:
+        state = _typing.get(chat_key)
     now = time.monotonic()
     if isinstance(state, dict):
         authors = state.get("authors") or {}
         alive = []
+        actors = []
         for key, info in list(authors.items()):
             if not isinstance(info, dict):
                 continue
@@ -2508,6 +2566,10 @@ def typing_status(chat_id) -> dict:
                 name = (info.get("name") or "").strip()
                 if name and name not in alive:
                     alive.append(name)
+                    actors.append({
+                        "name": name,
+                        "kind": info.get("kind") or "typing",
+                    })
             else:
                 authors.pop(key, None)
         if alive:
@@ -2516,9 +2578,14 @@ def typing_status(chat_id) -> dict:
                 for info in authors.values()
                 if isinstance(info, dict)
             )
-            return {"typing": True, "authors": alive}
-        return {"typing": bool(state.get("expires", 0) > now), "authors": []}
-    return {"typing": bool(state is not None and state > now), "authors": []}
+            return {"active": True, "typing": True, "authors": alive,
+                    "actors": actors, "kind": actors[0]["kind"]}
+        active = bool(state.get("expires", 0) > now)
+        return {"active": active, "typing": active, "authors": [],
+                "actors": [], "kind": "typing" if active else None}
+    active = bool(state is not None and state > now)
+    return {"active": active, "typing": active, "authors": [],
+            "actors": [], "kind": "typing" if active else None}
 
 
 def _telegram_status_presence(status):

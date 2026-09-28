@@ -70,6 +70,24 @@ CREATOR_BADGE = "Создатель"
 STICKER_COLLECTION_DISABLED_DETAIL = "Функция в разработке."
 USERS_ADMIN_EMAILS = {"korobka170111@gmail.com"}
 
+_CHAT_ACTIVITY_LABELS = {
+    'typing': ('печатает', 'печатают'),
+    'recording_voice': ('записывает голосовое', 'записывают голосовое'),
+    'recording_video': ('записывает видео', 'записывают видео'),
+    'recording_video_note': (
+        'записывает видеосообщение', 'записывают видеосообщение'),
+    'uploading_photo': ('отправляет фото', 'отправляют фото'),
+    'uploading_video': ('отправляет видео', 'отправляют видео'),
+    'uploading_video_note': (
+        'отправляет видеосообщение', 'отправляют видеосообщение'),
+    'uploading_voice': ('отправляет голосовое', 'отправляют голосовое'),
+    'uploading_file': ('отправляет файл', 'отправляют файл'),
+    'choosing_sticker': ('выбирает стикер', 'выбирают стикер'),
+    'choosing_contact': ('выбирает контакт', 'выбирают контакт'),
+    'choosing_location': ('выбирает геопозицию', 'выбирают геопозицию'),
+    'playing_game': ('играет', 'играют'),
+}
+
 
 _TELEGRAM_RESTORABLE_MEDIA_KINDS = {
     'image', 'video', 'video_note', 'voice', 'audio', 'file',
@@ -394,6 +412,7 @@ def _enrich_with_last_message(db, contacts):
         c.last_tg_read = None
         c.unread_count = 0
         c.presence = None
+        c.activity = _chat_activity_for_handles(c.user_id, contact_handles)
         for handle in contact_handles:
             if handle.messenger_name != SYNAPSE_MESSENGER:
                 continue
@@ -2392,6 +2411,59 @@ def _presence_for_handles(db, owner_id: int, handles,
     return None
 
 
+def _format_chat_activity(status, is_group: bool = False) -> dict:
+    """Единый JSON живого действия для Telegram и Synapse."""
+    status = status or {}
+    active = bool(status.get('active', status.get('typing', False)))
+    if not active:
+        return {'active': False, 'typing': False, 'kind': None,
+                'authors': [], 'text': ''}
+    kind = status.get('kind') or 'typing'
+    singular, plural = _CHAT_ACTIVITY_LABELS.get(
+        kind, _CHAT_ACTIVITY_LABELS['typing'])
+    actors = [actor for actor in (status.get('actors') or [])
+              if isinstance(actor, dict) and actor.get('name')]
+    authors = [str(actor['name']).strip() for actor in actors
+               if str(actor['name']).strip()]
+    if not authors:
+        authors = [str(name).strip() for name in status.get('authors', [])
+                   if str(name).strip()]
+    if is_group and authors:
+        if len(authors) == 1:
+            text = f'{authors[0]} {singular}'
+        elif len(authors) == 2:
+            text = f'{authors[0]} и {authors[1]} {plural}'
+        else:
+            text = f'{authors[0]} и ещё {len(authors) - 1} {plural}'
+    else:
+        text = singular
+    return {'active': True, 'typing': True, 'kind': kind,
+            'authors': authors, 'text': text}
+
+
+def _chat_activity_for_handles(owner_id: int, handles) -> dict:
+    """Активность собеседника для набора handle-ов одного чата."""
+    from data import telegram_bridge
+    from data.live_activity import activity_status
+
+    for handle in handles:
+        if handle.messenger_name == SYNAPSE_MESSENGER:
+            partner_id = _synapse_partner_id(handle)
+            if partner_id is None:
+                continue
+            status = activity_status(owner_id, partner_id)
+            if status.get('active'):
+                return _format_chat_activity(status)
+        elif (handle.messenger_name == 'Telegram'
+              and handle.tg_chat_id is not None):
+            status = telegram_bridge.typing_status(
+                handle.tg_chat_id, user_id=owner_id)
+            if status.get('active', status.get('typing')):
+                return _format_chat_activity(
+                    status, is_group=_is_group_handle(handle))
+    return _format_chat_activity(None)
+
+
 def _ensure_synapse_handle(db, owner_id: int, partner):
     from data.contacts import Contact, MessengerHandle
 
@@ -4023,6 +4095,7 @@ def register_routes(app: Flask) -> None:
                 'is_creator': bool(getattr(c, 'is_creator', False)),
                 'creator_title': getattr(c, 'creator_title', ''),
                 'presence': getattr(c, 'presence', None),
+                'activity': getattr(c, 'activity', None),
             }
             for c in contacts
         ]})
@@ -4223,6 +4296,7 @@ def register_routes(app: Flask) -> None:
         m_handles = [h for h in handles if h.messenger_name == current_m]
         selected_presence = _presence_for_handles(
             db, user_id, m_handles, refresh_telegram=True)
+        selected_activity = _chat_activity_for_handles(user_id, m_handles)
         handle_ids = [h.id for h in m_handles]
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
@@ -4283,6 +4357,7 @@ def register_routes(app: Flask) -> None:
                                notifications_muted=bool(contact.muted),
                                messengers=available, current_messenger=current_m,
                                selected_presence=selected_presence,
+                               selected_activity=selected_activity,
                                archive_mode=archive_mode,
                                creator_mode=False, creator_cards=[])
 
@@ -4315,6 +4390,7 @@ def register_routes(app: Flask) -> None:
         m_handles = [h for h in handles if h.messenger_name == current_m]
         selected_presence = _presence_for_handles(
             db, user_id, m_handles, refresh_telegram=True)
+        selected_activity = _chat_activity_for_handles(user_id, m_handles)
         handle_ids = [h.id for h in m_handles]
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
@@ -4432,6 +4508,7 @@ def register_routes(app: Flask) -> None:
                 'is_creator': bool(getattr(contact, 'is_creator', False)),
                 'creator_title': getattr(contact, 'creator_title', ''),
                 'presence': selected_presence,
+                'activity': selected_activity,
             },
             'topics': saved_topics,
             'has_older': has_older,
@@ -5827,15 +5904,14 @@ def register_routes(app: Flask) -> None:
     @app.route('/contacts/<int:contact_id>/typing.json')
     def contact_typing(contact_id):
         if not session.get('user_id'):
-            return jsonify({'typing': False})
+            return jsonify(_format_chat_activity(None))
         from data.contacts import Contact, MessengerHandle
-        from data import telegram_bridge
         db = get_db()
         contact = (db.query(Contact)
                    .filter(Contact.id == contact_id,
                            Contact.user_id == session['user_id']).first())
         if not contact:
-            return jsonify({'typing': False})
+            return jsonify(_format_chat_activity(None))
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
         available = []
@@ -5845,34 +5921,60 @@ def register_routes(app: Flask) -> None:
         current_m = _pick_messenger(available, request.args.get('m'))
         active_handles = [handle for handle in handles
                           if handle.messenger_name == current_m]
-        tg_handle = _telegram_reply_handle(active_handles)
         presence = _presence_for_handles(
             db, session['user_id'], active_handles,
             refresh_telegram=True)
-        typing = False
-        authors = []
-        text = ''
-        if tg_handle is not None:
-            try:
-                status = telegram_bridge.typing_status(tg_handle.tg_chat_id)
-                typing = bool(status.get('typing'))
-                authors = [a for a in status.get('authors', []) if a]
-            except Exception:  # noqa: BLE001
-                typing = False
-                authors = []
-        is_group = (tg_handle is not None and tg_handle.tg_chat_type == 'group')
-        if typing:
-            if is_group and authors:
-                if len(authors) == 1:
-                    text = f'{authors[0]} печатает…'
-                elif len(authors) == 2:
-                    text = f'{authors[0]} и {authors[1]} печатают…'
-                else:
-                    text = f'{authors[0]} и ещё {len(authors) - 1} печатают…'
-            else:
-                text = 'печатает…'
-        return jsonify({'typing': bool(typing), 'authors': authors,
-                        'text': text, 'presence': presence})
+        activity = _chat_activity_for_handles(
+            session['user_id'], active_handles)
+        activity['presence'] = presence
+        return jsonify(activity)
+
+    @app.route('/contacts/<int:contact_id>/activity', methods=['POST'])
+    def contact_activity(contact_id):
+        """Передать собеседнику короткое действие внутреннего Synapse.
+
+        Telegram присылает такие события через MTProto самостоятельно. Для
+        Synapse используем локальный временный кэш, не создающий записей и
+        блокировок в основной SQLite-базе.
+        """
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+        from data.live_activity import (ALLOWED_KINDS, clear_activity,
+                                        set_activity)
+
+        db = get_db()
+        owner_id = int(session['user_id'])
+        contact = (db.query(Contact)
+                   .filter(Contact.id == contact_id,
+                           Contact.user_id == owner_id).first())
+        if contact is None:
+            return jsonify({'error': 'not_found'}), 404
+        handles = (db.query(MessengerHandle)
+                   .filter(MessengerHandle.contact_id == contact.id).all())
+        available = []
+        for handle in handles:
+            if handle.messenger_name not in available:
+                available.append(handle.messenger_name)
+        requested_messenger = (request.form.get('messenger')
+                               or request.args.get('m'))
+        current_m = _pick_messenger(available, requested_messenger)
+        synapse_handle = next((handle for handle in handles
+                               if handle.messenger_name == current_m
+                               and current_m == SYNAPSE_MESSENGER), None)
+        if synapse_handle is None:
+            return jsonify({'ok': True, 'ignored': True})
+        partner_id = _synapse_partner_id(synapse_handle)
+        if partner_id is None:
+            return jsonify({'error': 'invalid_partner'}), 400
+        kind = (request.form.get('kind') or '').strip().lower()
+        if kind in ('', 'cancel', 'none'):
+            clear_activity(partner_id, owner_id)
+            return jsonify({'ok': True, 'active': False})
+        if kind not in ALLOWED_KINDS:
+            return jsonify({'error': 'invalid_activity'}), 400
+        stored = set_activity(partner_id, owner_id, kind)
+        return jsonify({'ok': True, 'active': bool(stored), 'kind': kind})
 
     @app.route('/contacts/<int:contact_id>/members.json')
     def contact_members(contact_id):
