@@ -84,6 +84,8 @@ _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
 _DEFAULT_MEDIA_MAX_MB = 20
 _DEFAULT_MEDIA_STORE_MAX_MB = 650
+_DEFAULT_MEDIA_CACHE_TARGET_MB = 500
+_DEFAULT_MEDIA_CLEANUP_INTERVAL_SECONDS = 30 * 60
 _DEFAULT_CATCHUP_IMAGE_MAX_MB = 8
 _CATCHUP_MEDIA_MAX_AGE_SECONDS = 15 * 60
 _MEDIA_EVICTION_GRACE_SECONDS = 15 * 60
@@ -97,6 +99,9 @@ _media_usage_lock = threading.Lock()
 _media_reservation_lock = threading.Lock()
 _media_eviction_lock = threading.Lock()
 _media_reserved_bytes = 0
+_media_trim_lock = threading.Lock()
+_media_trimmed_at = 0.0
+_media_cleanup_future = None
 # Результат проверки «является ли megagroup группой комментариев канала».
 # Отрицательный ответ кэшируем ненадолго: связь группы с каналом может
 # появиться позже, но делать GetFullChannel на каждое входящее слишком дорого.
@@ -295,6 +300,35 @@ def _media_store_max_bytes():
     except ValueError:
         mb = _DEFAULT_MEDIA_STORE_MAX_MB
     return max(0, mb) * 1024 * 1024
+
+
+def _media_cache_target_bytes():
+    """Целевой размер локального кэша, ниже жёсткого лимита.
+
+    Запас нужен SQLite journal, логам, .venv и git: квота
+    AlwaysData общая для всего home, а не только media/.
+    """
+    try:
+        mb = int(os.environ.get(
+            "SKILLWOOD_MEDIA_CACHE_TARGET_MB",
+            str(_DEFAULT_MEDIA_CACHE_TARGET_MB)))
+    except ValueError:
+        mb = _DEFAULT_MEDIA_CACHE_TARGET_MB
+    target = max(0, mb) * 1024 * 1024
+    hard_limit = _media_store_max_bytes()
+    if hard_limit > 0:
+        target = min(target, hard_limit)
+    return target
+
+
+def _media_cleanup_interval_seconds():
+    try:
+        minutes = int(os.environ.get(
+            "SKILLWOOD_MEDIA_CLEANUP_INTERVAL_MINUTES",
+            str(_DEFAULT_MEDIA_CLEANUP_INTERVAL_SECONDS // 60)))
+    except ValueError:
+        minutes = 30
+    return max(5, minutes) * 60
 
 
 def _media_store_usage_bytes(force=False):
@@ -504,6 +538,59 @@ def _evict_reloadable_telegram_media(bytes_needed):
         logger.info("Evicted %s old Telegram media files (%s bytes)",
                     removed, freed)
     return freed
+
+
+def trim_media_cache(force=False):
+    """Автоматически сжать media/ до безопасной цели.
+
+    Удаляются только старые Telegram photo/video, которые можно
+    восстановить по tg_message_id. Attachment остаётся в базе, поэтому
+    UI покажет «Загрузить». MAX/одноразовые/общие файлы не
+    трогаются. Возвращает компактную статистику.
+    """
+    global _media_trimmed_at
+    target = _media_cache_target_bytes()
+    if target <= 0:
+        return {"checked": False, "before": 0, "after": 0, "freed": 0}
+    now = time.monotonic()
+    interval = _media_cleanup_interval_seconds()
+    with _media_trim_lock:
+        if (not force and _media_trimmed_at
+                and now - _media_trimmed_at < interval):
+            return {"checked": False, "before": 0, "after": 0, "freed": 0}
+        # Бронируем интервал до дорогого os.walk: два WSGI-
+        # запроса в одном процессе не запустят два обхода.
+        _media_trimmed_at = now
+        with _media_eviction_lock:
+            before = _media_store_usage_bytes(force=True)
+            if before <= target:
+                return {"checked": True, "before": before,
+                        "after": before, "freed": 0}
+            requested = (before - target
+                         + _media_eviction_hysteresis(target))
+            freed = _evict_reloadable_telegram_media(requested)
+            after = _media_store_usage_bytes(force=True)
+    if freed:
+        logger.info(
+            "Automatic Telegram media cache trim: %s -> %s bytes "
+            "(target %s)", before, after, target)
+    return {"checked": True, "before": before,
+            "after": after, "freed": max(0, before - after)}
+
+
+async def _trim_media_cache_async(force=False):
+    return await asyncio.to_thread(trim_media_cache, force)
+
+
+def _schedule_media_cache_trim(force=False):
+    """Запустить одну неблокирующую чистку после старта WSGI."""
+    global _media_cleanup_future
+    if (_media_cleanup_future is not None
+            and not _media_cleanup_future.done()):
+        return _media_cleanup_future
+    _media_cleanup_future = asyncio.run_coroutine_threadsafe(
+        _trim_media_cache_async(force=force), _loop)
+    return _media_cleanup_future
 
 
 def reserve_media_write(size, replacing_size=0):
@@ -989,6 +1076,8 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None,
         expected_lifecycle = _lifecycle_token(owner)
     if _lifecycle_token(owner) != expected_lifecycle:
         return
+    stale_avatar_path = None
+    contact_id = None
     db = db_sessions.create_session()
     try:
         handle = (db.query(MessengerHandle)
@@ -1001,64 +1090,87 @@ async def _maybe_fetch_avatar(chat, chat_id, user_id=None, client=None,
             Contact.id == handle.contact_id).first()
         if contact is None:
             return
-        had_stale_path = False
         if contact.avatar_path:
             full = os.path.join(_media_root(), contact.avatar_path)
             if os.path.exists(full):
                 return
-            contact.avatar_path = None
-            had_stale_path = True
-        contact_id = contact.id
-
-        if client is None:
-            client = await _get_client(owner)
-        photo = await client.download_profile_photo(chat, file=bytes)
-        if _lifecycle_token(owner) != expected_lifecycle:
-            return
-        if not photo:
-            if had_stale_path:
-                db.commit()
-            return  # у чата нет фото профиля
-
-        rel_dir = f"{owner}/tg_avatars"
-        os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)
-        rel_path = f"{rel_dir}/{contact_id}.enc"
-        encrypted = encrypt_bytes(photo)
-        full_path = os.path.join(_media_root(), rel_path)
-        try:
-            replacing_size = (os.path.getsize(full_path)
-                              if os.path.exists(full_path) else 0)
-        except OSError:
-            replacing_size = 0
-        try:
-            # Первый reserve после рестарта считает весь media/. Не держим
-            # из-за этого Telegram event-loop и приём новых сообщений.
-            reservation = await _reserve_media_write_async(
-                len(encrypted), replacing_size)
-        except MediaStoreFullError:
-            return
-        if _lifecycle_token(owner) != expected_lifecycle:
-            finish_media_write(reservation, False)
-            return
-        committed = False
-        temp_path = full_path + ".tmp-" + uuid.uuid4().hex
-        try:
-            with open(temp_path, "wb") as f:
-                f.write(encrypted)
-            os.replace(temp_path, full_path)
-            committed = True
-        finally:
-            if not committed:
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
-            finish_media_write(reservation, committed)
-        if _lifecycle_token(owner) == expected_lifecycle:
-            contact.avatar_path = rel_path
-            db.commit()
+            stale_avatar_path = contact.avatar_path
+        contact_id = int(contact.id)
+        # Ниже идёт MTProto-запрос. Закрываем read-транзакцию,
+        # иначе медленная загрузка аватара блокирует commit
+        # HTTP/Android/Telegram-потоков в той же SQLite базе.
+        db.rollback()
     finally:
         db.close()
+
+    if client is None:
+        client = await _get_client(owner)
+    photo = await client.download_profile_photo(chat, file=bytes)
+    if _lifecycle_token(owner) != expected_lifecycle:
+        return
+    if not photo:
+        if stale_avatar_path:
+            db = db_sessions.create_session()
+            try:
+                contact = (db.query(Contact)
+                           .filter(Contact.id == contact_id,
+                                   Contact.user_id == owner).first())
+                if (contact is not None
+                        and contact.avatar_path == stale_avatar_path
+                        and not os.path.exists(os.path.join(
+                            _media_root(), stale_avatar_path))):
+                    contact.avatar_path = None
+                    db.commit()
+            finally:
+                db.close()
+        return  # у чата нет фото профиля
+
+    rel_dir = f"{owner}/tg_avatars"
+    os.makedirs(os.path.join(_media_root(), rel_dir), exist_ok=True)
+    rel_path = f"{rel_dir}/{contact_id}.enc"
+    encrypted = encrypt_bytes(photo)
+    full_path = os.path.join(_media_root(), rel_path)
+    try:
+        replacing_size = (os.path.getsize(full_path)
+                          if os.path.exists(full_path) else 0)
+    except OSError:
+        replacing_size = 0
+    try:
+        # Первый reserve после рестарта считает весь media/. Не держим
+        # из-за этого Telegram event-loop и приём новых сообщений.
+        reservation = await _reserve_media_write_async(
+            len(encrypted), replacing_size)
+    except MediaStoreFullError:
+        return
+    if _lifecycle_token(owner) != expected_lifecycle:
+        finish_media_write(reservation, False)
+        return
+    committed = False
+    temp_path = full_path + ".tmp-" + uuid.uuid4().hex
+    try:
+        with open(temp_path, "wb") as f:
+            f.write(encrypted)
+        os.replace(temp_path, full_path)
+        committed = True
+    finally:
+        if not committed:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+        finish_media_write(reservation, committed)
+    if _lifecycle_token(owner) == expected_lifecycle:
+        db = db_sessions.create_session()
+        try:
+            contact = (db.query(Contact)
+                       .filter(Contact.id == contact_id,
+                               Contact.user_id == owner).first())
+            if contact is None:
+                return
+            contact.avatar_path = rel_path
+            db.commit()
+        finally:
+            db.close()
 
 
 async def _handle_message(event, user_id=None, client=None,
@@ -2137,6 +2249,8 @@ async def _handle_edited(event, user_id=None):
     edit_dt = getattr(msg, "edit_date", None) or _dt.datetime.now()
 
     owner = _normalize_user_id(user_id)
+    target_id = None
+    target_has_media = False
     db = db_sessions.create_session()
     try:
         handle_ids = [hid for (hid,) in db.query(MessengerHandle.id).filter(
@@ -2151,17 +2265,38 @@ async def _handle_edited(event, user_id=None):
                           Messages.handle_id.in_(handle_ids)).first())
         if target is None:
             return
+        target_id = int(target.id)
+        target_has_media = (db.query(Attachment.id)
+                            .filter(Attachment.message_id == target.id)
+                            .first() is not None)
+        db.rollback()
+    finally:
+        db.close()
+
+    new_kind = _media_kind(msg)
+    saved_kind = None
+    media_data = None
+    if not target_has_media and new_kind is not None:
+        # Telegram download может ждать сеть десятки секунд.
+        # В это время ни одна SQLite-сессия не остаётся открытой.
+        saved_kind, media_data = await _download_media_payload(
+            msg, new_kind, user_id=user_id)
+
+    db = db_sessions.create_session()
+    try:
+        target = (db.query(Messages)
+                  .filter(Messages.id == target_id,
+                          Messages.user_id == owner).first())
+        if target is None:
+            return
         old_text = target.text or ""
         target_has_media = (db.query(Attachment.id)
                             .filter(Attachment.message_id == target.id)
                             .first() is not None)
-        new_kind = _media_kind(msg)
-        if not target_has_media and new_kind is not None:
-            saved_kind, data = await _download_media_payload(
-                msg, new_kind, user_id=user_id)
-            if saved_kind is not None and data is not None:
-                target_has_media = _save_attachment(
-                    db, owner, target.id, saved_kind, data, msg) is not None
+        if (not target_has_media and saved_kind is not None
+                and media_data is not None):
+            target_has_media = _save_attachment(
+                db, owner, target.id, saved_kind, media_data, msg) is not None
         if is_media_placeholder(old_text) and target_has_media:
             target.text = new_text
             db.commit()
@@ -2939,6 +3074,8 @@ async def _periodic_refresh(user_id=None, expected_lifecycle=None):
     if expected_lifecycle is None:
         expected_lifecycle = _lifecycle_token(owner)
     next_filter_refresh = time.monotonic() + 300
+    next_media_cleanup = (
+        time.monotonic() + _media_cleanup_interval_seconds())
     while True:
         await asyncio.sleep(10)
         if _lifecycle_token(owner) != expected_lifecycle:
@@ -2955,6 +3092,10 @@ async def _periodic_refresh(user_id=None, expected_lifecycle=None):
             if time.monotonic() >= next_filter_refresh:
                 await _refresh_filter_cache(owner, client=client)
                 next_filter_refresh = time.monotonic() + 300
+            if time.monotonic() >= next_media_cleanup:
+                await _trim_media_cache_async()
+                next_media_cleanup = (
+                    time.monotonic() + _media_cleanup_interval_seconds())
         except Exception as exc:  # noqa: BLE001
             _state_for(owner)["error"] = f"telegram reconnect: {exc}"
             logger.exception("Telegram maintenance failed for user_id=%s",
@@ -3069,6 +3210,9 @@ def start(user_id=None):
         return
     _quiet_telethon_logging()
     _ensure_loop()
+    # Старый Telegram-кэш убираем сразу после запуска, но не
+    # блокируем импорт Flask/первый HTTP-ответ обходом media/.
+    _schedule_media_cache_trim(force=True)
     owners = {_normalize_user_id(user_id)} if user_id is not None else {
         _owner_user_id()
     }

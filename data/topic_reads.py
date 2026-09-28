@@ -34,18 +34,26 @@ class TopicReadState(SqlAlchemyBase):
     )
 
 
-def mark_topic_read(db, handle_id: int, topic_id: int):
-    """Поставить last_read_at = now() для (handle, topic)."""
+def mark_topic_read(db, handle_id: int, topic_id: int, read_through=None):
+    """Пометить тему прочитанной, но не писать в SQLite на
+    каждом polling. ``read_through`` — время самого свежего входящего
+    сообщения, которое видит клиент. Возвращает True при изменении."""
     now = datetime.datetime.now()
     state = db.query(TopicReadState).filter(
         TopicReadState.handle_id == handle_id,
         TopicReadState.topic_id == topic_id).first()
+    if read_through is None:
+        return False
+    if state is not None and state.last_read_at is not None:
+        if read_through <= state.last_read_at:
+            return False
     if state is None:
         db.add(TopicReadState(handle_id=handle_id, topic_id=topic_id,
                               last_read_at=now))
     else:
         state.last_read_at = now
     db.flush()
+    return True
 
 
 def get_read_map(db, handle_ids: list) -> dict:

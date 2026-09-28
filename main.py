@@ -534,6 +534,24 @@ def _commit_best_effort(db, context: str) -> bool:
         return False
 
 
+def _mark_contact_read_if_unread(contact, messages, now=None) -> bool:
+    """Обновить last_read_at только когда в ленте есть новое
+    входящее. Polling идёт раз в несколько секунд и не должен
+    создавать SQLite write-lock, если ничего не изменилось.
+    """
+    incoming = [message for message in messages
+                if not bool(getattr(message, 'outgoing', False))]
+    if not incoming:
+        return False
+    previous = getattr(contact, 'last_read_at', None)
+    dated = [getattr(message, 'created_at', None) for message in incoming
+             if getattr(message, 'created_at', None) is not None]
+    if previous is not None and (not dated or max(dated) <= previous):
+        return False
+    contact.last_read_at = now or datetime.now()
+    return True
+
+
 def _message_author_avatar_url(msg):
     if (getattr(msg, 'author_avatar_path', None)
             and _media_rel_path_exists(msg.author_avatar_path)
@@ -2894,7 +2912,7 @@ def _mark_synapse_contact_read(db, owner_id: int, handles):
                    if h.messenger_name == SYNAPSE_MESSENGER]
     partner_ids = [pid for pid in partner_ids if pid is not None]
     if not partner_ids:
-        return
+        return False
     now = datetime.now()
     changed = False
     incoming = (db.query(DirectMessage)
@@ -2907,6 +2925,7 @@ def _mark_synapse_contact_read(db, owner_id: int, handles):
         changed = True
     if changed:
         db.flush()
+    return changed
 
 
 def _dm_conversations(db, me_id) -> list:
@@ -4027,9 +4046,6 @@ def register_routes(app: Flask) -> None:
         if not contact:
             return 'Not Found', 404
 
-        contact.last_read_at = datetime.now()
-        _commit_best_effort(db, 'contact_detail.last_read_at')
-
         contacts = (
             db.query(Contact)
             .filter(Contact.user_id == user_id)
@@ -4042,7 +4058,8 @@ def register_routes(app: Flask) -> None:
 
         handles = db.query(MessengerHandle).filter(MessengerHandle.contact_id == contact.id).all()
         _mark_contact_creator_from_handles(contact, handles, _creator_user_ids(db))
-        _mark_synapse_contact_read(db, user_id, handles)
+        synapse_read_changed = _mark_synapse_contact_read(
+            db, user_id, handles)
         # Контакт — «папка»: чат на каждый мессенджер. Показываем один.
         available = []
         for h in handles:
@@ -4082,6 +4099,9 @@ def register_routes(app: Flask) -> None:
             .all()
         )
         msgs = list(reversed(msgs))
+        contact_read_changed = _mark_contact_read_if_unread(contact, msgs)
+        if synapse_read_changed or contact_read_changed:
+            _commit_best_effort(db, 'contact_detail.read_state')
         for m in msgs:
             m.display_author = display_author(m.sender, contact.display_name)
             m.date_label = _message_date_label(m.created_at)
@@ -4119,7 +4139,8 @@ def register_routes(app: Flask) -> None:
         handles = db.query(MessengerHandle).filter(
             MessengerHandle.contact_id == contact.id).all()
         _mark_contact_creator_from_handles(contact, handles, _creator_user_ids(db))
-        _mark_synapse_contact_read(db, user_id, handles)
+        synapse_read_changed = _mark_synapse_contact_read(
+            db, user_id, handles)
         available = []
         for h in handles:
             if h.messenger_name not in available:
@@ -4179,15 +4200,30 @@ def register_routes(app: Flask) -> None:
                      .all())
         has_older = len(msgs_desc) > page_limit
         msgs = list(reversed(msgs_desc[:page_limit]))
-        # Для того чтобы не обновлять страницу каждый раз как пришло уведомление
-        if is_forum and topic_id_int is not None and tg_chat_handle is not None:
+        # Запросы before_id только листают старую историю. А обычный
+        # polling помечает чат прочитанным только если в нём есть
+        # новое входящее. Пустой polling больше не берёт write-lock.
+        read_state_changed = bool(synapse_read_changed)
+        latest_incoming_at = max(
+            (message.created_at for message in msgs
+             if not bool(getattr(message, 'outgoing', False))
+             and message.created_at is not None),
+            default=None,
+        )
+        if (not before_id and is_forum and topic_id_int is not None
+                and tg_chat_handle is not None):
             # У форум-чата у каждой темы свой last_read — иначе открытие
             # одной темы тушит «непрочитанное» во всех остальных.
             from data.topic_reads import mark_topic_read
-            mark_topic_read(db, tg_chat_handle.id, topic_id_int)
-        else:
-            contact.last_read_at = datetime.now()
-        _commit_best_effort(db, 'messages_json.last_read_at')
+            read_state_changed = mark_topic_read(
+                db, tg_chat_handle.id, topic_id_int,
+                read_through=latest_incoming_at) or read_state_changed
+        elif not before_id:
+            read_state_changed = (
+                _mark_contact_read_if_unread(contact, msgs)
+                or read_state_changed)
+        if read_state_changed:
+            _commit_best_effort(db, 'messages_json.read_state')
         _attach_media(db, msgs)
         _attach_replies(db, msgs, contact)
         _attach_reactions(db, msgs)

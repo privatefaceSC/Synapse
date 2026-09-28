@@ -3,13 +3,15 @@ import os
 import sqlalchemy as sa
 import sqlalchemy.orm as orm
 from sqlalchemy.orm import Session
+from sqlalchemy.pool import NullPool, StaticPool
 
 SqlAlchemyBase = orm.declarative_base()
 
 __factory = None
+__engine = None
 
 def global_init(db_file):
-    global __factory
+    global __factory, __engine
 
     if __factory:
         return
@@ -22,10 +24,31 @@ def global_init(db_file):
     if db_dir and db_file != ":memory:":
         os.makedirs(db_dir, exist_ok=True)
 
-    conn_str = f'sqlite:///{db_file}?check_same_thread=False'
+    conn_str = f'sqlite:///{db_file}'
     print(f"Подключение к базе данных по адресу {conn_str}")
 
-    engine = sa.create_engine(conn_str, echo=False)
+    # SQLite на AlwaysData лежит на сетевом home-диске. Не
+    # держим соединения в пуле между HTTP/Telegram-задачами:
+    # это снижает риск залипших read-транзакций. WAL на NFS не
+    # включаем: его shared-memory locking не безопасен для NFS.
+    pool_class = StaticPool if db_file == ":memory:" else NullPool
+    engine = sa.create_engine(
+        conn_str,
+        echo=False,
+        poolclass=pool_class,
+        connect_args={"check_same_thread": False, "timeout": 5},
+    )
+
+    @sa.event.listens_for(engine, "connect")
+    def _configure_sqlite_connection(dbapi_connection, _record):
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+        finally:
+            cursor.close()
+
+    __engine = engine
     __factory = orm.sessionmaker(bind=engine)
 
     from . import __all_models
@@ -114,6 +137,37 @@ def _apply_light_migrations(engine):
         conn.exec_driver_sql(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_users_username "
             "ON users(username)")
+        # Горячие запросы ленты и Telegram bridge. ForeignKey в SQLite
+        # сам по себе индекс не создаёт; без этих индексов каждый
+        # polling открытого чата сканировал всю таблицу messages.
+        indexes = (
+            "CREATE INDEX IF NOT EXISTS ix_messages_handle_created_id "
+            "ON messages(handle_id, created_at DESC, id DESC)",
+            "CREATE INDEX IF NOT EXISTS ix_messages_user_tg_handle "
+            "ON messages(user_id, tg_message_id, handle_id)",
+            "CREATE INDEX IF NOT EXISTS ix_messages_delivery_recovery "
+            "ON messages(delivery_status, tg_message_id, delivery_started_at)",
+            "CREATE INDEX IF NOT EXISTS ix_attachments_message "
+            "ON attachments(message_id)",
+            "CREATE INDEX IF NOT EXISTS ix_attachments_stored_path "
+            "ON attachments(stored_path)",
+            "CREATE INDEX IF NOT EXISTS ix_contacts_user "
+            "ON contacts(user_id)",
+            "CREATE INDEX IF NOT EXISTS ix_handles_contact "
+            "ON messenger_handles(contact_id)",
+            "CREATE INDEX IF NOT EXISTS ix_handles_telegram_lookup "
+            "ON messenger_handles(user_id, messenger_name, tg_chat_id)",
+            "CREATE INDEX IF NOT EXISTS ix_direct_messages_sender_created "
+            "ON direct_messages(sender_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_direct_messages_recipient_created "
+            "ON direct_messages(recipient_id, created_at)",
+            "CREATE INDEX IF NOT EXISTS ix_direct_attachments_message "
+            "ON direct_attachments(message_id)",
+            "CREATE INDEX IF NOT EXISTS ix_pending_replies_device_queue "
+            "ON pending_replies(user_id, status, created_at)",
+        )
+        for statement in indexes:
+            conn.exec_driver_sql(statement)
 
 
 def create_session() -> Session:
@@ -122,5 +176,8 @@ def create_session() -> Session:
 
 
 def _reset_for_tests():
-    global __factory
+    global __factory, __engine
+    if __engine is not None:
+        __engine.dispose()
+    __engine = None
     __factory = None
