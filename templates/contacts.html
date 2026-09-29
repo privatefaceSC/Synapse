@@ -10955,10 +10955,71 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }));
         for (const item of items) await preparePendingImage(item);
 
+        // Не отправляем весь альбом одним огромным multipart-запросом.
+        // Safari/iOS и reverse proxy могут оборвать его целиком даже при
+        // хорошем интернете. Каждая часть принимается отдельно, после чего
+        // короткий финальный запрос объединяет их в один Telegram-альбом.
+        const totalBytes = Math.max(1, items.reduce(
+            (sum, item) => sum + Number(item.file && item.file.size || 0), 0));
+        let completedBytes = items.reduce(
+            (sum, item) => sum + (item.stageToken
+                ? Number(item.file && item.file.size || 0) : 0), 0);
+        try {
+            for (const item of items) {
+                if (item.stageToken) continue;
+                const stageFd = new FormData();
+                stageFd.append('file', item.file,
+                    item.file.name || ('media-' + item.sendKey));
+                stageFd.append('client_send_key', item.sendKey);
+                const itemBytes = Number(item.file && item.file.size || 0);
+                const stageRequest = () => uploadFormData(
+                    '/contacts/' + form.dataset.contactId
+                        + '/stage-album-file',
+                    stageFd,
+                    percent => {
+                        const uploaded = completedBytes
+                            + itemBytes * Math.max(0, Math.min(100, percent))
+                                / 100;
+                        const overall = Math.min(92, Math.round(
+                            uploaded / totalBytes * 92));
+                        items.forEach(row =>
+                            updateOptimisticUploadProgress(row, overall));
+                    },
+                    180000);
+                const stageResponse = mediaTools
+                    ? await mediaTools.requestWithRetry(stageRequest, {
+                        maxAttempts: 3, delayMs: 800,
+                    })
+                    : await stageRequest();
+                const stageData = stageResponse.data
+                    || await stageResponse.json().catch(() => ({}));
+                if (!stageResponse.ok || !stageData.ok
+                        || !stageData.stage_token) {
+                    const stageError = new Error(uploadFailureMessage(
+                        stageResponse, stageData, null, item.file));
+                    stageError.uploadResponse = stageResponse;
+                    stageError.uploadData = stageData;
+                    stageError.uploadFile = item.file;
+                    throw stageError;
+                }
+                item.stageToken = stageData.stage_token;
+                completedBytes += itemBytes;
+            }
+        } catch (error) {
+            const errorText = error.uploadResponse
+                ? error.message
+                : uploadFailureMessage(null, {}, error,
+                    error.uploadFile || items[0].file);
+            items.forEach(item => {
+                item.lastError = errorText;
+                failOptimisticUpload(item);
+            });
+            return false;
+        }
+
         const fd = new FormData();
         items.forEach(item => {
-            fd.append('file', item.file,
-                      item.file.name || ('media-' + item.sendKey));
+            fd.append('staged_token', item.stageToken);
             fd.append('client_send_key', item.sendKey);
         });
         fd.append('text', caption || '');
@@ -10969,15 +11030,14 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             fd.append('schedule_at', sendOpts.scheduleAt);
         }
 
-        const setProgress = percent => items.forEach(item =>
-            updateOptimisticUploadProgress(item, percent));
+        items.forEach(item => updateOptimisticUploadProgress(item, 94));
         try {
             const requestAlbum = () => uploadFormData(
                 '/contacts/' + form.dataset.contactId + '/send-album',
-                fd, setProgress, 300000);
+                fd, null, 120000);
             const response = mediaTools
                 ? await mediaTools.requestWithRetry(requestAlbum, {
-                    maxAttempts: 2, delayMs: 450,
+                    maxAttempts: 3, delayMs: 800,
                 })
                 : await requestAlbum();
             const data = response.data
@@ -10985,6 +11045,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (!response.ok || !data.ok
                     || !Array.isArray(data.messages)
                     || data.messages.length !== items.length) {
+                if (data.error === 'invalid_album_stage'
+                        || data.error === 'missing_album_stage') {
+                    items.forEach(item => { delete item.stageToken; });
+                }
                 const errorText = uploadFailureMessage(
                     response, data, null, items[0].file);
                 items.forEach(item => {

@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
                    request, send_from_directory, session)
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import or_
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -1428,6 +1429,41 @@ def _store_media_bytes(owner_id: int, data: bytes, subdir: str | None = None):
     _write_encrypted_media_path(
         os.path.join(_media_root(), stored_path), data)
     return stored_path
+
+
+_ALBUM_UPLOAD_STAGE_MAX_AGE_SECONDS = 6 * 60 * 60
+
+
+def _album_upload_stage_path(owner_id: int, stage_id: str) -> str:
+    """Путь временной части альбома, жёстко привязанный к владельцу."""
+    if not re.fullmatch(r'[0-9a-f]{32}', str(stage_id or '')):
+        raise ValueError('Некорректная часть альбома')
+    return f'{int(owner_id)}/upload_staging/{stage_id}.enc'
+
+
+def _cleanup_staged_album_uploads(owner_id: int) -> None:
+    """Удаляет брошенные части альбомов, не затрагивая обычные media."""
+    from data import telegram_bridge
+
+    rel_dir = f'{int(owner_id)}/upload_staging'
+    try:
+        full_dir = _safe_media_full_path(rel_dir)
+        entries = list(os.scandir(full_dir))
+    except (OSError, ValueError):
+        return
+    cutoff = time.time() - _ALBUM_UPLOAD_STAGE_MAX_AGE_SECONDS
+    removed = False
+    for entry in entries:
+        try:
+            if (entry.is_file(follow_symlinks=False)
+                    and entry.name.endswith('.enc')
+                    and entry.stat(follow_symlinks=False).st_mtime < cutoff):
+                os.remove(entry.path)
+                removed = True
+        except OSError:
+            continue
+    if removed:
+        telegram_bridge._invalidate_media_usage_cache()
 
 
 def _read_media_bytes(stored_path: str) -> bytes | None:
@@ -5099,6 +5135,73 @@ def register_routes(app: Flask) -> None:
             ],
         })
 
+    @app.route('/contacts/<int:contact_id>/stage-album-file', methods=['POST'])
+    def contact_stage_album_file(contact_id):
+        """Принимает одну часть альбома отдельным коротким запросом."""
+        request.max_content_length = 26 * 1024 * 1024
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        from data.contacts import Contact, MessengerHandle
+
+        db = get_db()
+        user_id = session['user_id']
+        contact = (db.query(Contact.id)
+                   .filter(Contact.id == contact_id,
+                           Contact.user_id == user_id).first())
+        if contact is None:
+            return jsonify({'error': 'not_found'}), 404
+        tg_handle = (db.query(MessengerHandle.id)
+                     .filter(MessengerHandle.contact_id == contact_id,
+                             MessengerHandle.user_id == user_id,
+                             MessengerHandle.messenger_name == 'Telegram',
+                             MessengerHandle.tg_chat_id.isnot(None))
+                     .first())
+        if tg_handle is None:
+            return jsonify({'error': 'no_telegram_handle'}), 400
+        # Не держим SQLite-транзакцию, пока Werkzeug принимает и разбирает
+        # тело мобильной загрузки. На AlwaysData это иначе задерживает polling.
+        db.rollback()
+
+        send_key = _client_send_key(request.form.get('client_send_key'))
+        upload = request.files.get('file')
+        if not send_key or upload is None or not upload.filename:
+            return jsonify({'error': 'bad_stage_upload'}), 400
+        mime = (upload.mimetype or '').lower()
+        if not (mime.startswith('image/') or mime.startswith('video/')):
+            mime = (mimetypes.guess_type(upload.filename or '')[0]
+                    or '').lower()
+        if not (mime.startswith('image/') or mime.startswith('video/')):
+            return jsonify({
+                'error': 'bad_album_media',
+                'detail': ('Telegram-альбом может содержать только '
+                           'фото и видео'),
+            }), 400
+        data = upload.read()
+        if not data:
+            return jsonify({'error': 'empty'}), 400
+        if len(data) > 24 * 1024 * 1024:
+            return jsonify({
+                'error': 'file_too_large',
+                'detail': 'Один из файлов больше 24 МБ',
+            }), 413
+
+        _cleanup_staged_album_uploads(user_id)
+        stage_id = hashlib.sha256(
+            f'{user_id}:{contact_id}:{send_key}'.encode('utf-8')
+        ).hexdigest()[:32]
+        stored_path = _album_upload_stage_path(user_id, stage_id)
+        _write_encrypted_media_path(_safe_media_full_path(stored_path), data)
+        token = URLSafeTimedSerializer(
+            app.config['SECRET_KEY'], salt='album-stage-v1').dumps({
+                'u': int(user_id), 'c': int(contact_id),
+                'k': send_key, 's': stage_id,
+                'n': (upload.filename or 'media')[:255],
+                'm': mime, 'z': len(data),
+            })
+        return jsonify({
+            'ok': True, 'stage_token': token, 'size': len(data),
+        }), 201
+
     @app.route('/contacts/<int:contact_id>/send-album', methods=['POST'])
     def contact_send_album(contact_id):
         """Принимает 2–10 фото/видео и ставит один Telegram-альбом."""
@@ -5121,7 +5224,12 @@ def register_routes(app: Flask) -> None:
 
         uploads = [upload for upload in request.files.getlist('file')
                    if upload is not None and upload.filename]
-        if not 2 <= len(uploads) <= 10:
+        staged_tokens = [value for value in
+                         request.form.getlist('staged_token') if value]
+        if uploads and staged_tokens:
+            return jsonify({'error': 'mixed_album_upload'}), 400
+        media_count = len(staged_tokens) if staged_tokens else len(uploads)
+        if not 2 <= media_count <= 10:
             return jsonify({
                 'error': 'bad_album_size',
                 'detail': 'В альбоме должно быть от 2 до 10 фото или видео',
@@ -5130,7 +5238,7 @@ def register_routes(app: Flask) -> None:
             _client_send_key(value)
             for value in request.form.getlist('client_send_key')
         ]
-        if (len(send_keys) != len(uploads) or any(not key for key in send_keys)
+        if (len(send_keys) != media_count or any(not key for key in send_keys)
                 or len(set(send_keys)) != len(send_keys)):
             return jsonify({'error': 'bad_send_keys'}), 400
 
@@ -5234,43 +5342,89 @@ def register_routes(app: Flask) -> None:
         total_limit = 80 * 1024 * 1024
         prepared = []
         total_size = 0
-        for upload in uploads:
-            mime = (upload.mimetype or '').lower()
-            if not (mime.startswith('image/') or mime.startswith('video/')):
-                mime = (mimetypes.guess_type(upload.filename or '')[0]
-                        or '').lower()
-            if not (mime.startswith('image/') or mime.startswith('video/')):
-                return jsonify({
-                    'error': 'bad_album_media',
-                    'detail': ('Telegram-альбом может содержать только '
-                               'фото и видео'),
-                }), 400
-            data = upload.read()
-            if not data:
-                return jsonify({'error': 'empty'}), 400
-            if len(data) > per_file_limit:
-                return jsonify({
-                    'error': 'file_too_large',
-                    'detail': 'Один из файлов больше 24 МБ',
-                }), 413
-            total_size += len(data)
-            if total_size > total_limit:
-                return jsonify({
-                    'error': 'album_too_large',
-                    'detail': 'Общий размер альбома больше 80 МБ',
-                }), 413
-            prepared.append({
-                'data': data,
-                'name': upload.filename or 'media',
-                'mime': mime,
-                'kind': ('image' if mime.startswith('image/') else 'video'),
-            })
+        if staged_tokens:
+            serializer = URLSafeTimedSerializer(
+                app.config['SECRET_KEY'], salt='album-stage-v1')
+            for index, token in enumerate(staged_tokens):
+                try:
+                    staged = serializer.loads(
+                        token, max_age=_ALBUM_UPLOAD_STAGE_MAX_AGE_SECONDS)
+                    if (int(staged.get('u')) != int(user_id)
+                            or int(staged.get('c')) != int(contact_id)
+                            or staged.get('k') != send_keys[index]):
+                        raise BadSignature('album stage mismatch')
+                    stored_path = _album_upload_stage_path(
+                        user_id, staged.get('s'))
+                    size = int(staged.get('z') or 0)
+                except (BadSignature, SignatureExpired, TypeError,
+                        ValueError):
+                    return jsonify({
+                        'error': 'invalid_album_stage',
+                        'detail': ('Временная загрузка устарела. Нажмите '
+                                   '«Повторить», чтобы загрузить фото снова.'),
+                    }), 409
+                mime = str(staged.get('m') or '').lower()
+                if (not _media_rel_path_exists(stored_path)
+                        or size <= 0 or size > per_file_limit
+                        or not (mime.startswith('image/')
+                                or mime.startswith('video/'))):
+                    return jsonify({
+                        'error': 'missing_album_stage',
+                        'detail': ('Одна из временно загруженных фотографий '
+                                   'недоступна. Нажмите «Повторить».'),
+                    }), 409
+                total_size += size
+                prepared.append({
+                    'staged_path': stored_path,
+                    'size': size,
+                    'name': str(staged.get('n') or 'media')[:255],
+                    'mime': mime,
+                    'kind': ('image' if mime.startswith('image/')
+                             else 'video'),
+                })
+        else:
+            for upload in uploads:
+                mime = (upload.mimetype or '').lower()
+                if not (mime.startswith('image/')
+                        or mime.startswith('video/')):
+                    mime = (mimetypes.guess_type(upload.filename or '')[0]
+                            or '').lower()
+                if not (mime.startswith('image/')
+                        or mime.startswith('video/')):
+                    return jsonify({
+                        'error': 'bad_album_media',
+                        'detail': ('Telegram-альбом может содержать только '
+                                   'фото и видео'),
+                    }), 400
+                data = upload.read()
+                if not data:
+                    return jsonify({'error': 'empty'}), 400
+                if len(data) > per_file_limit:
+                    return jsonify({
+                        'error': 'file_too_large',
+                        'detail': 'Один из файлов больше 24 МБ',
+                    }), 413
+                total_size += len(data)
+                prepared.append({
+                    'data': data,
+                    'size': len(data),
+                    'name': upload.filename or 'media',
+                    'mime': mime,
+                    'kind': ('image' if mime.startswith('image/')
+                             else 'video'),
+                })
+        if total_size > total_limit:
+            return jsonify({
+                'error': 'album_too_large',
+                'detail': 'Общий размер альбома больше 80 МБ',
+            }), 413
 
         local_grouped_id = random.getrandbits(63) or 1
         now = datetime.now()
         rows = []
         stored_paths = []
         attachments = []
+        promotions = []
         try:
             for index, item in enumerate(prepared):
                 placeholder = ('📷 Фото' if item['kind'] == 'image'
@@ -5301,17 +5455,34 @@ def register_routes(app: Flask) -> None:
                 )
                 db.add(msg)
                 db.flush()
-                stored_path = _store_media_bytes(user_id, item['data'])
+                staged_path = item.get('staged_path')
+                if staged_path:
+                    stored_path = f'{user_id}/{uuid.uuid4().hex}.enc'
+                    stored_full = _safe_media_full_path(stored_path)
+                    os.makedirs(os.path.dirname(stored_full), exist_ok=True)
+                    os.replace(_safe_media_full_path(staged_path), stored_full)
+                    promotions.append((staged_path, stored_path))
+                else:
+                    stored_path = _store_media_bytes(user_id, item['data'])
                 stored_paths.append(stored_path)
                 attachment = _attach_message_file(
                     db, user_id, msg.id, item['kind'], item['mime'],
-                    item['name'], stored_path, len(item['data']))
+                    item['name'], stored_path, item['size'])
                 rows.append(msg)
                 attachments.append(attachment)
             db.commit()
         except Exception:  # noqa: BLE001
             db.rollback()
-            _remove_media_paths(stored_paths)
+            promoted_paths = {stored for _stage, stored in promotions}
+            for staged_path, stored_path in reversed(promotions):
+                try:
+                    os.replace(_safe_media_full_path(stored_path),
+                               _safe_media_full_path(staged_path))
+                except OSError:
+                    pass
+            _remove_media_paths([
+                path for path in stored_paths if path not in promoted_paths
+            ])
             raise
 
         response_messages = []
