@@ -525,6 +525,44 @@ def _enrich_with_last_message(db, contacts):
     return contacts
 
 
+def _home_unread_summary(db, user_id: int) -> dict:
+    from data.contacts import Contact, MessengerHandle
+    from sqlalchemy import func
+
+    contacts = (
+        db.query(Contact)
+        .filter(Contact.user_id == user_id)
+        .all()
+    )
+    contacts = _filter_discussion_contacts(db, contacts)
+    contacts = _filter_archived_contacts(contacts, False)
+    contact_ids = [contact.id for contact in contacts]
+    muted_by_contact = {contact.id: bool(contact.muted) for contact in contacts}
+    summary = {'sound': 0, 'muted': 0, 'total': 0}
+    if not contact_ids:
+        return summary
+
+    unread_rows = (
+        db.query(MessengerHandle.contact_id, func.count(Messages.id))
+        .join(Messages, Messages.handle_id == MessengerHandle.id)
+        .join(Contact, Contact.id == MessengerHandle.contact_id)
+        .filter(MessengerHandle.contact_id.in_(contact_ids))
+        .filter(Messages.user_id == user_id)
+        .filter(or_(Messages.outgoing.is_(None),
+                    Messages.outgoing.is_(False)))
+        .filter(or_(Contact.last_read_at.is_(None),
+                    Messages.created_at > Contact.last_read_at))
+        .group_by(MessengerHandle.contact_id)
+        .all()
+    )
+    for contact_id, count in unread_rows:
+        value = int(count or 0)
+        bucket = 'muted' if muted_by_contact.get(contact_id) else 'sound'
+        summary[bucket] += value
+        summary['total'] += value
+    return summary
+
+
 def _filter_discussion_contacts(db, contacts):
     """Убирает из UI контакты linked discussion-групп каналов.
 
@@ -3506,6 +3544,7 @@ def register_routes(app: Flask) -> None:
         contacts_count = db.query(Contact).filter(Contact.user_id == user.id).count()
         messages_count = db.query(Messages).filter(Messages.user_id == user.id).count()
         device_connected = db.query(Device.id).filter(Device.user_id == user.id).first() is not None
+        unread_summary = _home_unread_summary(db, user.id)
         return render_template(
             'index.html',
             user=_mark_profile_badges(user),
@@ -3513,10 +3552,22 @@ def register_routes(app: Flask) -> None:
             connect_code=user.connect_code,
             contacts_count=contacts_count,
             messages_count=messages_count,
+            unread_summary=unread_summary,
             has_avatar=os.path.exists(_avatar_file(user.id)),
             username=user.username or '',
             preferred_lang=user.preferred_lang or 'ru',
         )
+
+    @app.route('/home/summary.json')
+    def home_summary_json():
+        if not session.get('user_id'):
+            return jsonify({'error': 'unauthorized'}), 401
+        db = get_db()
+        user_id = session['user_id']
+        if db.query(User.id).filter(User.id == user_id).first() is None:
+            return jsonify({'error': 'not_found'}), 404
+        return jsonify({'ok': True,
+                        'unread': _home_unread_summary(db, user_id)})
 
     @app.route('/home/username', methods=['POST'])
     def change_username():

@@ -141,9 +141,37 @@
         border-radius: 14px; padding: 14px; font-size: 1.05rem;
         font-weight: 600; transition: transform 0.15s ease, box-shadow 0.2s ease;
         box-shadow: 0 6px 18px rgba(59,130,246,.28);
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 12px; text-align: left;
     }
     .btn-cta:hover { transform: translateY(-2px);
         box-shadow: 0 10px 26px rgba(59,130,246,.36); }
+    .btn-cta-main {
+        display: inline-flex; align-items: center; gap: 8px;
+        min-width: 0;
+    }
+    .home-unread {
+        display: inline-flex; align-items: center; justify-content: flex-end;
+        gap: 6px; flex-wrap: wrap;
+    }
+    .home-unread-pill {
+        display: inline-flex; align-items: center; gap: 5px;
+        min-height: 26px; padding: 3px 9px; border-radius: 999px;
+        color: #fff; font-size: .84rem; font-weight: 800;
+        line-height: 1; white-space: nowrap;
+    }
+    .home-unread-pill.sound {
+        background: #ef4444; box-shadow: 0 1px 5px rgba(239,68,68,.34);
+    }
+    .home-unread-pill.muted {
+        background: #94a3b8; box-shadow: 0 1px 3px rgba(100,116,139,.28);
+    }
+    .home-unread-pill.empty {
+        color: #e0edff; background: rgba(255,255,255,.18);
+        box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
+    }
+    .home-unread-value { font-size: .94rem; }
+    .home-unread-label { font-weight: 650; opacity: .96; }
     .btn-about {
         border-radius: 14px; padding: 12px 14px; font-weight: 600;
         border-color: #c7d2e3; background: rgba(255,255,255,.72);
@@ -196,11 +224,20 @@
     [data-bs-theme="dark"] .btn-creator:hover {
         background: #3a2d12; border-color: #d69e2e; color: #fde68a;
     }
+    [data-bs-theme="dark"] .home-unread-pill.muted {
+        background: #64748b;
+    }
 
     @media (prefers-reduced-motion: reduce) {
         .home-card { opacity: 1; animation: none; }
         .card-soft, .stat, .btn-cta, .avatar-edit img,
         .avatar-edit .ph, .copy-btn { transition: none; }
+    }
+    @media (max-width: 520px) {
+        .btn-cta {
+            align-items: flex-start; flex-direction: column;
+        }
+        .home-unread { justify-content: flex-start; }
     }
 </style>
 
@@ -303,9 +340,31 @@
     </div>
     {% endif %}
 
+    {% set sound_unread = unread_summary.sound if unread_summary else 0 %}
+    {% set muted_unread = unread_summary.muted if unread_summary else 0 %}
     <div class="home-card d-grid gap-2">
-        <a href="/contacts" class="btn btn-primary btn-cta">Открыть портал мессенджеров</a>
-        <a href="/contacts" class="btn btn-primary btn-cta">Открыть контакты</a>
+        <a href="/contacts" class="btn btn-primary btn-cta home-messenger-cta"
+           aria-label="Открыть мессенджер: {{ sound_unread }} со звуком, {{ muted_unread }} без звука">
+            <span class="btn-cta-main">
+                <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#messages"></use></svg>
+                <span>Открыть мессенджер</span>
+            </span>
+            <span class="home-unread" id="home-unread-summary"
+                  data-sound="{{ sound_unread }}" data-muted="{{ muted_unread }}">
+                <span class="home-unread-pill sound{% if sound_unread <= 0 %} d-none{% endif %}"
+                      data-home-unread-kind="sound" title="Непрочитанные со звуком">
+                    <span class="home-unread-value" data-home-unread-value>{{ sound_unread }}</span>
+                    <span class="home-unread-label">со звуком</span>
+                </span>
+                <span class="home-unread-pill muted{% if muted_unread <= 0 %} d-none{% endif %}"
+                      data-home-unread-kind="muted" title="Непрочитанные без звука">
+                    <span class="home-unread-value" data-home-unread-value>{{ muted_unread }}</span>
+                    <span class="home-unread-label">без звука</span>
+                </span>
+                <span class="home-unread-pill empty{% if sound_unread or muted_unread %} d-none{% endif %}"
+                      data-home-unread-empty>нет новых</span>
+            </span>
+        </a>
         <a href="/about" class="btn btn-about">Что вообще это за сайт?</a>
         <a href="/messenger?creators=1" class="btn btn-creator"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#crown"></use></svg> Задать вопрос создателям</a>
     </div>
@@ -341,6 +400,53 @@
             else el.textContent = target;
         }
         requestAnimationFrame(step);
+    });
+})();
+
+// Счётчики непрочитанного на главной: красный — обычные уведомления,
+// серый — чаты без звука. Обновляем только лёгкий SQL summary.
+(function() {
+    var root = document.getElementById('home-unread-summary');
+    if (!root) return;
+    var cta = document.querySelector('.home-messenger-cta');
+    var empty = root.querySelector('[data-home-unread-empty]');
+    var pills = {
+        sound: root.querySelector('[data-home-unread-kind="sound"]'),
+        muted: root.querySelector('[data-home-unread-kind="muted"]')
+    };
+    function setPill(kind, value) {
+        var pill = pills[kind];
+        if (!pill) return;
+        var count = Math.max(0, parseInt(value, 10) || 0);
+        var node = pill.querySelector('[data-home-unread-value]');
+        if (node) node.textContent = count;
+        pill.classList.toggle('d-none', count <= 0);
+        root.dataset[kind] = String(count);
+    }
+    function render(summary) {
+        summary = summary || {};
+        var sound = Math.max(0, parseInt(summary.sound, 10) || 0);
+        var muted = Math.max(0, parseInt(summary.muted, 10) || 0);
+        setPill('sound', sound);
+        setPill('muted', muted);
+        if (empty) empty.classList.toggle('d-none', sound + muted > 0);
+        if (cta) {
+            cta.setAttribute('aria-label', 'Открыть мессенджер: '
+                + sound + ' со звуком, ' + muted + ' без звука');
+        }
+    }
+    async function refresh() {
+        if (document.hidden || navigator.onLine === false) return;
+        try {
+            var r = await fetch('/home/summary.json', {credentials: 'same-origin'});
+            if (!r.ok) return;
+            var data = await r.json();
+            if (data && data.ok) render(data.unread);
+        } catch (e) {}
+    }
+    setInterval(refresh, 15000);
+    document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) refresh();
     });
 })();
 
