@@ -152,26 +152,22 @@
     }
     .home-unread {
         display: inline-flex; align-items: center; justify-content: flex-end;
-        gap: 6px; flex-wrap: wrap;
+        gap: 5px; flex: 0 0 auto; min-width: 0;
     }
     .home-unread-pill {
-        display: inline-flex; align-items: center; gap: 5px;
-        min-height: 26px; padding: 3px 9px; border-radius: 999px;
-        color: #fff; font-size: .84rem; font-weight: 800;
-        line-height: 1; white-space: nowrap;
+        min-width: 26px; height: 26px; padding: 0 8px;
+        border-radius: 999px; color: #fff;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: .78rem; font-weight: 800; line-height: 1;
+        font-variant-numeric: tabular-nums; white-space: nowrap;
+        border: 2px solid rgba(255,255,255,.72);
     }
     .home-unread-pill.sound {
-        background: #ef4444; box-shadow: 0 1px 5px rgba(239,68,68,.34);
+        background: #ef4444; box-shadow: 0 2px 7px rgba(239,68,68,.34);
     }
     .home-unread-pill.muted {
-        background: #94a3b8; box-shadow: 0 1px 3px rgba(100,116,139,.28);
+        background: #94a3b8; box-shadow: 0 2px 5px rgba(100,116,139,.28);
     }
-    .home-unread-pill.empty {
-        color: #e0edff; background: rgba(255,255,255,.18);
-        box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
-    }
-    .home-unread-value { font-size: .94rem; }
-    .home-unread-label { font-weight: 650; opacity: .96; }
     .btn-about {
         border-radius: 14px; padding: 12px 14px; font-weight: 600;
         border-color: #c7d2e3; background: rgba(255,255,255,.72);
@@ -235,9 +231,8 @@
     }
     @media (max-width: 520px) {
         .btn-cta {
-            align-items: flex-start; flex-direction: column;
+            gap: 10px;
         }
-        .home-unread { justify-content: flex-start; }
     }
 </style>
 
@@ -352,17 +347,17 @@
             <span class="home-unread" id="home-unread-summary"
                   data-sound="{{ sound_unread }}" data-muted="{{ muted_unread }}">
                 <span class="home-unread-pill sound{% if sound_unread <= 0 %} d-none{% endif %}"
-                      data-home-unread-kind="sound" title="Непрочитанные со звуком">
-                    <span class="home-unread-value" data-home-unread-value>{{ sound_unread }}</span>
-                    <span class="home-unread-label">со звуком</span>
+                      data-home-unread-kind="sound"
+                      title="Непрочитанные со звуком"
+                      aria-label="{{ sound_unread }} непрочитанных со звуком">
+                    <span data-home-unread-value>{{ sound_unread }}</span>
                 </span>
                 <span class="home-unread-pill muted{% if muted_unread <= 0 %} d-none{% endif %}"
-                      data-home-unread-kind="muted" title="Непрочитанные без звука">
-                    <span class="home-unread-value" data-home-unread-value>{{ muted_unread }}</span>
-                    <span class="home-unread-label">без звука</span>
+                      data-home-unread-kind="muted"
+                      title="Непрочитанные без звука"
+                      aria-label="{{ muted_unread }} непрочитанных без звука">
+                    <span data-home-unread-value>{{ muted_unread }}</span>
                 </span>
-                <span class="home-unread-pill empty{% if sound_unread or muted_unread %} d-none{% endif %}"
-                      data-home-unread-empty>нет новых</span>
             </span>
         </a>
         <a href="/about" class="btn btn-about">Что вообще это за сайт?</a>
@@ -409,7 +404,6 @@
     var root = document.getElementById('home-unread-summary');
     if (!root) return;
     var cta = document.querySelector('.home-messenger-cta');
-    var empty = root.querySelector('[data-home-unread-empty]');
     var pills = {
         sound: root.querySelector('[data-home-unread-kind="sound"]'),
         muted: root.querySelector('[data-home-unread-kind="muted"]')
@@ -421,6 +415,9 @@
         var node = pill.querySelector('[data-home-unread-value]');
         if (node) node.textContent = count;
         pill.classList.toggle('d-none', count <= 0);
+        pill.setAttribute('aria-label', count + (kind === 'sound'
+            ? ' непрочитанных со звуком'
+            : ' непрочитанных без звука'));
         root.dataset[kind] = String(count);
     }
     function render(summary) {
@@ -429,7 +426,6 @@
         var muted = Math.max(0, parseInt(summary.muted, 10) || 0);
         setPill('sound', sound);
         setPill('muted', muted);
-        if (empty) empty.classList.toggle('d-none', sound + muted > 0);
         if (cta) {
             cta.setAttribute('aria-label', 'Открыть мессенджер: '
                 + sound + ' со звуком, ' + muted + ' без звука');
