@@ -2762,6 +2762,26 @@ def presence_status(chat_id, user_id=None, refresh=False):
     with _presence_lock:
         cached = _presence_by_user.get(key)
         presence = dict(cached) if cached else None
+    # Telegram может скрывать точный last seen и продолжать отдавать
+    # UserStatusRecently, даже когда отдельно уже прислал живое действие
+    # SendMessageTyping/RecordAudio/Upload*. Такое действие однозначно
+    # означает, что собеседник находится онлайн прямо сейчас, поэтому на
+    # короткое время оно приоритетнее приблизительного presence-кэша.
+    activity = typing_status(chat_id, user_id=user_id)
+    if activity.get("active", activity.get("typing", False)):
+        if presence is None:
+            presence = {
+                "last_seen_at_iso": None,
+                "source": "telegram_activity",
+            }
+        presence.pop("online_until", None)
+        presence.update({
+            "online": True,
+            "label": "В сети",
+            "detail": "В сети",
+            "inferred_from_activity": True,
+        })
+        return presence
     if presence is None:
         return None
     online_until = presence.pop("online_until", None)

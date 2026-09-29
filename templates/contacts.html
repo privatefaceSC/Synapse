@@ -6162,6 +6162,30 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     window.__skillwoodActivityHtml = activityHtml;
+
+    function setContactRowPresence(wrap, presence) {
+        if (!wrap) return;
+        let badge = wrap.querySelector('.contact-presence');
+        if (!presence) {
+            if (badge) badge.remove();
+            return;
+        }
+        const detail = presence.detail || presence.label || '';
+        if (!badge) {
+            const meta = wrap.querySelector('.contact-meta');
+            if (!meta) return;
+            badge = document.createElement('div');
+            badge.className = 'contact-presence';
+            badge.innerHTML = '<span class="contact-presence__dot"></span>'
+                + '<span></span>';
+            meta.insertBefore(badge, meta.children[1] || null);
+        }
+        badge.classList.toggle('online', !!presence.online);
+        badge.title = detail;
+        const label = badge.lastElementChild;
+        if (label) label.textContent = detail;
+    }
+
     window.__skillwoodSetContactActivity = function(contactId, activity) {
         const wrap = list.querySelector(
             '.contact-row-wrap[data-contact-id="' + contactId + '"]');
@@ -6177,6 +6201,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
         if (label) label.textContent = active
             ? (activity.text || 'печатает') : '';
+        if (activity && Object.prototype.hasOwnProperty.call(
+                activity, 'presence')) {
+            setContactRowPresence(wrap, activity.presence);
+        }
     };
 
     function contactsJsonUrl() {

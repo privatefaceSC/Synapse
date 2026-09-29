@@ -363,6 +363,20 @@ def _user_presence(user, now=None):
     }
 
 
+def _presence_during_activity(presence, activity):
+    """Живое действие означает online, даже если last seen ещё устарел."""
+    if not (activity and activity.get('active', activity.get('typing'))):
+        return presence
+    result = dict(presence or {})
+    result.update({
+        'online': True,
+        'label': 'В сети',
+        'detail': 'В сети',
+        'inferred_from_activity': True,
+    })
+    return result
+
+
 def _enrich_with_last_message(db, contacts):
     from data.contacts import Contact, MessengerHandle
     from sqlalchemy import func
@@ -433,6 +447,7 @@ def _enrich_with_last_message(db, contacts):
                         handle.tg_chat_id, user_id=c.user_id)
                     if c.presence is not None:
                         break
+        c.presence = _presence_during_activity(c.presence, c.activity)
 
     if contact_ids:
         ranked = (
@@ -4873,6 +4888,8 @@ def register_routes(app: Flask) -> None:
         selected_presence = _presence_for_handles(
             db, user_id, m_handles, refresh_telegram=True)
         selected_activity = _chat_activity_for_handles(user_id, m_handles)
+        selected_presence = _presence_during_activity(
+            selected_presence, selected_activity)
         handle_ids = [h.id for h in m_handles]
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
@@ -4967,6 +4984,8 @@ def register_routes(app: Flask) -> None:
         selected_presence = _presence_for_handles(
             db, user_id, m_handles, refresh_telegram=True)
         selected_activity = _chat_activity_for_handles(user_id, m_handles)
+        selected_presence = _presence_during_activity(
+            selected_presence, selected_activity)
         handle_ids = [h.id for h in m_handles]
         selected_handles = [
             {'messenger': h.messenger_name, 'sender': h.sender_raw} for h in m_handles
@@ -6631,6 +6650,7 @@ def register_routes(app: Flask) -> None:
             refresh_telegram=True)
         activity = _chat_activity_for_handles(
             session['user_id'], active_handles)
+        presence = _presence_during_activity(presence, activity)
         activity['presence'] = presence
         return jsonify(activity)
 
