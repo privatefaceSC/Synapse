@@ -202,6 +202,7 @@
         font-size: 9px; line-height: 1; font-weight: 800;
         border: 2px solid #f8fafc;
     }
+    .cf-btn .cf-count.muted { background: #94a3b8; }
     .cf-divider { width: 32px; height: 1px; flex: 0 0 auto; background: #dbe2ea; }
     .folder-modal-backdrop {
         position: fixed; inset: 0; z-index: 2600; display: flex;
@@ -262,6 +263,7 @@
     [data-bs-theme="dark"] .cf-btn { color: #94a3b8; }
     [data-bs-theme="dark"] .cf-btn:hover { background: #202b3d; color: #93c5fd; }
     [data-bs-theme="dark"] .cf-btn .cf-count { border-color: #111827; }
+    [data-bs-theme="dark"] .cf-btn .cf-count.muted { background: #64748b; }
     [data-bs-theme="dark"] .folder-modal {
         background: #121821; border-color: #2a3443; color: #e5e7eb;
     }
@@ -4466,6 +4468,7 @@
                          data-messengers="{{ c.messengers|join(',') }}"
                          data-pinned="{{ '1' if c.pinned_at else '0' }}"
                          data-muted="{{ '1' if c.muted else '0' }}"
+                         data-unread-count="{{ c.unread_count or 0 }}"
                          data-archived="{{ '1' if c.archived else '0' }}">
                         <a href="/contacts/{{ c.id }}{% if archive_mode %}?archived=1{% endif %}"
                            class="contact-row {% if selected and selected.id == c.id %}active{% endif %}">
@@ -6249,6 +6252,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 data-messengers="${escapeHtml((c.messengers || []).join(','))}"
                 data-pinned="${c.pinned ? '1' : '0'}"
                 data-muted="${c.muted ? '1' : '0'}"
+                data-unread-count="${Number(c.unread_count) || 0}"
                 data-archived="${c.archived ? '1' : '0'}">
                 <a href="${contactUrl(c.id)}"
                    class="contact-row${isActive ? ' active' : ''}">
@@ -6471,6 +6475,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             marksEl.innerHTML = (pinned ? window.synapseIcon('pin') : '')
                 + (muted ? window.synapseIcon('bell-off') : '');
         }
+        // Цвет счётчика папки зависит от mute-состояния непрочитанных чатов.
+        if (window._refreshFolders) window._refreshFolders();
     }
 
     async function togglePin(contactId, wrap) {
@@ -8859,8 +8865,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (a) a.classList.add('active');
         // Бэйдж «непрочитано» убираем сразу — сервер пометит чат прочитанным
         // в messages.json, поллинг списка подтвердит это в течение 5 c.
+        wrap.dataset.unreadCount = '0';
         const b = wrap.querySelector('.badge-unread');
         if (b) b.remove();
+        if (typeof renderChatFolders === 'function') renderChatFolders();
     }
 
     function setMobileView(view) {
@@ -9605,6 +9613,35 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return window.synapseIcon(folder && folder.read_only ? 'folder-open' : 'folder');
     }
 
+    function chatFolderUnread(memberContactIds) {
+        const members = memberContactIds == null ? null : new Set(
+            memberContactIds.map(value => String(value)));
+        let count = 0;
+        let hasUnmuted = false;
+        list.querySelectorAll('.contact-row-wrap').forEach(function(wrap) {
+            const contactId = String(wrap.dataset.contactId || '');
+            if (members && !members.has(contactId)) return;
+            if (!members) {
+                const messengers = (wrap.dataset.messengers || '').split(',')
+                    .map(value => value.trim()).filter(Boolean);
+                if (!messengers.includes(activeFolder)) return;
+            }
+            const unread = Math.max(0, Number(wrap.dataset.unreadCount) || 0);
+            if (!unread) return;
+            count += unread;
+            if (wrap.dataset.muted !== '1') hasUnmuted = true;
+        });
+        return {count, mutedOnly: count > 0 && !hasUnmuted};
+    }
+
+    function chatFolderUnreadBadge(state) {
+        if (!state || !state.count) return '';
+        const label = state.count + ' непрочитанных';
+        return '<span class="cf-count' + (state.mutedOnly ? ' muted' : '')
+            + '" title="' + label + '" aria-label="' + label + '">'
+            + state.count + '</span>';
+    }
+
     function renderChatFolders(errorText) {
         const rail = document.getElementById('chat-folder-bar');
         if (!rail) return;
@@ -9619,25 +9656,27 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + '<span>…</span><span class="cf-label">Папки</span></button>';
             return;
         }
+        const allUnread = chatFolderUnread(null);
         let html = '<button type="button" class="cf-btn'
             + (!activeChatFolderId ? ' active' : '')
             + '" data-chat-folder="" title="Все чаты · '
             + escapeHtml(activeFolder) + '">' + window.synapseIcon('messages')
-            + '<span class="cf-label">Все чаты</span></button>';
+            + '<span class="cf-label">Все чаты</span>'
+            + chatFolderUnreadBadge(allUnread) + '</button>';
         const folders = (chatFolderSnapshot.folders || []).slice().sort(
             (a, b) => Number(a.position || 0) - Number(b.position || 0));
         if (folders.length) html += '<span class="cf-divider" aria-hidden="true"></span>';
         folders.forEach(function(folder) {
             const members = folder.member_contact_ids || [];
             const title = folder.title || 'Папка';
+            const unread = chatFolderUnread(members);
             html += '<button type="button" class="cf-btn'
                 + (String(activeChatFolderId) === String(folder.id) ? ' active' : '')
                 + '" data-chat-folder="' + escapeHtml(folder.id)
                 + '" title="' + escapeHtml(title) + '">'
                 + '<span aria-hidden="true">' + folderGlyph(folder) + '</span>'
                 + '<span class="cf-label">' + escapeHtml(title) + '</span>'
-                + (members.length
-                    ? '<span class="cf-count">' + members.length + '</span>' : '')
+                + chatFolderUnreadBadge(unread)
                 + '</button>';
         });
         if (errorText) {
