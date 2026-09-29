@@ -5170,6 +5170,10 @@ def register_routes(app: Flask) -> None:
                  'deleted': bool(m.deleted_at),
                  'pinned': bool(m.pinned_at),
                  'ttl_seconds': m.tg_ttl_seconds,
+                 'can_comment': bool(getattr(
+                     m, 'tg_comments_available', False)),
+                 'comment_count': int(getattr(
+                     m, 'tg_reply_count', None) or 0),
                  'display_author': display_author(m.sender, contact.display_name),
                  'author_avatar_url': _message_author_avatar_url(m),
                  'author_profile_url': _message_author_profile_url(m),

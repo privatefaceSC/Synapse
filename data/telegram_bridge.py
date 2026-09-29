@@ -1384,9 +1384,19 @@ async def _handle_message(event, user_id=None, client=None,
                     _Messages.tg_message_id == int(tg_message_id_for_dupe),
                     _Messages.handle_id.in_(handle_ids)).first()
                 grouped_id = getattr(msg, "grouped_id", None)
+                snapshot_changed = False
                 if (exists is not None and grouped_id is not None
                         and exists.tg_grouped_id is None):
                     exists.tg_grouped_id = int(grouped_id)
+                    snapshot_changed = True
+                if exists is not None:
+                    snapshot_changed = (
+                        _apply_message_discussion_meta(exists, msg)
+                        or snapshot_changed)
+                    snapshot_changed = (
+                        _sync_message_reactions(db, exists.id, msg)
+                        or snapshot_changed)
+                if snapshot_changed:
                     db.commit()
                 # `scheduled` — скрытая idempotency-запись. Реальное эхо
                 # должно пройти в record_message, который превратит её в
@@ -1569,6 +1579,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
     db = db_sessions.create_session()
     notify_message_id = None
     try:
+        comments_available, reply_count = _message_discussion_meta(msg)
         message = record_message(db, owner, "Telegram", chat_key, text,
                                  tg_chat_id=chat_id, author=author,
                                  outgoing=is_out, tg_chat_type=chat_type,
@@ -1582,11 +1593,16 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  tg_topic_id=int(topic_id) if topic_id else None,
                                  tg_topic_title=topic_title,
                                  tg_is_forum=is_forum_chat,
+                                 tg_comments_available=comments_available,
+                                 tg_reply_count=reply_count,
                                  text_html=text_html,
                                  archived=archived,
                                  muted=muted)
         if message is not None and not was_known:
             notify_message_id = message.id
+        if (message is not None
+                and _sync_message_reactions(db, message.id, msg)):
+            db.commit()
         # message is None — контакт в блок-листе, медиа тоже пропускаем.
         if message is not None and kind is not None:
             if data is not None:
@@ -1758,6 +1774,93 @@ def _backfill_telegram_grouped_id(message_id, msg, user_id=None):
         db.close()
 
 
+def _message_discussion_meta(msg):
+    """Return Telegram channel discussion metadata from Message.replies."""
+    replies = getattr(msg, "replies", None)
+    if replies is None:
+        return False, 0
+    try:
+        count = max(0, int(getattr(replies, "replies", 0) or 0))
+    except (TypeError, ValueError):
+        count = 0
+    return bool(getattr(replies, "comments", False)), count
+
+
+def _apply_message_discussion_meta(message, msg):
+    available, count = _message_discussion_meta(msg)
+    changed = False
+    if getattr(message, "tg_comments_available", None) != available:
+        message.tg_comments_available = available
+        changed = True
+    if getattr(message, "tg_reply_count", None) != count:
+        message.tg_reply_count = count
+        changed = True
+    return changed
+
+
+def _replace_reactions_if_changed(db, message_id, items):
+    from data.reactions import MessageReaction, replace_reactions
+
+    wanted = [
+        {
+            "emoji": item.get("emoji"),
+            "count": int(item.get("count") or 0),
+            "mine": bool(item.get("mine")),
+        }
+        for item in (items or [])
+        if item.get("emoji")
+    ]
+    existing = [
+        {"emoji": row.emoji, "count": int(row.count or 0),
+         "mine": bool(row.mine)}
+        for row in (db.query(MessageReaction)
+                    .filter(MessageReaction.message_id == int(message_id))
+                    .order_by(MessageReaction.id.asc())
+                    .all())
+    ]
+    if existing == wanted:
+        return False
+    replace_reactions(db, int(message_id), wanted)
+    return True
+
+
+def _sync_message_reactions(db, message_id, msg):
+    if not hasattr(msg, "reactions"):
+        return False
+    return _replace_reactions_if_changed(
+        db, message_id, _parse_reactions(getattr(msg, "reactions", None)))
+
+
+def _sync_telegram_message_snapshot(message_id, msg, user_id=None):
+    """Update cached Telegram metadata for an already saved message."""
+    if message_id is None:
+        return False
+
+    from data import db_sessions
+    from data.users import Messages as _Messages
+
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    try:
+        message = db.query(_Messages).filter(
+            _Messages.id == int(message_id),
+            _Messages.user_id == owner).first()
+        if message is None:
+            return False
+        changed = False
+        grouped_id = getattr(msg, "grouped_id", None)
+        if grouped_id is not None and message.tg_grouped_id is None:
+            message.tg_grouped_id = int(grouped_id)
+            changed = True
+        changed = _apply_message_discussion_meta(message, msg) or changed
+        changed = _sync_message_reactions(db, message.id, msg) or changed
+        if changed:
+            db.commit()
+        return changed
+    finally:
+        db.close()
+
+
 def _ensure_message_attachment_stub(message_id, msg, kind, user_id=None):
     """Добавляет lazy-stub уже существующему Telegram-сообщению."""
     if kind not in _REMOTE_ATTACHMENT_KINDS:
@@ -1918,7 +2021,7 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
             existing_id, has_live_attachment = _telegram_message_state(
                 owner, chat_id, tg_id)
             if existing_id is not None:
-                _backfill_telegram_grouped_id(
+                _sync_telegram_message_snapshot(
                     existing_id, msg, user_id=owner)
                 if (kind in _REMOTE_ATTACHMENT_KINDS
                         and not has_live_attachment):

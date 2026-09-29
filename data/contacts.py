@@ -361,6 +361,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     fwd_from_synapse_user_id=None, author_tg_chat_id=None,
                     tg_topic_id=None,
                     tg_topic_title=None, tg_is_forum=None,
+                    tg_comments_available=None, tg_reply_count=None,
                     text_html=None, is_group=None, contact_avatar_path=None,
                     author_avatar_path=None, notification_dedup_key=None,
                     archived=None, muted=None, created_at=None):
@@ -405,6 +406,15 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
             and tg_chat_type in ('group', 'channel')):
         handle.tg_forum_checked_at = _dt.datetime.now()
 
+    def apply_telegram_discussion_meta(message):
+        if tg_comments_available is not None:
+            message.tg_comments_available = bool(tg_comments_available)
+        if tg_reply_count is not None:
+            try:
+                message.tg_reply_count = max(0, int(tg_reply_count or 0))
+            except (TypeError, ValueError):
+                message.tg_reply_count = 0
+
     # Telegram может доставить одно и то же NewMessage несколькими путями
     # (live update, catch-up, echo нашей фоновой отправки). Точный id внутри
     # одного handle надёжнее текста/подписи и не теряет нативные сообщения.
@@ -447,6 +457,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                 existing.author_tg_chat_id = author_tg_chat_id
                 existing.tg_topic_id = tg_topic_id
                 existing.tg_topic_title = tg_topic_title
+                apply_telegram_discussion_meta(existing)
                 existing.delivery_status = 'sent'
                 existing.delivery_error = None
                 existing.delivery_started_at = None
@@ -454,6 +465,9 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                 # Недавняя catch-up синхронизация может встретить запись,
                 # созданную до поддержки альбомов. Дополняем её без дубля.
                 existing.tg_grouped_id = tg_grouped_id
+                apply_telegram_discussion_meta(existing)
+            else:
+                apply_telegram_discussion_meta(existing)
             db.commit()
             return existing
 
@@ -506,6 +520,12 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         author_tg_chat_id=author_tg_chat_id,
         tg_topic_id=tg_topic_id,
         tg_topic_title=tg_topic_title,
+        tg_comments_available=(
+            bool(tg_comments_available)
+            if tg_comments_available is not None else None),
+        tg_reply_count=(
+            max(0, int(tg_reply_count or 0))
+            if tg_reply_count is not None else None),
         text_html=text_html,
         notification_dedup_key=notification_dedup_key,
         author_avatar_path=author_avatar_path,

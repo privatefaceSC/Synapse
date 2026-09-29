@@ -55,6 +55,10 @@ class Messages(SqlAlchemyBase):
     # Все элементы нативного Telegram-альбома получают один grouped_id.
     # По нему веб собирает фото/видео в компактную мозаику.
     tg_grouped_id = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
+    # Telegram channel post discussion metadata. Message.replies.comments
+    # говорит, есть ли у поста привязанное обсуждение, replies — счётчик.
+    tg_comments_available = sqlalchemy.Column(sqlalchemy.Boolean, nullable=True)
+    tg_reply_count = sqlalchemy.Column(sqlalchemy.Integer, nullable=True)
     # Когда собеседник в Telegram прочитал это исходящее сообщение (приходит
     # из UpdateReadHistoryOutbox). NULL = ещё не прочитано (одна галочка
     # в UI). Не NULL = прочитано (двойная галочка).

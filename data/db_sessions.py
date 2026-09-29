@@ -14,7 +14,7 @@ __engine = None
 __schema_thread_lock = threading.Lock()
 # Увеличивать при каждом изменении wanted/indexes ниже. Первый WSGI worker
 # применяет миграции, остальные после общего file-lock читают только PRAGMA.
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 
 @contextmanager
@@ -122,6 +122,8 @@ def _apply_light_migrations(engine):
                               ("is_group", "BOOLEAN")],
         "messages": [("outgoing", "BOOLEAN"), ("tg_message_id", "BIGINT"),
                      ("tg_grouped_id", "BIGINT"),
+                     ("tg_comments_available", "BOOLEAN"),
+                     ("tg_reply_count", "INTEGER"),
                      ("reply_to_message_id", "INTEGER"),
                      ("tg_read_at", "DATETIME"),
                      ("deleted_at", "DATETIME"),

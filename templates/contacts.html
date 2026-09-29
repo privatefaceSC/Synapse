@@ -1908,7 +1908,8 @@
     .media-album-grid .bubble > .text,
     .media-album-grid .truncated-note,
     .media-album-grid .time-row,
-    .media-album-grid .reactions-row {
+    .media-album-grid .reactions-row,
+    .media-album-grid .channel-comments-btn {
         display: none !important;
     }
     .media-album-grid .bubble {
@@ -3447,28 +3448,92 @@
         border-radius: 12px;
     }
 
-    /* Кнопка «💬 Комментарии» под bubble в канальных чатах. Лениво
-       вешается на каждый bubble JS-обозревателем — см. блок ниже. */
+    .bubble-row.channel-post .bubble,
+    .bubble-row.channel-post .bubble.media-only,
+    .bubble-row.channel-post .bubble.media-caption {
+        overflow: hidden;
+        background: #ffffff !important;
+        border: 1px solid rgba(148,163,184,.18) !important;
+        border-radius: 14px !important;
+        box-shadow: 0 2px 8px rgba(15,23,42,.08) !important;
+        padding: 0 !important;
+    }
+    .bubble-row.channel-post .bubble-author,
+    .bubble-row.channel-post .fwd-header,
+    .bubble-row.channel-post .reply-quote,
+    .bubble-row.channel-post .deleted-banner,
+    .bubble-row.channel-post .truncated-note,
+    .bubble-row.channel-post .upload-state {
+        margin-left: 12px;
+        margin-right: 12px;
+    }
+    .bubble-row.channel-post .bubble-author { margin-top: 10px; }
+    .bubble-row.channel-post .media-img,
+    .bubble-row.channel-post .media-video-wrap,
+    .bubble-row.channel-post .media-remote-wrap,
+    .bubble-row.channel-post .media-vnote-wrap {
+        border-radius: 0 !important;
+    }
+    .bubble-row.channel-post .bubble > .text,
+    .bubble-row.channel-post .bubble.media-caption > .text {
+        margin: 0;
+        padding: 10px 12px 4px;
+        background: transparent;
+        border-radius: 0;
+        box-shadow: none;
+    }
+    .bubble-row.channel-post .time-row {
+        margin: 2px 12px 8px;
+    }
+    .bubble-row.channel-post .reactions-row {
+        margin: 6px 12px 8px;
+    }
+    [data-bs-theme="dark"] .bubble-row.channel-post .bubble,
+    [data-bs-theme="dark"] .bubble-row.channel-post .bubble.media-only,
+    [data-bs-theme="dark"] .bubble-row.channel-post .bubble.media-caption {
+        background: #172232 !important;
+        border-color: rgba(148,163,184,.12) !important;
+        box-shadow: none !important;
+    }
+    [data-bs-theme="dark"] .bubble-row.channel-post .bubble > .text,
+    [data-bs-theme="dark"] .bubble-row.channel-post
+        .bubble.media-caption > .text {
+        background: transparent;
+    }
+    /* Кнопка комментариев — часть карточки поста канала. JS добавляет её
+       только если Telegram сообщил Message.replies.comments. */
     .channel-comments-btn {
-        background: transparent; border: 1px solid rgba(59,130,246,.25);
+        width: 100%;
+        background: transparent; border: 0;
+        border-top: 1px solid rgba(148,163,184,.18);
         cursor: pointer;
-        padding: 4px 10px; margin-top: 6px;
+        padding: 10px 12px; margin-top: 2px;
         font-size: 12px; color: #2563eb; font-weight: 600;
         display: inline-flex; align-items: center; gap: 6px;
-        border-radius: 10px;
+        border-radius: 0;
         transition: background .12s ease, border-color .12s ease;
     }
     .channel-comments-btn:hover {
-        background: rgba(59,130,246,.1); border-color: rgba(59,130,246,.5);
+        background: rgba(59,130,246,.08);
     }
     .channel-comments-btn svg {
         width: 14px; height: 14px;
     }
+    .channel-comments-btn .channel-comments-count {
+        color: #64748b; font-weight: 600;
+    }
+    .channel-comments-btn .channel-comments-chevron {
+        margin-left: auto; color: #64748b;
+    }
     [data-bs-theme="dark"] .channel-comments-btn {
-        color: #60a5fa; border-color: rgba(96,165,250,.3);
+        color: #60a5fa; border-top-color: rgba(148,163,184,.16);
     }
     [data-bs-theme="dark"] .channel-comments-btn:hover {
-        background: rgba(96,165,250,.15);
+        background: rgba(96,165,250,.10);
+    }
+    [data-bs-theme="dark"] .channel-comments-btn .channel-comments-count,
+    [data-bs-theme="dark"] .channel-comments-btn .channel-comments-chevron {
+        color: #94a3b8;
     }
 
     /* --- «Комментарии» — полноэкранный чат поверх канала. Закрытие —
@@ -4623,11 +4688,16 @@
                             {% set msg_key = ('out:' if m.outgoing else 'in:') ~ msg_author %}
                             {% set msg_grouped = msg_ns.prev_key == msg_key %}
                             {% set msg_show_source = _show_authors and not m.outgoing and not msg_grouped %}
-                            <div class="bubble-row{% if m.outgoing %} outgoing{% else %} incoming{% endif %}{% if m.pinned_at %} pinned{% endif %}{% if msg_grouped %} grouped{% endif %}{% if m.delivery_status == 'failed' %} delivery-failed{% elif m.delivery_status and m.delivery_status != 'sent' %} pending{% endif %}"
+                            {% set msg_is_channel_post = chat_type == 'channel' and not m.outgoing %}
+                            {% set msg_can_comment = msg_is_channel_post and m.tg_comments_available %}
+                            {% set msg_comment_count = m.tg_reply_count or 0 %}
+                            <div class="bubble-row{% if m.outgoing %} outgoing{% else %} incoming{% endif %}{% if msg_is_channel_post %} channel-post{% endif %}{% if m.pinned_at %} pinned{% endif %}{% if msg_grouped %} grouped{% endif %}{% if m.delivery_status == 'failed' %} delivery-failed{% elif m.delivery_status and m.delivery_status != 'sent' %} pending{% endif %}"
                                  data-message-id="{{ m.id }}"
                                  data-album-id="{{ m.tg_grouped_id or '' }}"
                                  data-client-send-key="{{ m.notification_dedup_key or '' }}"
                                  data-can-delete-all="{{ '1' if m.outgoing and m.tg_message_id else '0' }}"
+                                 data-can-comment="{{ '1' if msg_can_comment else '0' }}"
+                                 data-comment-count="{{ msg_comment_count }}"
                                  data-messenger="{{ m.messenger_name or '' }}"
                                  data-author="{{ msg_author }}"
                                 data-date-label="{{ m.date_label or '' }}"
@@ -4822,6 +4892,19 @@
                                         </span>
                                         {% endfor %}
                                     </div>
+                                    {% endif %}
+                                    {% if msg_can_comment %}
+                                    <button type="button" class="channel-comments-btn"
+                                            data-msg-id="{{ m.id }}"
+                                            data-preview="{{ (m.visible_text or '')[:180] }}"
+                                            title="Открыть комментарии">
+                                        {{ contact_icon('message-circle') }}
+                                        <span>{% if msg_comment_count > 0 %}Комментарии{% else %}Прокомментировать{% endif %}</span>
+                                        {% if msg_comment_count > 0 %}
+                                        <span class="channel-comments-count">{{ msg_comment_count }}</span>
+                                        {% endif %}
+                                        <span class="channel-comments-chevron">{{ contact_icon('chevron-right') }}</span>
+                                    </button>
                                     {% endif %}
                                 </div>
                                 {% if not m.outgoing %}</div>{% endif %}
@@ -5048,10 +5131,8 @@
 </div>
 
 <script>
-// --- Лениво вешает кнопку «💬 Комментарии» под каждое bubble в
-//     канальных чатах. data-chat-type='channel' проставляется на
-//     feed-header из бэка (есть и для старых сообщений — всё, что
-//     в канал-чате, получает кнопку). MutationObserver покрывает
+// --- Лениво вешает кнопку комментариев только на те посты канала, где
+//     Telegram прислал Message.replies.comments. MutationObserver покрывает
 //     и новые сообщения из поллинга. ---
 (function() {
     const COMMENTS_SVG = '<svg viewBox="0 0 24 24" fill="none"'
@@ -5067,20 +5148,39 @@
         return !!(fh && fh.dataset.chatType === 'channel');
     }
 
+    function commentsLabel(count) {
+        return count > 0 ? 'Комментарии' : 'Прокомментировать';
+    }
+
     function attachCommentsBtn(row) {
         if (!row || row.dataset.commentsBtn === '1') return;
+        if (row.dataset.canComment !== '1') {
+            row.dataset.commentsBtn = '1';
+            return;
+        }
         const bubble = row.querySelector('.bubble');
         if (!bubble) return;
         const msgId = row.dataset.messageId;
         if (!msgId) return;
+        const existing = bubble.querySelector('.channel-comments-btn');
+        if (existing) {
+            row.dataset.commentsBtn = '1';
+            return;
+        }
         const btn = document.createElement('button');
         btn.type = 'button';
         btn.className = 'channel-comments-btn';
         btn.dataset.msgId = msgId;
+        const count = Math.max(0, parseInt(row.dataset.commentCount, 10) || 0);
         const textEl = bubble.querySelector('.text');
         const preview = textEl ? textEl.textContent.trim() : '';
         if (preview) btn.dataset.preview = preview.slice(0, 180);
-        btn.innerHTML = COMMENTS_SVG + '<span>Комментарии</span>';
+        btn.innerHTML = COMMENTS_SVG + '<span>' + commentsLabel(count) + '</span>'
+            + (count > 0
+                ? '<span class="channel-comments-count">' + count + '</span>'
+                : '')
+            + '<span class="channel-comments-chevron">'
+            + window.synapseIcon('chevron-right') + '</span>';
         bubble.appendChild(btn);
         row.dataset.commentsBtn = '1';
     }
@@ -6779,10 +6879,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + '<span class="menu-ico">' + window.synapseIcon(isPinned ? 'pin-off' : 'pin') + '</span>'
                 + (isPinned ? 'Открепить' : 'Прикрепить')
                 + '</button>');
-            // Комментарии — для постов канала. Бэк сам проверит, что
-            // у канала есть linked discussion group; если нет —
-            // покажет уведомление, что комментариев нет.
-            if (isTelegram) {
+            // Комментарии — только у постов канала, где Telegram сообщил
+            // наличие linked discussion.
+            if (isTelegram && row && row.dataset.canComment === '1') {
                 items.push('<button class="comments-msg-btn" type="button">'
                     + '<span class="menu-ico">' + window.synapseIcon('message-circle') + '</span>Комментарии</button>');
             }
@@ -7444,6 +7543,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let currentContactAvatarUrl = (
         feed.querySelector('.feed-header .avatar img') || {}
     ).src || '';
+    const initialFeedHeader = feed.querySelector('.feed-header');
+    let currentContactChatType = initialFeedHeader
+        ? (initialFeedHeader.dataset.chatType || '') : '';
     let hasOlderMessages = false;
     let loadingOlderMessages = false;
     let pendingFiles = [];    // выбранные, но ещё не отправленные файлы
@@ -7919,6 +8021,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         return JSON.stringify((messages || []).map(m => [
             m.id || (m.time + m.text), m.text, m.text_html || '', m.time,
             m.album_id || '',
+            m.can_comment ? 1 : 0, m.comment_count || 0,
             m.tg_read ? 1 : 0, m.deleted ? 1 : 0, m.pinned ? 1 : 0,
             m.delivery_status || '', m.delivery_error || '',
             (m.reactions || []).map(r =>
@@ -8291,6 +8394,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             m.text || '', m.text_html || '', !!m.outgoing, !!m.deleted,
             m.messenger_name || '', m.display_author || m.sender || '',
             m.album_id || '',
+            m.can_comment ? 1 : 0, m.comment_count || 0,
             m.author_avatar_url || '', m.author_profile_url || '',
             m.reply_to || null, m.fwd_from || null, m.ttl_seconds || null,
             m.media_restore_kind || '',
@@ -8333,6 +8437,25 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             + '<span class="upload-spinner" aria-hidden="true"></span>'
             + '<span class="upload-state-text">' + escapeHtml(label)
             + bar + '</span>' + retry + dismiss + '</div>';
+    }
+
+    function channelCommentButtonHtml(message) {
+        if (!message || !message.can_comment) return '';
+        const count = Math.max(0, parseInt(message.comment_count, 10) || 0);
+        const label = count > 0 ? 'Комментарии' : 'Прокомментировать';
+        const preview = message.text || '';
+        return '<button type="button" class="channel-comments-btn"'
+            + ' data-msg-id="' + escapeHtml(String(message.id || '')) + '"'
+            + ' data-preview="' + escapeHtml(preview.slice(0, 180)) + '"'
+            + ' title="Открыть комментарии">'
+            + window.synapseIcon('message-circle')
+            + '<span>' + label + '</span>'
+            + (count > 0
+                ? '<span class="channel-comments-count">'
+                  + escapeHtml(String(count)) + '</span>'
+                : '')
+            + '<span class="channel-comments-chevron">'
+            + window.synapseIcon('chevron-right') + '</span></button>';
     }
 
     function renderMessages(messages) {
@@ -8511,6 +8634,13 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     ).join('')
                   + '</div>'
                 : '';
+            const isChannelPost = currentContactChatType === 'channel'
+                && !m.outgoing;
+            const canComment = isChannelPost && !!m.can_comment;
+            const commentCount = Math.max(
+                0, parseInt(m.comment_count, 10) || 0);
+            const commentsHtml = canComment
+                ? channelCommentButtonHtml(m) : '';
             const hasMedia = !!((m.attachments || []).length
                 || m.media_restore_kind);
             const mediaOnly = hasMedia
@@ -8529,13 +8659,15 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 ? ' delivery-failed'
                 : (m.delivery_status && m.delivery_status !== 'sent'
                     ? ' pending' : '');
-            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ' incoming'}${m.pinned ? ' pinned' : ''}${grouped ? ' grouped' : ''}${deliveryClass}"
+            return `<div class="bubble-row${m.outgoing ? ' outgoing' : ' incoming'}${isChannelPost ? ' channel-post' : ''}${m.pinned ? ' pinned' : ''}${grouped ? ' grouped' : ''}${deliveryClass}"
                 data-message-id="${m.id}"
                 data-album-id="${escapeHtml(m.album_id || '')}"
                 data-render-key="${escapeHtml(messageRenderKey(m) + '|' + (grouped ? '1' : '0'))}"
                 data-client-send-key="${escapeHtml(m.client_send_key || '')}"
                 data-local-only="${m.local_only ? '1' : '0'}"
                 data-can-delete-all="${m.outgoing && m.tg_read !== null && m.tg_read !== undefined ? '1' : '0'}"
+                data-can-comment="${canComment ? '1' : '0'}"
+                data-comment-count="${commentCount}"
                 data-messenger="${escapeHtml(m.messenger_name || '')}"
                 data-author="${escapeHtml(author)}"
                 data-date-label="${escapeHtml(m.date_label || '')}"${editsJson}>
@@ -8557,6 +8689,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                         ${tick}
                     </div>
                     ${reactionsHtml}
+                    ${commentsHtml}
                 </div>
                 ${m.outgoing ? '' : '</div>'}
             </div>`;
@@ -8706,10 +8839,16 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 node && (node.textContent || '').trim());
         const timeSource = run[run.length - 1].querySelector(
             '.bubble > .time-row');
-        if (captionSource || timeSource) {
+        const reactionsSource = run.map(row =>
+            row.querySelector('.bubble > .reactions-row')).find(node =>
+                node && node.children.length);
+        const commentsSource = run.map(row =>
+            row.querySelector('.bubble > .channel-comments-btn')).find(Boolean);
+        if (captionSource || timeSource || reactionsSource || commentsSource) {
             const footer = document.createElement('div');
             footer.className = 'media-album-footer'
-                + (captionSource ? '' : ' meta-only');
+                + (captionSource || reactionsSource || commentsSource
+                    ? '' : ' meta-only');
             footer.dataset.messageId = run[run.length - 1].dataset.messageId;
             if (captionSource) footer.appendChild(
                 captionSource.cloneNode(true));
@@ -8719,6 +8858,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                     button => button.remove());
                 footer.appendChild(time);
             }
+            if (reactionsSource) footer.appendChild(
+                reactionsSource.cloneNode(true));
+            if (commentsSource) footer.appendChild(
+                commentsSource.cloneNode(true));
             stack.appendChild(footer);
             if (captionSource) wrapper.classList.add('has-caption');
         }
@@ -8865,6 +9008,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                         || ((contact.handles || []).length > 1))
         );
         currentContactAvatarUrl = (contact && contact.avatar_url) || '';
+        currentContactChatType = (contact && contact.chat_type) || '';
         // Форум-чат без выбранной темы → рисуем список тем вместо ленты.
         // В этом режиме composer и messages-container не нужны.
         const isForum = !!contact.is_forum;
