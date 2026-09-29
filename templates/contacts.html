@@ -1939,6 +1939,13 @@
         color: #fff; text-align: center;
         background: rgba(3,8,18,.48); backdrop-filter: blur(2px);
     }
+    .media-album-grid .bubble-row:not(:first-child) .upload-state {
+        display: none;
+    }
+    .media-album-grid .upload-state .upload-retry,
+    .media-album-grid .upload-state .pending-dismiss {
+        margin-top: 2px;
+    }
     .media-album-grid .upload-state-text { flex: 0 1 auto; }
     .media-album-grid .upload-progress { width: min(100px, 65%); }
     .media-album-grid .bubble-row.selected .bubble {
@@ -10626,6 +10633,44 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         });
     }
 
+    function appendSendOptions(fd, form, opts) {
+        const replyId = Object.prototype.hasOwnProperty.call(opts, 'replyTo')
+            ? opts.replyTo : (replyTarget && replyTarget.id);
+        const forwardId = Object.prototype.hasOwnProperty.call(
+            opts, 'forwardMessageId')
+            ? opts.forwardMessageId : (pendingForward && pendingForward.id);
+        if (replyId) fd.append('reply_to', replyId);
+        if (forwardId) fd.append('forward_message_id', forwardId);
+        const silentEl = form.querySelector(
+            'input[name="silent"][type="hidden"]');
+        if (opts.silent || (silentEl && silentEl.value)) {
+            fd.append('silent', '1');
+        }
+        const schedEl = form.querySelector(
+            'input[name="schedule_at"][type="hidden"]');
+        const scheduleAt = Object.prototype.hasOwnProperty.call(
+            opts, 'scheduleAt') ? opts.scheduleAt
+            : (schedEl && schedEl.value);
+        if (scheduleAt) {
+            fd.append('schedule_at', scheduleAt);
+        }
+    }
+
+    function mediaUploadName(item, fallback) {
+        const file = item && item.file ? item.file : item;
+        const name = (file && file.name) || fallback || 'media';
+        if (/\.[a-z0-9]{2,8}$/i.test(name)) return name;
+        const type = ((file && file.type) || '').toLowerCase();
+        if (type.indexOf('image/jpeg') === 0) return name + '.jpg';
+        if (type.indexOf('image/png') === 0) return name + '.png';
+        if (type.indexOf('image/webp') === 0) return name + '.webp';
+        if (type.indexOf('image/heic') === 0) return name + '.heic';
+        if (type.indexOf('image/heif') === 0) return name + '.heif';
+        if (type.indexOf('video/mp4') === 0) return name + '.mp4';
+        if (type.indexOf('video/quicktime') === 0) return name + '.mov';
+        return name;
+    }
+
     // Отправка файла (фото/видео) в Telegram. Текст из поля — подпись.
     async function sendFile(form, file, captionOverride, opts) {
         opts = opts || {};
@@ -10649,43 +10694,29 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const sendKey = opts.clientSendKey || item.sendKey
             || makeClientSendKey('file');
         item.sendKey = sendKey;
-        const fd = new FormData();
-        fd.append('file', file);
-        fd.append('client_send_key', sendKey);
-        if (opts.voice) fd.append('voice', '1');
         const caption = captionOverride != null
             ? captionOverride
             : (ta ? ta.value.trim() : '');
-        fd.append('text', caption);
-        if (form.dataset.messenger) fd.append('messenger', form.dataset.messenger);
-        const replyId = Object.prototype.hasOwnProperty.call(opts, 'replyTo')
-            ? opts.replyTo : (replyTarget && replyTarget.id);
-        const forwardId = Object.prototype.hasOwnProperty.call(
-            opts, 'forwardMessageId')
-            ? opts.forwardMessageId : (pendingForward && pendingForward.id);
-        if (replyId) fd.append('reply_to', replyId);
-        if (forwardId) fd.append('forward_message_id', forwardId);
-        // Флаги из ПКМ-меню кнопки отправки (без звука / отложенно).
-        const silentEl = form.querySelector(
-            'input[name="silent"][type="hidden"]');
-        if (opts.silent || (silentEl && silentEl.value)) {
-            fd.append('silent', '1');
-        }
-        const schedEl = form.querySelector(
-            'input[name="schedule_at"][type="hidden"]');
-        const scheduleAt = Object.prototype.hasOwnProperty.call(
-            opts, 'scheduleAt') ? opts.scheduleAt
-            : (schedEl && schedEl.value);
-        if (scheduleAt) {
-            fd.append('schedule_at', scheduleAt);
-        }
+        const buildFormData = () => {
+            const fd = new FormData();
+            fd.append('file', file, mediaUploadName(file, 'media'));
+            fd.append('client_send_key', sendKey);
+            if (opts.voice) fd.append('voice', '1');
+            fd.append('text', caption);
+            if (form.dataset.messenger) {
+                fd.append('messenger', form.dataset.messenger);
+            }
+            appendSendOptions(fd, form, opts);
+            return fd;
+        };
         try {
             const uploadRequest = () => uploadFormData(
-                '/contacts/' + cid + '/send', fd, opts.onProgress, 120000);
+                '/contacts/' + cid + '/send', buildFormData(),
+                opts.onProgress, 180000);
             const r = mediaTools
                 ? await mediaTools.requestWithRetry(uploadRequest, {
-                    maxAttempts: 2,
-                    delayMs: 450,
+                    maxAttempts: 3,
+                    delayMs: 700,
                 })
                 : await uploadRequest();
             const data = r.data || await r.json().catch(() => ({}));
@@ -10995,15 +11026,18 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         try {
             for (const item of items) {
                 if (item.stageToken) continue;
-                const stageFd = new FormData();
-                stageFd.append('file', item.file,
-                    item.file.name || ('media-' + item.sendKey));
-                stageFd.append('client_send_key', item.sendKey);
                 const itemBytes = Number(item.file && item.file.size || 0);
+                const buildStageFormData = () => {
+                    const stageFd = new FormData();
+                    stageFd.append('file', item.file,
+                        mediaUploadName(item, 'media-' + item.sendKey));
+                    stageFd.append('client_send_key', item.sendKey);
+                    return stageFd;
+                };
                 const stageRequest = () => uploadFormData(
                     '/contacts/' + form.dataset.contactId
                         + '/stage-album-file',
-                    stageFd,
+                    buildStageFormData(),
                     percent => {
                         const uploaded = completedBytes
                             + itemBytes * Math.max(0, Math.min(100, percent))
@@ -11013,10 +11047,10 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                         items.forEach(row =>
                             updateOptimisticUploadProgress(row, overall));
                     },
-                    180000);
+                    300000);
                 const stageResponse = mediaTools
                     ? await mediaTools.requestWithRetry(stageRequest, {
-                        maxAttempts: 3, delayMs: 800,
+                        maxAttempts: 5, delayMs: 1200,
                     })
                     : await stageRequest();
                 const stageData = stageResponse.data
@@ -11045,27 +11079,26 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             return false;
         }
 
-        const fd = new FormData();
-        items.forEach(item => {
-            fd.append('staged_token', item.stageToken);
-            fd.append('client_send_key', item.sendKey);
-        });
-        fd.append('text', caption || '');
-        fd.append('messenger', form.dataset.messenger || 'Telegram');
-        if (sendOpts.replyTo) fd.append('reply_to', sendOpts.replyTo);
-        if (sendOpts.silent) fd.append('silent', '1');
-        if (sendOpts.scheduleAt) {
-            fd.append('schedule_at', sendOpts.scheduleAt);
-        }
+        const buildAlbumFormData = () => {
+            const fd = new FormData();
+            items.forEach(item => {
+                fd.append('staged_token', item.stageToken);
+                fd.append('client_send_key', item.sendKey);
+            });
+            fd.append('text', caption || '');
+            fd.append('messenger', form.dataset.messenger || 'Telegram');
+            appendSendOptions(fd, form, sendOpts);
+            return fd;
+        };
 
         items.forEach(item => updateOptimisticUploadProgress(item, 94));
         try {
             const requestAlbum = () => uploadFormData(
                 '/contacts/' + form.dataset.contactId + '/send-album',
-                fd, null, 120000);
+                buildAlbumFormData(), null, 180000);
             const response = mediaTools
                 ? await mediaTools.requestWithRetry(requestAlbum, {
-                    maxAttempts: 3, delayMs: 800,
+                    maxAttempts: 4, delayMs: 1200,
                 })
                 : await requestAlbum();
             const data = response.data
