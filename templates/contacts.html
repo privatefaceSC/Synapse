@@ -3448,6 +3448,9 @@
         border-radius: 12px;
     }
 
+    .bubble.media-card,
+    .bubble.media-card.media-only,
+    .bubble.media-card.media-caption,
     .bubble-row.channel-post .bubble,
     .bubble-row.channel-post .bubble.media-only,
     .bubble-row.channel-post .bubble.media-caption {
@@ -3458,6 +3461,16 @@
         box-shadow: 0 2px 8px rgba(15,23,42,.08) !important;
         padding: 0 !important;
     }
+    .bubble-row.outgoing .bubble.media-card {
+        background: #dbeafe !important;
+        border-color: rgba(59,130,246,.16) !important;
+    }
+    .bubble.media-card .bubble-author,
+    .bubble.media-card .fwd-header,
+    .bubble.media-card .reply-quote,
+    .bubble.media-card .deleted-banner,
+    .bubble.media-card .truncated-note,
+    .bubble.media-card .upload-state,
     .bubble-row.channel-post .bubble-author,
     .bubble-row.channel-post .fwd-header,
     .bubble-row.channel-post .reply-quote,
@@ -3467,27 +3480,40 @@
         margin-left: 12px;
         margin-right: 12px;
     }
+    .bubble.media-card .bubble-author,
     .bubble-row.channel-post .bubble-author { margin-top: 10px; }
+    .bubble.media-card .media-img,
+    .bubble.media-card .media-video-wrap,
+    .bubble.media-card .media-remote-wrap,
+    .bubble.media-card .media-vnote-wrap,
     .bubble-row.channel-post .media-img,
     .bubble-row.channel-post .media-video-wrap,
     .bubble-row.channel-post .media-remote-wrap,
     .bubble-row.channel-post .media-vnote-wrap {
         border-radius: 0 !important;
     }
+    .bubble.media-card > .text,
+    .bubble.media-card.media-caption > .text,
     .bubble-row.channel-post .bubble > .text,
     .bubble-row.channel-post .bubble.media-caption > .text {
         margin: 0;
         padding: 10px 12px 4px;
-        background: transparent;
+        background: transparent !important;
+        border: 0 !important;
         border-radius: 0;
-        box-shadow: none;
+        box-shadow: none !important;
     }
+    .bubble.media-card .time-row,
     .bubble-row.channel-post .time-row {
         margin: 2px 12px 8px;
     }
+    .bubble.media-card .reactions-row,
     .bubble-row.channel-post .reactions-row {
         margin: 6px 12px 8px;
     }
+    [data-bs-theme="dark"] .bubble.media-card,
+    [data-bs-theme="dark"] .bubble.media-card.media-only,
+    [data-bs-theme="dark"] .bubble.media-card.media-caption,
     [data-bs-theme="dark"] .bubble-row.channel-post .bubble,
     [data-bs-theme="dark"] .bubble-row.channel-post .bubble.media-only,
     [data-bs-theme="dark"] .bubble-row.channel-post .bubble.media-caption {
@@ -3495,10 +3521,17 @@
         border-color: rgba(148,163,184,.12) !important;
         box-shadow: none !important;
     }
+    [data-bs-theme="dark"] .bubble-row.outgoing .bubble.media-card {
+        background: linear-gradient(135deg,
+            rgba(48,111,184,.98), rgba(37,86,147,.98)) !important;
+        border-color: rgba(147,197,253,.16) !important;
+    }
+    [data-bs-theme="dark"] .bubble.media-card > .text,
+    [data-bs-theme="dark"] .bubble.media-card.media-caption > .text,
     [data-bs-theme="dark"] .bubble-row.channel-post .bubble > .text,
     [data-bs-theme="dark"] .bubble-row.channel-post
         .bubble.media-caption > .text {
-        background: transparent;
+        background: transparent !important;
     }
     /* Кнопка комментариев — часть карточки поста канала. JS добавляет её
        только если Telegram сообщил Message.replies.comments. */
@@ -4684,6 +4717,7 @@
                             {% for m in messages %}
                             {% set media_only = (m.media or m.media_restore_kind) and not m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
                             {% set media_caption = (m.media or m.media_restore_kind) and m.visible_text and not m.fwd_quote and not m.reply_quote and not m.deleted_at and not (m.text and m.text|length == 1024) %}
+                            {% set media_card = media_caption or (media_only and m.reactions) %}
                             {% set msg_author = 'Вы' if m.outgoing else (m.display_author or m.sender) %}
                             {% set msg_key = ('out:' if m.outgoing else 'in:') ~ msg_author %}
                             {% set msg_grouped = msg_ns.prev_key == msg_key %}
@@ -4717,7 +4751,7 @@
                                 {% if m.author_profile_url %}</a>{% else %}</span>{% endif %}
                                 <div class="message-stack">
                                 {% endif %}
-                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}{% if media_caption %} media-caption{% endif %}">
+                                <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}{% if media_caption %} media-caption{% endif %}{% if media_card %} media-card{% endif %}">
                                     {% if msg_show_source %}<div class="bubble-author">{{ msg_author }}</div>{% endif %}
                                     {% if m.deleted_at %}
                                     <div class="deleted-banner"
@@ -8654,6 +8688,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 && !m.reply_to
                 && !m.fwd_from
                 && (!!m.text || !!m.text_html);
+            const mediaCard = mediaCaption || (
+                mediaOnly && !!(m.reactions && m.reactions.length));
             const delivery = deliveryStatusHtml(m);
             const deliveryClass = m.delivery_status === 'failed'
                 ? ' delivery-failed'
@@ -8673,7 +8709,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 data-date-label="${escapeHtml(m.date_label || '')}"${editsJson}>
                 ${avatar}
                 ${m.outgoing ? '' : '<div class="message-stack">'}
-                <div class="bubble${m.deleted ? ' deleted' : ''}${mediaOnly ? ' media-only' : ''}${mediaCaption ? ' media-caption' : ''}">
+                <div class="bubble${m.deleted ? ' deleted' : ''}${mediaOnly ? ' media-only' : ''}${mediaCaption ? ' media-caption' : ''}${mediaCard ? ' media-card' : ''}">
                     ${source}
                     ${delBanner}
                     ${fwdHtml}
