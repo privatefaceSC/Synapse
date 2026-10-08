@@ -8981,10 +8981,24 @@ def register_routes(app: Flask) -> None:
 
         # Если это фото уже было (Max/VK шлёт повторно) - не создаём дубль
         if dedup_key is not None:
-            exists = (db.query(Attachment.id)
+            exists = (db.query(Attachment)
                       .filter(Attachment.user_id == user_id,
                               Attachment.dedup_key == dedup_key).first())
             if exists is not None:
+                # Старый Android-клиент мог успеть загрузить файл после
+                # долгой очереди без исходной отметки времени. Повтор нового
+                # клиента не создаёт второй attachment, но восстанавливает
+                # правильное место уже существующего сообщения в ленте.
+                if created_at is not None:
+                    existing_message = (db.query(Messages)
+                                        .filter(Messages.id ==
+                                                exists.message_id,
+                                                Messages.user_id == user_id)
+                                        .first())
+                    if existing_message is not None:
+                        existing_message.created_at = created_at
+                        existing_message.time = created_at.strftime('%H:%M')
+                        db.commit()
                 return 'OK Duplicate', 200
 
         db.rollback()
