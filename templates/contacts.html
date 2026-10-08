@@ -4737,6 +4737,7 @@
                                 data-date-label="{{ m.date_label or '' }}"
                                  {% if m.edit_history %}data-edits-json='{{ m.edit_history|tojson|forceescape }}'{% endif %}>
                                 {% if not m.outgoing %}
+                                {% if is_group %}
                                 {% if m.author_profile_url %}<a href="{{ m.author_profile_url }}"{% else %}<span{% endif %}
                                       class="message-avatar{% if msg_grouped %} placeholder{% endif %}"
                                       title="{{ msg_author }}"
@@ -4749,6 +4750,7 @@
                                     {{ msg_author[:2] }}
                                     {% endif %}
                                 {% if m.author_profile_url %}</a>{% else %}</span>{% endif %}
+                                {% endif %}
                                 <div class="message-stack">
                                 {% endif %}
                                 <div class="bubble{% if m.deleted_at %} deleted{% endif %}{% if media_only %} media-only{% endif %}{% if media_caption %} media-caption{% endif %}{% if media_card %} media-card{% endif %}">
@@ -7570,14 +7572,16 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     let typingPollFailures = 0;
     let currentMessages = [];
     let olderMessages = [];
+    const initialFeedHeader = feed.querySelector('.feed-header');
     let currentContactIsGroup = !!(
-        feed.querySelector('.feed-header')
-        && feed.querySelector('.feed-header').dataset.showAuthors
+        initialFeedHeader && initialFeedHeader.dataset.showAuthors
+    );
+    let currentContactUsesMessageAvatars = !!(
+        initialFeedHeader && initialFeedHeader.dataset.isGroup
     );
     let currentContactAvatarUrl = (
         feed.querySelector('.feed-header .avatar img') || {}
     ).src || '';
-    const initialFeedHeader = feed.querySelector('.feed-header');
     let currentContactChatType = initialFeedHeader
         ? (initialFeedHeader.dataset.chatType || '') : '';
     let hasOlderMessages = false;
@@ -8583,7 +8587,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const source = (currentContactIsGroup && !m.outgoing && !grouped)
                 ? `<div class="bubble-author">${escapeHtml(author)}</div>`
                 : '';
-            const avatar = !m.outgoing
+            const avatar = !m.outgoing && currentContactUsesMessageAvatars
                 ? renderMessageAvatar(author, grouped,
                                       m.author_avatar_url || '',
                                       m.author_profile_url || '')
@@ -8830,11 +8834,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         first.before(wrapper);
 
         if (descriptor.direction === 'incoming') {
-            const avatar = run.map(row => Array.from(row.children).find(node =>
+            const avatars = run.map(row => Array.from(row.children).find(node =>
                 node.classList
-                && node.classList.contains('message-avatar')
-                && !node.classList.contains('placeholder')))
-                .find(Boolean);
+                && node.classList.contains('message-avatar')))
+                .filter(Boolean);
+            const avatar = avatars.find(node =>
+                !node.classList.contains('placeholder')) || avatars[0];
             if (avatar) wrapper.appendChild(avatar.cloneNode(true));
         }
 
@@ -9096,6 +9101,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             contact && (contact.show_authors || contact.is_group
                         || ((contact.handles || []).length > 1))
         );
+        currentContactUsesMessageAvatars = !!(contact && contact.is_group);
         currentContactAvatarUrl = (contact && contact.avatar_url) || '';
         currentContactChatType = (contact && contact.chat_type) || '';
         // Форум-чат без выбранной темы → рисуем список тем вместо ленты.
