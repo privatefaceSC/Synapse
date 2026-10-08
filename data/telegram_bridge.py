@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import re
+import stat
 import threading
 import time
 import uuid
@@ -90,10 +91,10 @@ _RECENT_SYNC_INTERVAL = 10
 _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
 _DEFAULT_MEDIA_MAX_MB = 20
-_DEFAULT_MEDIA_STORE_MAX_MB = 650
-_DEFAULT_MEDIA_CACHE_TARGET_MB = 500
+_DEFAULT_MEDIA_STORE_MAX_MB = 450
+_DEFAULT_MEDIA_CACHE_TARGET_MB = 350
 _DEFAULT_MEDIA_CLEANUP_INTERVAL_SECONDS = 30 * 60
-_MEDIA_TRIM_POLICY_VERSION = 2
+_MEDIA_TRIM_POLICY_VERSION = 3
 _DEFAULT_CATCHUP_IMAGE_MAX_MB = 8
 _CATCHUP_MEDIA_MAX_AGE_SECONDS = 15 * 60
 _MEDIA_EVICTION_GRACE_SECONDS = 15 * 60
@@ -407,37 +408,62 @@ def _media_cleanup_interval_seconds():
     return max(5, minutes) * 60
 
 
+def _media_store_snapshot():
+    """Одним обходом считает media/ и запоминает существующие .enc-файлы."""
+    root = os.path.realpath(os.path.abspath(_media_root()))
+    total = 0
+    encrypted_files = {}
+    try:
+        for base, _dirs, files in os.walk(root):
+            for name in files:
+                full_path = os.path.join(base, name)
+                try:
+                    file_stat = os.stat(full_path, follow_symlinks=False)
+                except OSError:
+                    continue
+                if not stat.S_ISREG(file_stat.st_mode):
+                    continue
+                size = max(0, int(file_stat.st_size or 0))
+                total += size
+                if not name.lower().endswith(".enc"):
+                    continue
+                stored_path = os.path.relpath(full_path, root)
+                if (stored_path == os.pardir
+                        or stored_path.startswith(os.pardir + os.sep)):
+                    continue
+                stored_path = stored_path.replace(os.sep, "/")
+                encrypted_files[stored_path] = (
+                    max(file_stat.st_atime, file_stat.st_mtime),
+                    full_path,
+                    size,
+                )
+    except OSError:
+        return 0, {}
+    return total, encrypted_files
+
+
+def _scan_media_store():
+    """Снимает согласованный снимок; повтор нужен только при записи в гонке."""
+    with _media_usage_lock:
+        total = 0
+        encrypted_files = {}
+        for _attempt in range(2):
+            generation = _media_usage_cache[2]
+            total, encrypted_files = _media_store_snapshot()
+            if generation == _media_usage_cache[2]:
+                _media_usage_cache[0] = time.monotonic()
+                _media_usage_cache[1] = total
+                return total, encrypted_files
+        _media_usage_cache[0] = 0.0
+        return max(total, _media_usage_cache[1]), encrypted_files
+
+
 def _media_store_usage_bytes(force=False):
     """Размер media/ с коротким кэшем; вызывается только перед загрузкой."""
     now = time.monotonic()
     if not force and now - _media_usage_cache[0] < 30:
         return _media_usage_cache[1]
-    with _media_usage_lock:
-        now = time.monotonic()
-        if not force and now - _media_usage_cache[0] < 30:
-            return _media_usage_cache[1]
-        # Если во время обхода кто-то сохранил файл, поколение изменится.
-        # Повторяем один раз, не блокируя event-loop на threading.Lock.
-        total = 0
-        for _attempt in range(2):
-            generation = _media_usage_cache[2]
-            total = 0
-            root = _media_root()
-            try:
-                for base, _dirs, files in os.walk(root):
-                    for name in files:
-                        try:
-                            total += os.path.getsize(os.path.join(base, name))
-                        except OSError:
-                            continue
-            except OSError:
-                total = 0
-            if generation == _media_usage_cache[2]:
-                _media_usage_cache[0] = time.monotonic()
-                _media_usage_cache[1] = total
-                return total
-        _media_usage_cache[0] = 0.0
-        return max(total, _media_usage_cache[1])
+    return _scan_media_store()[0]
 
 
 def _invalidate_media_usage_cache():
@@ -524,7 +550,7 @@ def _media_eviction_hysteresis(limit):
     )
 
 
-def _evict_reloadable_telegram_media(bytes_needed):
+def _evict_reloadable_telegram_media(bytes_needed, existing_files=None):
     """Удаляет только локальный кэш восстановимых Telegram-вложений.
 
     Строка Attachment остаётся в БД: UI сможет показать «не
@@ -536,6 +562,11 @@ def _evict_reloadable_telegram_media(bytes_needed):
     if bytes_needed <= 0:
         return 0
 
+    if existing_files is None:
+        _total, existing_files = _scan_media_store()
+    if not existing_files:
+        return 0
+
     from sqlalchemy import func, or_
 
     from data import db_sessions
@@ -545,67 +576,70 @@ def _evict_reloadable_telegram_media(bytes_needed):
     from data.stickers import SavedSticker
     from data.users import Messages
 
+    eligible_paths = set()
+    stored_paths = list(existing_files)
     db = db_sessions.create_session()
     try:
-        attachment_ref_counts = dict(
-            db.query(Attachment.stored_path, func.count(Attachment.id))
-            .filter(Attachment.stored_path.isnot(None))
-            .group_by(Attachment.stored_path).all()
-        )
-        protected_paths = {
-            path for (path,) in db.query(DirectAttachment.stored_path)
-            .filter(DirectAttachment.stored_path.isnot(None)).all()
-            if path
-        }
-        protected_paths.update(
-            path for (path,) in db.query(SavedSticker.stored_path)
-            .filter(SavedSticker.stored_path.isnot(None)).all()
-            if path
-        )
-        rows = (
-            db.query(Attachment.stored_path)
-            .join(Messages, Messages.id == Attachment.message_id)
-            .join(MessengerHandle, MessengerHandle.id == Messages.handle_id)
-            .filter(
-                Attachment.kind.in_(tuple(_EVICTABLE_MEDIA_KINDS)),
-                Attachment.user_id == Messages.user_id,
-                Messages.user_id == MessengerHandle.user_id,
-                Messages.messenger_name == "Telegram",
-                MessengerHandle.messenger_name == "Telegram",
-                MessengerHandle.tg_chat_id.isnot(None),
-                Messages.tg_message_id.isnot(None),
-                Messages.tg_ttl_seconds.is_(None),
-                Messages.deleted_at.is_(None),
-                or_(Messages.delivery_status.is_(None),
-                    Messages.delivery_status == "sent"),
+        # SQLite имеет предел на число bind-параметров. Небольшие пачки
+        # также не заставляют сетевую БД строить огромный временный список.
+        for offset in range(0, len(stored_paths), 400):
+            path_batch = stored_paths[offset:offset + 400]
+            attachment_ref_counts = dict(
+                db.query(Attachment.stored_path, func.count(Attachment.id))
+                .filter(Attachment.stored_path.in_(path_batch))
+                .group_by(Attachment.stored_path).all()
             )
-            .all()
-        )
+            protected_paths = {
+                path for (path,) in db.query(DirectAttachment.stored_path)
+                .filter(DirectAttachment.stored_path.in_(path_batch)).all()
+                if path
+            }
+            protected_paths.update(
+                path for (path,) in db.query(SavedSticker.stored_path)
+                .filter(SavedSticker.stored_path.in_(path_batch)).all()
+                if path
+            )
+            rows = (
+                db.query(Attachment.stored_path)
+                .join(Messages, Messages.id == Attachment.message_id)
+                .join(MessengerHandle,
+                      MessengerHandle.id == Messages.handle_id)
+                .filter(
+                    Attachment.stored_path.in_(path_batch),
+                    Attachment.kind.in_(tuple(_EVICTABLE_MEDIA_KINDS)),
+                    Attachment.user_id == Messages.user_id,
+                    Messages.user_id == MessengerHandle.user_id,
+                    Messages.messenger_name == "Telegram",
+                    MessengerHandle.messenger_name == "Telegram",
+                    MessengerHandle.tg_chat_id.isnot(None),
+                    Messages.tg_message_id.isnot(None),
+                    Messages.tg_ttl_seconds.is_(None),
+                    Messages.deleted_at.is_(None),
+                    or_(Messages.delivery_status.is_(None),
+                        Messages.delivery_status == "sent"),
+                )
+                .all()
+            )
+            eligible_paths.update(
+                stored_path for (stored_path,) in rows
+                if (stored_path not in protected_paths
+                    and attachment_ref_counts.get(stored_path, 0) == 1)
+            )
     finally:
         db.close()
 
     cutoff = time.time() - _MEDIA_EVICTION_GRACE_SECONDS
     candidates = []
-    seen = set()
-    for (stored_path,) in rows:
-        if (not stored_path or stored_path in seen
-                or stored_path in protected_paths
-                or attachment_ref_counts.get(stored_path, 0) != 1):
+    for stored_path in eligible_paths:
+        file_meta = existing_files.get(stored_path)
+        if file_meta is None:
             continue
-        seen.add(stored_path)
-        full_path = _safe_media_file_path(stored_path)
-        if full_path is None or not full_path.lower().endswith(".enc"):
-            continue
-        try:
-            stat = os.stat(full_path)
-        except OSError:
-            continue
+        last_access, full_path, expected_size = file_meta
         # attachment_get явно обновляет atime при просмотре. Поэтому недавно
         # открытый файл остаётся горячим, даже если был скачан давно.
-        last_access = max(stat.st_atime, stat.st_mtime)
-        if not os.path.isfile(full_path) or last_access > cutoff:
+        if last_access > cutoff:
             continue
-        candidates.append((last_access, full_path, stat.st_size))
+        candidates.append((last_access, full_path, expected_size))
 
     candidates.sort(key=lambda item: item[0])
     freed = 0
@@ -661,7 +695,7 @@ def trim_media_cache(force=False):
             _media_trimmed_at = now
             try:
                 with _media_eviction_lock:
-                    before = _media_store_usage_bytes(force=True)
+                    before, existing_files = _scan_media_store()
                     if before <= target:
                         _mark_shared_media_trim()
                         logger.info(
@@ -672,8 +706,9 @@ def trim_media_cache(force=False):
                                 "after": before, "freed": 0}
                     requested = (before - target
                                  + _media_eviction_hysteresis(target))
-                    freed = _evict_reloadable_telegram_media(requested)
-                    after = _media_store_usage_bytes(force=True)
+                    freed = _evict_reloadable_telegram_media(
+                        requested, existing_files=existing_files)
+                    after = max(0, before - freed)
                 _mark_shared_media_trim()
             except Exception:
                 # На старте SQLite может быть занята миграцией или
@@ -760,25 +795,27 @@ def reserve_media_write(size, replacing_size=0):
     # удалить одни и те же файлы.
     if limit > 0 and growth <= limit:
         with _media_eviction_lock:
+            before, existing_files = _scan_media_store()
             with _media_reservation_lock:
-                projected = (_media_store_usage_bytes(force=True)
-                             + _media_reserved_bytes + growth)
+                projected = before + _media_reserved_bytes + growth
                 if projected <= limit:
                     _media_reserved_bytes += growth
                     return _MediaReservation(
                         size=size, replacing_size=replacing_size)
                 needed = projected - limit
             try:
-                _evict_reloadable_telegram_media(
-                    needed + _media_eviction_hysteresis(limit))
+                freed = _evict_reloadable_telegram_media(
+                    needed + _media_eviction_hysteresis(limit),
+                    existing_files=existing_files)
             except Exception:  # noqa: BLE001
                 # Ошибка SQLite/обхода кэша не должна ронять upload.
                 # Ниже повторная проверка либо разрешит запись,
                 # либо вернёт штатную 507 через MediaStoreFullError.
                 logger.exception("Telegram media eviction failed")
+                freed = 0
+            after = max(0, before - freed)
             with _media_reservation_lock:
-                if (_media_store_usage_bytes(force=True)
-                        + _media_reserved_bytes + growth <= limit):
+                if after + _media_reserved_bytes + growth <= limit:
                     _media_reserved_bytes += growth
                     return _MediaReservation(
                         size=size, replacing_size=replacing_size)
