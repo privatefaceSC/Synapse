@@ -8932,6 +8932,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     const AUTO_MEDIA_MARGIN_PX = 640;
+    const AUTO_MEDIA_RETRY_DELAYS_MS = [3000, 10000, 30000, 60000];
     let automaticMediaTimer = null;
 
     function mediaNearScrollViewport(element, container) {
@@ -8963,24 +8964,40 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 '.media-remote-load[data-restore-busy="1"]')) return;
         const candidates = Array.from(root.querySelectorAll(
             '.media-remote-load[data-restore-url]'));
+        const now = Date.now();
+        let nextRetryAt = 0;
         const button = candidates.find(candidate => {
             if (candidate.dataset.autoRestoreAttempted === '1') return false;
+            const retryAt = Number(candidate.dataset.autoRestoreRetryAt) || 0;
+            if (retryAt > now) {
+                nextRetryAt = nextRetryAt
+                    ? Math.min(nextRetryAt, retryAt) : retryAt;
+                return false;
+            }
             const kind = candidate.dataset.mediaKind
                 || candidate.dataset.galleryKind || '';
             return ['image', 'photo', 'video', 'video_note'].includes(kind)
                 && mediaNearScrollViewport(candidate, root);
         });
-        if (!button) return;
+        if (!button) {
+            if (nextRetryAt) {
+                scheduleAutomaticMediaLoad(
+                    root, Math.max(250, nextRetryAt - now));
+            }
+            return;
+        }
         button.dataset.autoRestoreAttempted = '1';
+        button.dataset.autoRestoreStarted = '1';
         button.click();
     }
 
-    function scheduleAutomaticMediaLoad(container) {
+    function scheduleAutomaticMediaLoad(container, delayMs) {
         if (automaticMediaTimer) clearTimeout(automaticMediaTimer);
+        const delay = Math.max(80, Number(delayMs) || 80);
         automaticMediaTimer = setTimeout(() => {
             automaticMediaTimer = null;
             runAutomaticMediaLoad(container);
-        }, 80);
+        }, delay);
     }
 
     // Прямое открытие URL чата уже содержит server-rendered
@@ -9408,6 +9425,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         e.stopPropagation();
         const restoreUrl = button.dataset.restoreUrl || '';
         if (!restoreUrl) return;
+        const automaticRequest = button.dataset.autoRestoreStarted === '1';
+        delete button.dataset.autoRestoreStarted;
         const previousHtml = button.innerHTML;
         button.dataset.restoreBusy = '1';
         button.disabled = true;
@@ -9417,6 +9436,42 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (icon) icon.textContent = '↻';
         if (hint) hint.textContent = 'Загружаю из Telegram…';
         try {
+            // Если фото уже открывали на этом устройстве, долговечный
+            // private browser cache отдаст его без Telegram и без новой
+            // записи в ограниченный media/ на AlwaysData.
+            const cachedKind = button.dataset.mediaKind || '';
+            const cachedUrl = button.dataset.mediaUrl || '';
+            const remoteWrap = button.closest('.media-remote-wrap');
+            if ((cachedKind === 'image' || cachedKind === 'photo')
+                    && cachedUrl && remoteWrap) {
+                try {
+                    const cachedResponse = await fetch(cachedUrl, {
+                        credentials: 'same-origin',
+                        cache: 'force-cache',
+                    });
+                    const contentType = cachedResponse.headers.get(
+                        'Content-Type') || '';
+                    if (cachedResponse.ok
+                            && contentType.toLowerCase().startsWith('image/')) {
+                        const cachedBlob = await cachedResponse.blob();
+                        const objectUrl = URL.createObjectURL(cachedBlob);
+                        const image = document.createElement('img');
+                        image.className = 'media-img';
+                        image.src = objectUrl;
+                        image.dataset.full = cachedUrl;
+                        image.loading = 'lazy';
+                        image.alt = 'фото';
+                        image.addEventListener('load', () => {
+                            URL.revokeObjectURL(objectUrl);
+                        }, {once: true});
+                        remoteWrap.replaceWith(image);
+                        return;
+                    }
+                } catch (cacheError) {
+                    // Промах браузерного кэша штатный: ниже запросим Telegram.
+                }
+            }
+
             let response = null;
             let data = {};
             let ready = false;
@@ -9498,6 +9553,17 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             }
             button.title = (err && err.message)
                 ? err.message : 'Не удалось загрузить файл';
+            if (automaticRequest) {
+                const failures = Math.max(0,
+                    Number(button.dataset.autoRestoreFailures) || 0) + 1;
+                button.dataset.autoRestoreFailures = String(failures);
+                if (failures <= AUTO_MEDIA_RETRY_DELAYS_MS.length) {
+                    delete button.dataset.autoRestoreAttempted;
+                    button.dataset.autoRestoreRetryAt = String(
+                        Date.now()
+                        + AUTO_MEDIA_RETRY_DELAYS_MS[failures - 1]);
+                }
+            }
         } finally {
             if (button.isConnected) {
                 button.classList.remove('is-loading');
