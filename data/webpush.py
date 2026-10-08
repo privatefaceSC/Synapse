@@ -8,11 +8,50 @@ push-сервис браузера (FCM/Mozilla/etc.) с VAPID-авториза�
 import base64
 import datetime
 import json
+import logging
 import os
+import queue
+import threading
 from urllib.parse import urlparse
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ec
+
+
+_pending_messages = queue.Queue(maxsize=256)
+_worker_lock = threading.Lock()
+_worker = None
+
+
+def enqueue_message(message_id: int) -> bool:
+    """Push не задерживает HTTP-подтверждение уже сохранённого сообщения."""
+    global _worker
+    with _worker_lock:
+        if _worker is None or not _worker.is_alive():
+            _worker = threading.Thread(target=_drain_messages,
+                                       name='web-push-sender', daemon=True)
+            _worker.start()
+    try:
+        _pending_messages.put_nowait(int(message_id))
+        return True
+    except queue.Full:
+        logging.getLogger(__name__).warning('Web Push queue full: %s', message_id)
+        return False
+
+
+def _drain_messages():
+    while True:
+        message_id = _pending_messages.get()
+        try:
+            result = notify_message(message_id)
+            if result.get('failed'):
+                logging.getLogger(__name__).warning(
+                    'Web Push failed: message=%s result=%s', message_id, result)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                'Web Push failed: message=%s', message_id)
+        finally:
+            _pending_messages.task_done()
 
 
 def _db_dir():
@@ -276,7 +315,6 @@ def subscription_status(db, user_id: int) -> dict:
             .order_by(WebPushSubscription.updated_at.desc().nullslast(),
                       WebPushSubscription.id.desc())
             .all())
-
     def iso(value):
         return value.isoformat(timespec="seconds") if value else None
 
@@ -306,12 +344,16 @@ def _send_payload_to_user(db, user_id: int, payload: dict) -> dict:
             .filter(WebPushSubscription.user_id == user_id,
                     WebPushSubscription.enabled.is_(True))
             .all())
+    # expire_on_commit=False сохраняет поля подписок, но отпускает SQLite
+    # до сетевых запросов. Изменения статусов накапливаем отдельно.
+    db.commit()
     sent = 0
     failed = 0
     disabled = 0
     changed = False
     now = datetime.datetime.now()
     success_statuses = []
+    updates = []
     for sub in subs:
         try:
             data = json.dumps(
@@ -324,20 +366,20 @@ def _send_payload_to_user(db, user_id: int, payload: dict) -> dict:
             if status is not None:
                 success_statuses.append(status)
             if sub.last_error or sub.failed_at:
-                sub.last_error = None
-                sub.failed_at = None
-                sub.updated_at = now
-                changed = True
+                updates.append((sub, None, False))
         except Exception as exc:  # noqa: BLE001
             failed += 1
             code = getattr(exc, "status_code", None)
-            sub.last_error = str(exc)[:500]
-            sub.failed_at = now
-            sub.updated_at = now
-            changed = True
+            updates.append((sub, str(exc)[:500], code in (404, 410)))
             if code in (404, 410):
-                sub.enabled = False
                 disabled += 1
+    for sub, error, disable in updates:
+        sub.last_error = error
+        sub.failed_at = now if error is not None else None
+        sub.updated_at = now
+        if disable:
+            sub.enabled = False
+        changed = True
     if changed:
         db.commit()
     return {

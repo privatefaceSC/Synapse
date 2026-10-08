@@ -1616,7 +1616,7 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
             and notify and notify_message_id is not None):
         try:
             from data import webpush
-            await asyncio.to_thread(webpush.notify_message, notify_message_id)
+            webpush.enqueue_message(notify_message_id)
         except Exception as exc:  # noqa: BLE001
             _state_for(user_id)["error"] = f"webpush: {exc}"
 

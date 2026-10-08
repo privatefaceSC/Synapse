@@ -18,6 +18,7 @@ from flask import (Flask, Response, abort, g, jsonify, redirect, render_template
                    request, send_from_directory, session)
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from sqlalchemy import or_
+from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from data import db_sessions
@@ -623,9 +624,7 @@ def _notify_webpush_message(message_id):
         return
     try:
         from data import webpush
-        result = webpush.notify_message(message_id)
-        if result.get('failed') or result.get('disabled'):
-            print(f"Web Push: message={message_id} result={result}")
+        webpush.enqueue_message(message_id)
     except Exception as exc:  # noqa: BLE001
         print(f"Web Push: message={message_id} error={exc}")
 
@@ -1416,6 +1415,26 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
     register_routes(app)
 
     from data import telegram_bridge
+
+    @app.errorhandler(BadRequest)
+    @app.errorhandler(RequestEntityTooLarge)
+    def _upload_request_error(error):
+        if request.method != 'POST' or not (
+                request.path == '/add_media'
+                or request.endpoint in ('contact_send', 'messenger_send',
+                                        'contact_stage_album_file',
+                                        'contact_send_album')):
+            return error
+        if isinstance(error, RequestEntityTooLarge):
+            return jsonify({
+                'error': 'file_too_large',
+                'detail': 'Файл превышает допустимый размер загрузки.',
+            }), 413
+        return jsonify({
+            'error': 'incomplete_upload',
+            'detail': ('Сервер получил неполную загрузку. '
+                       'Повторите отправку, не закрывая вкладку.'),
+        }), 400
 
     @app.errorhandler(telegram_bridge.MediaStoreFullError)
     def _media_store_full(error):
@@ -2804,11 +2823,11 @@ def _add_direct_attachment_ref(db, direct_message_id: int, kind: str,
     return att
 
 
-def _save_direct_upload(db, owner_id: int, direct_message_id: int, upload,
-                        voice_upload: bool = False):
+def _prepare_direct_upload(owner_id: int, upload, voice_upload: bool = False):
+    """Подготовить файл до начала транзакции записи сообщения."""
     data = upload.read()
     if not data:
-        return None, None
+        return None
     upload_name = upload.filename or 'file'
     upload_mime = (upload.mimetype or '').lower()
     if voice_upload:
@@ -2818,10 +2837,8 @@ def _save_direct_upload(db, owner_id: int, direct_message_id: int, upload,
     else:
         kind = _kind_from_mime(upload_mime)
     stored_path = _store_media_bytes(owner_id, data)
-    att = _add_direct_attachment_ref(
-        db, direct_message_id, kind, upload_mime, upload_name,
-        stored_path, len(data))
-    return att, data
+    return dict(kind=kind, mime=upload_mime, original_name=upload_name,
+                stored_path=stored_path, size=len(data))
 
 
 def _copy_message_attachments_to_direct(db, source_msg, direct_message_id: int):
@@ -3480,6 +3497,7 @@ def register_routes(app: Flask) -> None:
         if session.get('can_manage_users') is None:
             user = get_db().query(User).filter(User.id == user_id).first()
             session['can_manage_users'] = _user_can_manage_users(user)
+            get_db().rollback()
         now_mono = time.monotonic()
         with presence_write_guard:
             previous = presence_written_at.get(user_id)
@@ -3804,6 +3822,8 @@ def register_routes(app: Flask) -> None:
         if partner is None:
             return jsonify({'error': 'not_found'}), 404
 
+        db.commit()  # Освободить соединение до приёма multipart с телефона.
+
         text = (request.form.get('text') or '').strip()
         upload = request.files.get('file')
         has_file = upload is not None and bool(upload.filename)
@@ -3811,6 +3831,12 @@ def register_routes(app: Flask) -> None:
             return jsonify({'error': 'empty'}), 400
         voice_upload = (request.form.get('voice') or '').lower() in (
             '1', 'true', 'on')
+
+        prepared = (_prepare_direct_upload(me_id, upload, voice_upload)
+                    if has_file else None)
+        if has_file and prepared is None:
+            return jsonify({'error': 'empty_file',
+                            'detail': 'Получен пустой файл. Выберите фото заново.'}), 400
 
         now = datetime.now()
         msg = DirectMessage(sender_id=me_id, recipient_id=user_id,
@@ -3820,11 +3846,7 @@ def register_routes(app: Flask) -> None:
 
         attachments = []
         if has_file:
-            att, _data = _save_direct_upload(
-                db, me_id, msg.id, upload, voice_upload=voice_upload)
-            if att is None:
-                db.rollback()
-                return jsonify({'error': 'empty'}), 400
+            att = _add_direct_attachment_ref(db, msg.id, **prepared)
             if not msg.text:
                 msg.text = _DM_PLACEHOLDER.get(att.kind, '📎 Файл')
             db.flush()
@@ -5499,7 +5521,21 @@ def register_routes(app: Flask) -> None:
         stored_paths = []
         attachments = []
         promotions = []
+        db.commit()
         try:
+            # Сохранение/очистка медиа не должно пересекаться с write-lock
+            # SQLite. Сначала все файлы, затем короткая транзакция альбома.
+            for item in prepared:
+                staged_path = item.get('staged_path')
+                if staged_path:
+                    stored_path = f'{user_id}/{uuid.uuid4().hex}.enc'
+                    stored_full = _safe_media_full_path(stored_path)
+                    os.makedirs(os.path.dirname(stored_full), exist_ok=True)
+                    os.replace(_safe_media_full_path(staged_path), stored_full)
+                    promotions.append((staged_path, stored_path))
+                else:
+                    stored_path = _store_media_bytes(user_id, item['data'])
+                stored_paths.append(stored_path)
             for index, item in enumerate(prepared):
                 placeholder = ('📷 Фото' if item['kind'] == 'image'
                                else '🎬 Видео')
@@ -5529,19 +5565,9 @@ def register_routes(app: Flask) -> None:
                 )
                 db.add(msg)
                 db.flush()
-                staged_path = item.get('staged_path')
-                if staged_path:
-                    stored_path = f'{user_id}/{uuid.uuid4().hex}.enc'
-                    stored_full = _safe_media_full_path(stored_path)
-                    os.makedirs(os.path.dirname(stored_full), exist_ok=True)
-                    os.replace(_safe_media_full_path(staged_path), stored_full)
-                    promotions.append((staged_path, stored_path))
-                else:
-                    stored_path = _store_media_bytes(user_id, item['data'])
-                stored_paths.append(stored_path)
                 attachment = _attach_message_file(
                     db, user_id, msg.id, item['kind'], item['mime'],
-                    item['name'], stored_path, item['size'])
+                    item['name'], stored_paths[index], item['size'])
                 rows.append(msg)
                 attachments.append(attachment)
             db.commit()
@@ -5648,6 +5674,7 @@ def register_routes(app: Flask) -> None:
                    .filter(Contact.id == contact_id, Contact.user_id == user_id).first())
         if not contact:
             return jsonify({'error': 'not_found'}), 404
+        db.commit()  # Multipart может идти медленно; SQLite уже не нужен.
         text = (request.form.get('text') or '').strip()
         upload = request.files.get('file')
         client_send_key = _client_send_key(request.form.get('client_send_key'))
@@ -5757,6 +5784,13 @@ def register_routes(app: Flask) -> None:
             if not direct_text and upload is None:
                 return jsonify({'error': 'empty'}), 400
 
+            db.commit()
+            prepared = (_prepare_direct_upload(user_id, upload, voice_upload)
+                        if upload is not None else None)
+            if upload is not None and prepared is None:
+                return jsonify({'error': 'empty_file',
+                                'detail': 'Получен пустой файл. Выберите фото заново.'}), 400
+
             direct_msg = DirectMessage(
                 sender_id=user_id,
                 recipient_id=partner_id,
@@ -5767,12 +5801,8 @@ def register_routes(app: Flask) -> None:
             db.flush()
 
             if upload is not None:
-                direct_att, _data = _save_direct_upload(
-                    db, user_id, direct_msg.id, upload,
-                    voice_upload=voice_upload)
-                if direct_att is None:
-                    db.rollback()
-                    return jsonify({'error': 'empty'}), 400
+                direct_att = _add_direct_attachment_ref(
+                    db, direct_msg.id, **prepared)
                 if not direct_msg.text:
                     direct_msg.text = _DM_PLACEHOLDER.get(
                         direct_att.kind, '📎 Файл')
@@ -5972,6 +6002,7 @@ def register_routes(app: Flask) -> None:
                     })
 
             if upload is not None:
+                db.commit()
                 data = upload.read()
                 if not data:
                     return jsonify({'error': 'empty'}), 400
@@ -6034,9 +6065,9 @@ def register_routes(app: Flask) -> None:
                     delivery_schedule_at=schedule_at,
                     delivery_started_at=now,
                 )
+                stored_path = _store_media_bytes(user_id, data)
                 db.add(msg)
                 db.flush()  # нужно msg.id для Attachment
-                stored_path = _store_media_bytes(user_id, data)
                 att = _attach_message_file(
                     db, user_id, msg.id, kind, mime, upload_name,
                     stored_path, len(data))
@@ -8904,6 +8935,7 @@ def register_routes(app: Flask) -> None:
             if exists is not None:
                 return 'OK Duplicate', 200
 
+        db.rollback()
         data = upload.read()
         if not data:
             return 'Bad Request', 400
@@ -8919,34 +8951,38 @@ def register_routes(app: Flask) -> None:
                        'audio': '🎵 Аудио',
                        'file': '📎 Файл'}.get(kind, '📎 Вложение')
         message_author = author if is_group and author else None
-        msg = record_message(
-            db, user_id, messenger_name, sender, caption or placeholder,
-            author=message_author, package_name=package_name,
-            is_group=is_group, contact_avatar_path=chat_avatar_path,
-            author_avatar_path=author_avatar_path,
-            notification_dedup_key=message_dedup_key,
-            created_at=created_at)
-        if msg is None:
-            return 'OK', 200
-
         stored_path = _store_media_bytes(user_id, data)
-
-        att = Attachment(
-            user_id=user_id,
-            message_id=msg.id,
-            kind=kind,
-            mime=upload.mimetype,
-            original_name=upload.filename or None,
-            stored_path=stored_path,
-            size=len(data),
-            dedup_key=dedup_key,
-        )
-        db.add(att)
         try:
+            msg = record_message(
+                db, user_id, messenger_name, sender, caption or placeholder,
+                author=message_author, package_name=package_name,
+                is_group=is_group, contact_avatar_path=chat_avatar_path,
+                author_avatar_path=author_avatar_path,
+                notification_dedup_key=message_dedup_key,
+                created_at=created_at, commit=False)
+            if msg is None:
+                db.rollback()
+                _remove_media_paths([stored_path])
+                return 'OK', 200
+            att = Attachment(
+                user_id=user_id, message_id=msg.id, kind=kind,
+                mime=upload.mimetype, original_name=upload.filename or None,
+                stored_path=stored_path, size=len(data), dedup_key=dedup_key,
+            )
+            db.add(att)
             db.commit()
         except IntegrityError:
             db.rollback()
+            _remove_media_paths([stored_path])
+            if not dedup_key or not db.query(Attachment.id).filter(
+                    Attachment.user_id == user_id,
+                    Attachment.dedup_key == dedup_key).first():
+                raise
             return 'OK Duplicate', 200
+        except Exception:
+            db.rollback()
+            _remove_media_paths([stored_path])
+            raise
         _notify_webpush_message(msg.id)
         return 'OK', 200
 

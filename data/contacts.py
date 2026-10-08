@@ -364,7 +364,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                     tg_comments_available=None, tg_reply_count=None,
                     text_html=None, is_group=None, contact_avatar_path=None,
                     author_avatar_path=None, notification_dedup_key=None,
-                    archived=None, muted=None, created_at=None):
+                    archived=None, muted=None, created_at=None, commit=True):
     """Записывает сообщение.
 
     `sender_raw` — ключ личности (контакта): для лички это имя
@@ -375,6 +375,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
     `tg_chat_type` — 'private'/'group'/'channel' для Telegram.
     `reply_to_tg_id` — telegram-id сообщения, на которое это ответ; по
     нему в том же чате ищется наша запись Messages для цитаты.
+    `commit=False` позволяет сохранить сообщение и вложение атомарно.
     """
     import datetime as _dt
 
@@ -468,7 +469,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                 apply_telegram_discussion_meta(existing)
             else:
                 apply_telegram_discussion_meta(existing)
-            db.commit()
+            db.commit() if commit else db.flush()
             return existing
 
     if notification_dedup_key is not None:
@@ -488,7 +489,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
                 from .matching import is_media_placeholder
                 if is_media_placeholder(existing.text):
                     existing.text = text
-            db.commit()
+            db.commit() if commit else db.flush()
             return existing
 
     reply_to_message_id = None
@@ -531,7 +532,7 @@ def record_message(db, user_id: int, messenger_name: str, sender_raw: str, text:
         author_avatar_path=author_avatar_path,
     )
     db.add(msg)
-    db.commit()
+    db.commit() if commit else db.flush()
     return msg
 
 

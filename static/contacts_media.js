@@ -63,9 +63,15 @@
         let lastError;
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             try {
-                // HTTP-ответ уже дошёл до браузера: его возвращаем вызывающему
-                // коду и не рискуем повторять осмысленную серверную ошибку.
-                return await request(attempt);
+                const response = await request(attempt);
+                // HTTP-повторы разрешает только вызывающий код с ключом
+                // идемпотентности. Ошибки файла/авторизации не повторяем.
+                if (attempt + 1 < maxAttempts && response
+                        && (options.retryStatuses || []).includes(response.status)) {
+                    await wait(options.delayMs);
+                    continue;
+                }
+                return response;
             } catch (error) {
                 lastError = error;
                 if (attempt + 1 >= maxAttempts) throw error;

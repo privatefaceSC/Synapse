@@ -10897,6 +10897,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 ? await mediaTools.requestWithRetry(uploadRequest, {
                     maxAttempts: 3,
                     delayMs: 700,
+                    retryStatuses: [408, 429, 502, 503, 504],
                 })
                 : await uploadRequest();
             const data = r.data || await r.json().catch(() => ({}));
@@ -11231,6 +11232,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 const stageResponse = mediaTools
                     ? await mediaTools.requestWithRetry(stageRequest, {
                         maxAttempts: 5, delayMs: 1200,
+                        retryStatuses: [408, 429, 502, 503, 504],
                     })
                     : await stageRequest();
                 const stageData = stageResponse.data
@@ -11279,6 +11281,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             const response = mediaTools
                 ? await mediaTools.requestWithRetry(requestAlbum, {
                     maxAttempts: 4, delayMs: 1200,
+                    retryStatuses: [408, 429, 502, 503, 504],
                 })
                 : await requestAlbum();
             const data = response.data
