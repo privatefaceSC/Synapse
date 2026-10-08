@@ -102,6 +102,9 @@ _media_restore_slots = threading.BoundedSemaphore(_MEDIA_RESTORE_WORKERS)
 _media_restore_jobs = {}
 _media_restore_jobs_guard = threading.Lock()
 _MEDIA_RESTORE_JOB_TTL_SECONDS = 10 * 60
+_MEDIA_BROWSER_CACHE_SECONDS = 30 * 24 * 60 * 60
+_MEDIA_BROWSER_STALE_SECONDS = 7 * 24 * 60 * 60
+_MEDIA_ACCESS_TOUCH_SECONDS = 15 * 60
 _PRESENCE_ONLINE_SECONDS = 75
 _PRESENCE_WRITE_INTERVAL_SECONDS = 45
 _PRESENCE_WRITE_BUSY_TIMEOUT_MS = 100
@@ -276,6 +279,53 @@ def _safe_media_full_path(rel_path):
     if not inside:
         raise ValueError('Некорректный путь медиа')
     return full
+
+
+def _touch_media_access(full_path):
+    """Отмечает реально просмотренный файл для LRU без записи в SQLite."""
+    try:
+        stat = os.stat(full_path)
+        now = time.time()
+        if now - stat.st_atime >= _MEDIA_ACCESS_TOUCH_SECONDS:
+            os.utime(full_path, (now, stat.st_mtime))
+    except OSError:
+        pass
+
+
+def _private_media_response(full_path, mime, cache_key, *, touch=False):
+    """Отдаёт вложение с приватным долговечным кэшем браузера."""
+    from cryptography.fernet import InvalidToken
+    from data.crypto import decrypt_bytes
+
+    if touch:
+        _touch_media_access(full_path)
+    try:
+        media_stat = os.stat(full_path)
+    except OSError:
+        return 'Not Found', 404
+    etag_source = (
+        f'{cache_key}:{media_stat.st_size}:{media_stat.st_mtime_ns}'
+    ).encode('utf-8')
+    etag = hashlib.sha256(etag_source).hexdigest()
+
+    def apply_headers(response):
+        response.set_etag(etag)
+        response.headers['Cache-Control'] = (
+            f'private, max-age={_MEDIA_BROWSER_CACHE_SECONDS}, immutable, '
+            f'stale-if-error={_MEDIA_BROWSER_STALE_SECONDS}')
+        response.headers['Vary'] = 'Cookie'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        return response
+
+    if request.if_none_match.contains(etag):
+        return apply_headers(Response(status=304))
+    try:
+        with open(full_path, 'rb') as stream:
+            raw = decrypt_bytes(stream.read())
+    except (OSError, ValueError, InvalidToken):
+        return 'Not Found', 404
+    return apply_headers(Response(
+        raw, mimetype=mime or 'application/octet-stream'))
 
 
 def _telegram_placeholder_media_kind(text):
@@ -3882,7 +3932,6 @@ def register_routes(app: Flask) -> None:
     def dm_attachment_get(attachment_id):
         if not session.get('user_id'):
             return 'Unauthorized', 401
-        from data.crypto import decrypt_bytes
         from data.direct import DirectAttachment, DirectMessage
         db = get_db()
         me_id = session['user_id']
@@ -3894,12 +3943,15 @@ def register_routes(app: Flask) -> None:
             DirectMessage.id == att.message_id).first()
         if msg is None or me_id not in (msg.sender_id, msg.recipient_id):
             return 'Not Found', 404
-        full = os.path.join(_media_root(), att.stored_path)
-        if not os.path.exists(full):
+        stored_path = att.stored_path
+        mime = att.mime
+        db.rollback()
+        try:
+            full = _safe_media_full_path(stored_path)
+        except ValueError:
             return 'Not Found', 404
-        with open(full, 'rb') as f:
-            raw = decrypt_bytes(f.read())
-        return Response(raw, mimetype=att.mime or 'application/octet-stream')
+        return _private_media_response(
+            full, mime, f'direct-attachment:{attachment_id}')
 
     @app.route('/home/avatar', methods=['GET', 'POST'])
     def avatar():
@@ -9034,21 +9086,23 @@ def register_routes(app: Flask) -> None:
         if not session.get('user_id'):
             return 'Unauthorized', 401
         from data.attachments import Attachment
-        from data.crypto import decrypt_bytes
-        from cryptography.fernet import InvalidToken
         db = get_db()
         att = (db.query(Attachment)
                .filter(Attachment.id == attachment_id,
                        Attachment.user_id == session['user_id']).first())
         if att is None:
             return 'Not Found', 404
+        message = db.get(Messages, att.message_id)
+        stored_path = att.stored_path
+        mime = att.mime
+        touch = _telegram_media_is_restorable(message, att.kind)
+        db.rollback()
         try:
-            full = _safe_media_full_path(att.stored_path)
-            with open(full, 'rb') as f:
-                raw = decrypt_bytes(f.read())
-        except (OSError, ValueError, InvalidToken):
+            full = _safe_media_full_path(stored_path)
+        except ValueError:
             return 'Not Found', 404
-        return Response(raw, mimetype=att.mime or 'application/octet-stream')
+        return _private_media_response(
+            full, mime, f'attachment:{attachment_id}', touch=touch)
 
     @app.route('/attachments/<int:attachment_id>/restore', methods=['POST'])
     def attachment_restore_from_telegram(attachment_id):

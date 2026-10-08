@@ -600,9 +600,12 @@ def _evict_reloadable_telegram_media(bytes_needed):
             stat = os.stat(full_path)
         except OSError:
             continue
-        if not os.path.isfile(full_path) or stat.st_mtime > cutoff:
+        # attachment_get явно обновляет atime при просмотре. Поэтому недавно
+        # открытый файл остаётся горячим, даже если был скачан давно.
+        last_access = max(stat.st_atime, stat.st_mtime)
+        if not os.path.isfile(full_path) or last_access > cutoff:
             continue
-        candidates.append((stat.st_mtime, full_path, stat.st_size))
+        candidates.append((last_access, full_path, stat.st_size))
 
     candidates.sort(key=lambda item: item[0])
     freed = 0

@@ -5758,8 +5758,8 @@
     });
 })();
 
-// Видео могут занимать десятки мегабайт, поэтому не ставим src до клика по
-// конкретному ролику. Так список чатов и длинные переписки не тянут всё сразу.
+// Видео могут занимать десятки мегабайт, поэтому src добавляется только когда
+// ролик приблизился к экрану или пользователь нажал на него.
 window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     if (!wrap) return null;
     let v = wrap.querySelector('video.media-video, video.media-video-note');
@@ -8926,6 +8926,58 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         }
     }
 
+    const AUTO_MEDIA_MARGIN_PX = 640;
+    let automaticMediaTimer = null;
+
+    function mediaNearScrollViewport(element, container) {
+        if (!element || !container || !element.isConnected) return false;
+        const target = element.getBoundingClientRect();
+        const viewport = container.getBoundingClientRect();
+        return target.bottom >= viewport.top - AUTO_MEDIA_MARGIN_PX
+            && target.top <= viewport.bottom + AUTO_MEDIA_MARGIN_PX;
+    }
+
+    function runAutomaticMediaLoad(container) {
+        if (document.hidden || navigator.onLine === false) return;
+        const root = container && container.isConnected
+            ? container : document.getElementById('messages-container');
+        if (!root) return;
+
+        let videoBudget = 2;
+        root.querySelectorAll(
+            '.media-video-wrap.deferred[data-video-src], '
+            + '.media-vnote-wrap.deferred[data-video-src]'
+        ).forEach(wrap => {
+            if (videoBudget <= 0 || !mediaNearScrollViewport(wrap, root)) return;
+            if (window.loadDeferredVideo(wrap, false)) videoBudget -= 1;
+        });
+
+        // Сервер разрешает две параллельные Telegram-загрузки на пользователя.
+        // Автоматика занимает только одну, оставляя слот явному нажатию.
+        if (document.querySelector(
+                '.media-remote-load[data-restore-busy="1"]')) return;
+        const candidates = Array.from(root.querySelectorAll(
+            '.media-remote-load[data-restore-url]'));
+        const button = candidates.find(candidate => {
+            if (candidate.dataset.autoRestoreAttempted === '1') return false;
+            const kind = candidate.dataset.mediaKind
+                || candidate.dataset.galleryKind || '';
+            return ['image', 'photo', 'video', 'video_note'].includes(kind)
+                && mediaNearScrollViewport(candidate, root);
+        });
+        if (!button) return;
+        button.dataset.autoRestoreAttempted = '1';
+        button.click();
+    }
+
+    function scheduleAutomaticMediaLoad(container) {
+        if (automaticMediaTimer) clearTimeout(automaticMediaTimer);
+        automaticMediaTimer = setTimeout(() => {
+            automaticMediaTimer = null;
+            runAutomaticMediaLoad(container);
+        }, 80);
+    }
+
     // Прямое открытие URL чата уже содержит server-rendered
     // сообщения: их тоже собираем, не дожидаясь polling.
     packMediaAlbums(document.getElementById('messages-container'));
@@ -8974,6 +9026,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
             if (!wanted.has(id)) row.remove();
         });
         packMediaAlbums(container);
+        scheduleAutomaticMediaLoad(container);
     }
 
     function renderChannelNotice(contact) {
@@ -9058,7 +9111,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 + '<div id="messages-container">'
                 + renderMessages(combinedMessages()) + '</div>'
                 + renderComposer(contact);
-            packMediaAlbums(feed.querySelector('#messages-container'));
+            const messagesContainer = feed.querySelector('#messages-container');
+            packMediaAlbums(messagesContainer);
+            scheduleAutomaticMediaLoad(messagesContainer);
         }
         if (window.__skillwoodSyncVoiceMode) {
             window.__skillwoodSyncVoiceMode(feed);
@@ -9336,9 +9391,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
     window.__skillwoodPollMessages = pollMessages;
 
-    // Старое Telegram-медиа хранится как лёгкая карточка без src. Только
-    // явный клик пользователя запускает POST-восстановление, после чего
-    // обычный poll заменяет карточку настоящим фото/плеером.
+    // Вытесненное Telegram-медиа хранится как лёгкая карточка без src.
+    // Ближайшие фото и видео восстанавливаются автоматически; этот же путь
+    // обслуживает явный клик и оставляет ручной повтор при ошибке сети.
     document.addEventListener('click', async function(e) {
         const button = e.target.closest
             && e.target.closest('.media-remote-load[data-restore-url]');
@@ -9442,8 +9497,12 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 button.classList.remove('is-loading');
                 button.dataset.restoreBusy = '0';
             }
+            scheduleAutomaticMediaLoad(
+                document.getElementById('messages-container'));
         }
     });
+
+    scheduleAutomaticMediaLoad(document.getElementById('messages-container'));
 
     window.addEventListener('online', () => {
         if (currentContactId == null) return;
@@ -9451,6 +9510,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         typingPollFailures = 0;
         scheduleMessagePoll(0);
         scheduleTypingPoll(0);
+        scheduleAutomaticMediaLoad(
+            document.getElementById('messages-container'));
     });
     document.addEventListener('visibilitychange', () => {
         if (document.hidden || currentContactId == null) return;
@@ -9458,6 +9519,8 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         typingPollFailures = 0;
         scheduleMessagePoll(0);
         scheduleTypingPoll(0);
+        scheduleAutomaticMediaLoad(
+            document.getElementById('messages-container'));
     });
 
     async function loadOlderMessages() {
@@ -9501,8 +9564,9 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     document.addEventListener('scroll', function(e) {
         const c = e.target && e.target.id === 'messages-container'
             ? e.target : null;
-        if (!c || c.scrollTop > 80) return;
-        loadOlderMessages();
+        if (!c) return;
+        scheduleAutomaticMediaLoad(c);
+        if (c.scrollTop <= 80) loadOlderMessages();
     }, true);
 
     let currentTopicId = null;  // выбранная тема форум-чата (null = «все темы / не форум»)
