@@ -12,6 +12,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -55,6 +57,8 @@ def restrict_users(db_path: str, media_root: str, keep_user_ids: set[int],
 
     db_sessions.global_init(db_path)
     db = db_sessions.create_session()
+    db_updates_applied = False
+    db_update_error = None
     try:
         all_user_ids = {int(value) for (value,) in db.query(User.id).all()}
         restricted_ids = sorted(all_user_ids - set(keep_user_ids))
@@ -91,7 +95,14 @@ def restrict_users(db_path: str, media_root: str, keep_user_ids: set[int],
                       PendingReply.error: 'service_restricted',
                       PendingReply.device_id: None},
                      synchronize_session=False))
-            db.commit()
+            try:
+                db.commit()
+                db_updates_applied = True
+            except SQLAlchemyError as exc:
+                # Ограничение доступа уже останавливает доставку. Очистка
+                # файлов не должна срываться из-за занятого сетевого SQLite.
+                db.rollback()
+                db_update_error = str(exc)
         else:
             # Не делаем пустой commit: на сетевом SQLite он всё равно
             # запрашивает write-lock и может мешать работающему сайту.
@@ -116,8 +127,13 @@ def restrict_users(db_path: str, media_root: str, keep_user_ids: set[int],
         'kept_user_ids': sorted(keep_user_ids),
         'restricted_user_ids': restricted_ids,
         'messages_preserved': int(message_count),
-        'webpush_disabled': int(push_count if apply else 0),
-        'pending_replies_expired': int(pending_count if apply else 0),
+        'database_updates_needed': bool(needs_db_update),
+        'database_updates_applied': bool(db_updates_applied),
+        'database_update_error': db_update_error,
+        'webpush_disabled': int(
+            push_count if apply and db_updates_applied else 0),
+        'pending_replies_expired': int(
+            pending_count if apply and db_updates_applied else 0),
         'registered_devices_kept_dormant': int(device_count),
         'media_bytes_found': int(media_bytes),
         'media_directories_removed': removed_dirs,
