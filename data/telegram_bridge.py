@@ -45,6 +45,8 @@ _auth_locks = {}
 _client_locks = {}
 _handler_locks = {}
 _sync_locks = {}
+_maintenance_lock = None
+_maintenance_lock_loop = None
 _dialog_folder_locks = {}
 _dialog_folder_refresh_at = {}
 _dialog_folder_refresh_futures = {}
@@ -92,6 +94,8 @@ _recent_sync_inflight_users = set()
 _RECENT_SYNC_INTERVAL = 60
 _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
+_RECENTLY_ACTIVE_WINDOW = 15 * 60
+_FILTER_REFRESH_INTERVAL = 15 * 60
 _DEFAULT_MEDIA_MAX_MB = 20
 _DEFAULT_MEDIA_STORE_MAX_MB = 450
 _DEFAULT_MEDIA_CACHE_TARGET_MB = 350
@@ -951,6 +955,24 @@ def _handler_lock_for(owner):
 
 def _sync_lock_for(owner):
     return _async_lock_for(_sync_locks, owner)
+
+
+def _maintenance_lock_for_loop():
+    """Сериализует тяжёлое Telegram-обслуживание всех аккаунтов."""
+    global _maintenance_lock, _maintenance_lock_loop
+    running_loop = asyncio.get_running_loop()
+    if (_maintenance_lock is None
+            or _maintenance_lock_loop is not running_loop):
+        _maintenance_lock = asyncio.Lock()
+        _maintenance_lock_loop = running_loop
+    return _maintenance_lock
+
+
+def _recently_active(owner):
+    last_sync = float(_recent_sync_at_by_user.get(
+        _normalize_user_id(owner), 0) or 0)
+    return bool(last_sync and time.monotonic() - last_sync
+                <= _RECENTLY_ACTIVE_WINDOW)
 
 
 def _dialog_folder_lock_for(owner):
@@ -2037,21 +2059,26 @@ async def _repair_telegram_photo(message_id, msg, user_id=None,
 
 async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
                                message_limit=None):
-    """Сериализует ограниченную догонку одного Telegram-аккаунта."""
+    """Сериализует ограниченную догонку Telegram-аккаунтов."""
     owner = _normalize_user_id(user_id)
     lock = _sync_lock_for(owner)
-    # Startup, reconnect и UI могут попросить догонку одновременно. Второй
-    # полный проход не нужен: уже запущенный увидит тот же свежий хвост.
+    # Reconnect и UI могут попросить догонку одновременно. Второй полный
+    # проход не нужен: уже запущенный увидит тот же свежий хвост.
     if lock.locked():
         return 0
     expected_lifecycle = _lifecycle_token(owner)
     async with lock:
         if _lifecycle_token(owner) != expected_lifecycle:
             return 0
-        return await _sync_recent_dialogs_once(
-            owner, client=client, dialog_limit=dialog_limit,
-            message_limit=message_limit,
-            expected_lifecycle=expected_lifecycle)
+        # Все аккаунты используют один Telethon loop и одну сетевую SQLite.
+        # Параллельные catch-up проходы только отнимают CPU у HTTP worker.
+        async with _maintenance_lock_for_loop():
+            if _lifecycle_token(owner) != expected_lifecycle:
+                return 0
+            return await _sync_recent_dialogs_once(
+                owner, client=client, dialog_limit=dialog_limit,
+                message_limit=message_limit,
+                expected_lifecycle=expected_lifecycle)
 
 
 async def _sync_recent_dialogs_once(user_id=None, client=None,
@@ -2083,6 +2110,8 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
     saved = 0
     seen_dialogs = 0
     archive_states = []
+    known_mute_ids = set()
+    muted_ids = set()
     async for dialog in client.iter_dialogs(limit=dialog_limit):
         if _lifecycle_token(owner) != expected_lifecycle:
             return saved
@@ -2118,6 +2147,10 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
             _remember_presence(
                 owner, chat_id, getattr(chat, "status", None))
         archived = int(getattr(dialog, "folder_id", 0) or 0) == 1
+        dialog_ids = _chat_id_variants(chat_id)
+        known_mute_ids.update(dialog_ids)
+        if _is_muted(dialog):
+            muted_ids.update(dialog_ids)
 
         recent_messages = []
         async for msg in client.iter_messages(chat or chat_id,
@@ -2204,7 +2237,11 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
                 owner, chat_id, bool(getattr(chat, 'forum', False)),
                 allowed_types=archive_handle_types)
     if _lifecycle_token(owner) == expected_lifecycle:
-        _apply_telegram_archive_snapshot(owner, archive_states)
+        await asyncio.to_thread(
+            _apply_telegram_archive_snapshot, owner, archive_states)
+        await asyncio.to_thread(
+            _apply_telegram_mute_cache, owner,
+            known_mute_ids, muted_ids)
     return saved
 
 
@@ -2229,14 +2266,16 @@ def sync_recent(user_id=None, wait=False):
     if not is_configured() or not telethon_available():
         return None
     owner = _normalize_user_id(user_id)
-    if wait:
-        return _call(_sync_recent_dialogs(owner), timeout=60)
     now = time.monotonic()
+    if wait:
+        _recent_sync_at_by_user[owner] = now
+        return _call(_sync_recent_dialogs(owner), timeout=60)
     last = _recent_sync_at_by_user.get(owner, 0)
     if owner in _recent_sync_inflight_users:
         return None
     if now - last < _RECENT_SYNC_INTERVAL:
         return None
+    _recent_sync_at_by_user[owner] = now
     _recent_sync_inflight_users.add(owner)
     _ensure_loop()
     future = asyncio.run_coroutine_threadsafe(
@@ -4392,22 +4431,57 @@ def delete_dialog_folder(remote_id, user_id=None):
 
 
 async def _refresh_filter_cache(user_id=None, client=None):
-    """Пересобирает кэши Telegram-состояний, влияющих на контакты."""
+    """Одним проходом пересобирает mute/archive активного аккаунта."""
     global _skip_chat_ids
     owner = _normalize_user_id(user_id)
     if client is None:
         client = _clients.get(owner)
     if client is None:
         return
-    _skip_chat_ids = set()
-    if _skip_muted():
-        await _refresh_mute_cache(owner, client)
-    else:
-        _muted_chat_ids_by_user.pop(owner, None)
-    if _skip_archived():
-        await _refresh_archive_cache(owner, client)
-    else:
-        _archived_chat_ids_by_user.pop(owner, None)
+    async with _maintenance_lock_for_loop():
+        _skip_chat_ids = set()
+        sync_muted = _skip_muted()
+        sync_archived = _skip_archived()
+        if not sync_muted:
+            _muted_chat_ids_by_user.pop(owner, None)
+        if not sync_archived:
+            _archived_chat_ids_by_user.pop(owner, None)
+        if not sync_muted and not sync_archived:
+            return
+
+        known_ids = set()
+        muted_ids = set()
+        archived_ids = set()
+        archive_states = []
+        async for dialog in client.iter_dialogs():
+            try:
+                chat_id = int(dialog.id)
+            except (TypeError, ValueError):
+                continue
+            if sync_muted:
+                dialog_ids = _chat_id_variants(chat_id)
+                known_ids.update(dialog_ids)
+                if _is_muted(dialog):
+                    muted_ids.update(dialog_ids)
+            if sync_archived:
+                archived = int(getattr(dialog, 'folder_id', 0) or 0) == 1
+                if archived:
+                    archived_ids.add(chat_id)
+                archive_states.append((
+                    chat_id, archived,
+                    _archive_handle_types_for_entity(
+                        getattr(dialog, 'entity', None))))
+
+        refreshed_at = time.monotonic()
+        if sync_muted:
+            _muted_chat_ids_by_user[owner] = (refreshed_at, muted_ids)
+            await asyncio.to_thread(
+                _apply_telegram_mute_cache, owner, known_ids, muted_ids)
+        if sync_archived:
+            _archived_chat_ids_by_user[owner] = (
+                refreshed_at, archived_ids)
+            await asyncio.to_thread(
+                _apply_telegram_archive_snapshot, owner, archive_states)
 
 
 async def _refresh_archive_cache(user_id=None, client=None):
@@ -4459,7 +4533,7 @@ async def _chat_archived_by_telegram(chat_id, user_id=None, client=None):
 
 
 async def _periodic_refresh(user_id=None, expected_lifecycle=None):
-    """Поддерживает live-поток и раз в 5 минут обновляет mute/archive.
+    """Поддерживает live-поток и обновляет состояние активного аккаунта.
 
     Нативный ``client.catch_up()`` здесь намеренно не используется: его
     события проходят обычный live-handler и могут разом скачать старые
@@ -4469,7 +4543,9 @@ async def _periodic_refresh(user_id=None, expected_lifecycle=None):
     owner = _normalize_user_id(user_id)
     if expected_lifecycle is None:
         expected_lifecycle = _lifecycle_token(owner)
-    next_filter_refresh = time.monotonic() + 300
+    # Несколько сохранённых аккаунтов стартуют вместе. Небольшой стабильный
+    # сдвиг не даёт их обслуживанию проснуться в одну секунду.
+    next_filter_refresh = time.monotonic() + 300 + (owner % 10) * 15
     next_media_cleanup = (
         time.monotonic() + _media_cleanup_interval_seconds())
     while True:
@@ -4483,11 +4559,15 @@ async def _periodic_refresh(user_id=None, expected_lifecycle=None):
             if not await client.is_user_authorized():
                 continue
             await _register_handler(owner, client=client)
-            if not was_connected:
+            if not was_connected and _recently_active(owner):
                 await _sync_recent_dialogs(owner, client=client)
             if time.monotonic() >= next_filter_refresh:
-                await _refresh_filter_cache(owner, client=client)
-                next_filter_refresh = time.monotonic() + 300
+                if _recently_active(owner):
+                    await _refresh_filter_cache(owner, client=client)
+                    next_filter_refresh = (
+                        time.monotonic() + _FILTER_REFRESH_INTERVAL)
+                else:
+                    next_filter_refresh = time.monotonic() + 300
             if time.monotonic() >= next_media_cleanup:
                 await _trim_media_cache_async()
                 next_media_cleanup = (
@@ -4499,23 +4579,15 @@ async def _periodic_refresh(user_id=None, expected_lifecycle=None):
 
 
 async def _activate(user_id=None, client=None):
-    """Общий «после авторизации»: вешает обработчик входящих, строит
-    кэш фильтрации и запускает периодическое обновление."""
+    """После авторизации вешает live-handler и обслуживание соединения."""
     global _refresh_task
     owner = _normalize_user_id(user_id)
     expected_lifecycle = _lifecycle_token(owner)
-    state = _state_for(owner)
     if client is None:
         client = await _get_client(owner)
-    newly_registered = owner not in _handler_registered_users
     await _register_handler(owner, client=client)
     if _lifecycle_token(owner) != expected_lifecycle:
         return
-    if newly_registered:
-        try:
-            await _refresh_filter_cache(owner, client=client)
-        except Exception as exc:  # noqa: BLE001
-            state["error"] = f"filter: {exc}"
     task = _refresh_tasks.get(owner)
     if task is None or task.done():
         task = asyncio.ensure_future(_periodic_refresh(
@@ -4548,10 +4620,9 @@ async def _startup(user_id=None, expected_lifecycle=None):
             state["authorized"] = True
             if owner not in _handler_registered_users:
                 await _activate(owner, client=client)
-    if authorized:
-        # Ограниченная догонка: максимум несколько свежих сообщений,
-        # только небольшие фото и без Web Push за уже прошедшую историю.
-        await _sync_recent_dialogs(owner, client=client)
+    # Догонку истории намеренно не запускаем для всех session-файлов при
+    # старте uWSGI. Её запросит polling UI только для вошедшего пользователя;
+    # live-handler уже принимает новые сообщения без этого прохода.
 
 
 def _quiet_telethon_logging():
