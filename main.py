@@ -8434,6 +8434,7 @@ def register_routes(app: Flask) -> None:
     def _poll_device_identity(db):
         """Авторизовать частый Android polling с коротким memory-cache."""
         from data.devices import Device, hash_token
+        from sqlalchemy.exc import OperationalError
         auth = request.headers.get('Authorization', '')
         if not auth.startswith('Bearer '):
             return None
@@ -8446,9 +8447,19 @@ def register_routes(app: Flask) -> None:
             cached = device_poll_cache.get(token_hash)
             if cached is not None and cached['expires_at'] > now_mono:
                 return dict(cached)
-        device = (db.query(Device.id, Device.user_id, Device.name,
-                           Device.last_seen_ip, Device.last_seen_at)
-                  .filter(Device.token_hash == token_hash).first())
+            stale_cached = dict(cached) if cached is not None else None
+        try:
+            device = (db.query(Device.id, Device.user_id, Device.name,
+                               Device.last_seen_ip, Device.last_seen_at)
+                      .filter(Device.token_hash == token_hash).first())
+        except OperationalError:
+            # Уже проверенный токен можно ненадолго использовать из памяти,
+            # если сетевой SQLite сейчас занят. Это не даёт polling занять
+            # единственный WSGI worker на несколько секунд.
+            if (stale_cached is not None
+                    and now_mono - stale_cached['expires_at'] <= 300):
+                return stale_cached
+            raise
         if device is None:
             return None
         identity = {
@@ -8479,7 +8490,7 @@ def register_routes(app: Flask) -> None:
         with device_poll_cache_guard:
             pending_empty_until.pop(int(user_id), None)
 
-    def _expire_stale_pending_replies(db, user_id):
+    def _expire_stale_pending_replies(db, user_id, *, commit=True):
         """Отменяет только задания, которые Android ещё не забрал.
 
         ``picked`` уже могло уйти через RemoteInput, даже если подтверждение
@@ -8506,7 +8517,7 @@ def register_routes(app: Flask) -> None:
                    .update({PendingReply.status: STATUS_EXPIRED,
                             PendingReply.error: 'device_timeout'},
                            synchronize_session=False))
-        if changed:
+        if changed and commit:
             db.commit()
         return changed
 
@@ -8534,100 +8545,83 @@ def register_routes(app: Flask) -> None:
         from data.pending_replies import (PendingReply, STATUS_PENDING,
                                           STATUS_PICKED)
         from data.devices import Device
+        from sqlalchemy.exc import OperationalError
         db = get_db()
-        device = _poll_device_identity(db)
-        if device is None:
-            return jsonify({'error': 'unauthorized'}), 401
-        now = datetime.now()
-        last_seen_at = device['last_seen_at']
-        heartbeat_due = (
-            last_seen_at is None
-            or now - last_seen_at >= timedelta(
-                seconds=_DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS)
-            or device['last_seen_ip'] != request.remote_addr
-        )
-        now_mono = time.monotonic()
-        with device_poll_cache_guard:
-            empty_until = pending_empty_until.get(device['user_id'], 0)
-        if (not app.testing and not heartbeat_due
-                and empty_until > now_mono):
-            # Самый частый путь: очередь недавно уже была пустой. Здесь нет
-            # ни одного обращения к SQLite, поэтому polling планшета не
-            # занимает дефицитный WSGI worker сетевым I/O.
-            return jsonify({'replies': []})
+        connection = db.connection()
+        try:
+            # Короткий timeout должен действовать ДО авторизации и чтения
+            # очереди. Раньше он выставлялся лишь перед heartbeat UPDATE,
+            # поэтому несколько SELECT подряд могли ждать SQLite по 5 секунд.
+            connection.exec_driver_sql(
+                f"PRAGMA busy_timeout={_DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS}")
+            device = _poll_device_identity(db)
+            if device is None:
+                return jsonify({'error': 'unauthorized'}), 401
+            now = datetime.now()
+            last_seen_at = device['last_seen_at']
+            heartbeat_due = (
+                last_seen_at is None
+                or now - last_seen_at >= timedelta(
+                    seconds=_DEVICE_HEARTBEAT_WRITE_INTERVAL_SECONDS)
+                or device['last_seen_ip'] != request.remote_addr
+            )
+            now_mono = time.monotonic()
+            with device_poll_cache_guard:
+                empty_until = pending_empty_until.get(device['user_id'], 0)
+            if (not app.testing and not heartbeat_due
+                    and empty_until > now_mono):
+                return jsonify({'replies': []})
 
-        _expire_stale_pending_replies(db, device['user_id'])
-
-        items = (db.query(PendingReply)
-                 .filter(PendingReply.user_id == device['user_id'],
-                         PendingReply.status == STATUS_PENDING,
-                         or_(PendingReply.picked_up_at.is_(None),
-                             PendingReply.picked_up_at <= datetime.now()))
-                 .order_by(PendingReply.id.asc()).all())
-        out = []
-        for it in items:
-            # UPDATE ... WHERE status=pending делает claim безопасным даже
-            # если два привязанных устройства опросили очередь одновременно.
-            claimed = (db.query(PendingReply)
-                       .filter(PendingReply.id == it.id,
-                               PendingReply.status == STATUS_PENDING)
-                       .update({PendingReply.status: STATUS_PICKED,
-                                PendingReply.picked_up_at: now,
-                                PendingReply.device_id: device['id']},
-                               synchronize_session=False))
-            if claimed != 1:
-                continue
-            out.append({
-                'id': it.id,
-                'package_name': it.package_name,
-                'sender_label': it.sender_label,
-                'text': it.text,
-            })
-        if out:
-            # Реальный claim всё равно требует надёжного commit; обновление
-            # активности устройства можно безопасно включить в него.
-            db.query(Device).filter(Device.id == device['id']).update({
-                Device.last_seen_ip: request.remote_addr,
-                Device.last_seen_at: now,
-            }, synchronize_session=False)
-            db.commit()
-            _remember_poll_device_seen(
-                device['id'], now, request.remote_addr)
-            _invalidate_pending_poll_cache(device['user_id'])
-        elif heartbeat_due:
-            # Android опрашивает пустую очередь каждые несколько секунд.
-            # Не превращаем каждый GET в SQLite writer и не ждём занятую
-            # базу ради необязательной отметки «устройство в сети».
-            from sqlalchemy.exc import OperationalError
-            connection = db.connection()
-            try:
-                connection.exec_driver_sql(
-                    f"PRAGMA busy_timeout={_DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS}")
+            expired = _expire_stale_pending_replies(
+                db, device['user_id'], commit=False)
+            items = (db.query(PendingReply)
+                     .filter(PendingReply.user_id == device['user_id'],
+                             PendingReply.status == STATUS_PENDING,
+                             or_(PendingReply.picked_up_at.is_(None),
+                                 PendingReply.picked_up_at <= datetime.now()))
+                     .order_by(PendingReply.id.asc()).all())
+            out = []
+            for it in items:
+                claimed = (db.query(PendingReply)
+                           .filter(PendingReply.id == it.id,
+                                   PendingReply.status == STATUS_PENDING)
+                           .update({PendingReply.status: STATUS_PICKED,
+                                    PendingReply.picked_up_at: now,
+                                    PendingReply.device_id: device['id']},
+                                   synchronize_session=False))
+                if claimed != 1:
+                    continue
+                out.append({
+                    'id': it.id,
+                    'package_name': it.package_name,
+                    'sender_label': it.sender_label,
+                    'text': it.text,
+                })
+            if out or heartbeat_due:
                 db.query(Device).filter(Device.id == device['id']).update({
                     Device.last_seen_ip: request.remote_addr,
                     Device.last_seen_at: now,
                 }, synchronize_session=False)
+            if out or heartbeat_due or expired:
                 db.commit()
-            except OperationalError:
+            else:
                 db.rollback()
-            finally:
-                # При занятой базе не повторяем необязательную запись на
-                # каждом следующем polling; новая попытка будет через минуту.
+            if out or heartbeat_due:
                 _remember_poll_device_seen(
                     device['id'], now, request.remote_addr)
-                try:
-                    connection.exec_driver_sql("PRAGMA busy_timeout=5000")
-                except Exception:  # noqa: BLE001
-                    pass
-        else:
-            # Закрываем read-транзакцию явно: teardown вернёт соединение в
-            # pool, но до конца формирования ответа оно уже не держит lock.
+            if out:
+                _invalidate_pending_poll_cache(device['user_id'])
+            elif not app.testing:
+                with device_poll_cache_guard:
+                    pending_empty_until[device['user_id']] = (
+                        time.monotonic()
+                        + _ANDROID_EMPTY_QUEUE_RECHECK_SECONDS)
+            return jsonify({'replies': out})
+        except OperationalError:
+            # Polling является best-effort. При занятой БД Android просто
+            # повторит его позже; HTTP 200 не запускает агрессивный retry.
             db.rollback()
-        if not app.testing and not out:
-            with device_poll_cache_guard:
-                pending_empty_until[device['user_id']] = (
-                    time.monotonic() + _ANDROID_EMPTY_QUEUE_RECHECK_SECONDS)
-        return jsonify({'replies': out})
+            return jsonify({'replies': [], 'busy': True})
 
     @app.route('/api/replies/<int:reply_id>/done', methods=['POST'])
     def api_reply_done(reply_id):
