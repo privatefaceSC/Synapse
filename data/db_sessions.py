@@ -13,7 +13,7 @@ __factory = None
 __engine = None
 __schema_thread_lock = threading.Lock()
 # Увеличивать при каждом изменении wanted/indexes ниже. Первый WSGI worker
-# применяет миграции, остальные после общего file-lock читают только PRAGMA.
+# применяет миграции, остальные читают только PRAGMA без file-lock.
 _SCHEMA_VERSION = 3
 
 
@@ -99,13 +99,19 @@ def global_init(db_file):
 
     from . import __all_models
 
-    with _schema_lock(db_file):
-        with engine.connect() as conn:
-            schema_version = int(
-                conn.exec_driver_sql("PRAGMA user_version").scalar() or 0)
-        if schema_version < _SCHEMA_VERSION:
-            SqlAlchemyBase.metadata.create_all(engine)
-            _apply_light_migrations(engine)
+    schema_version = _read_schema_version(engine)
+    if schema_version < _SCHEMA_VERSION:
+        with _schema_lock(db_file):
+            # Пока этот worker ждал lock, другой мог уже
+            # завершить миграцию.
+            if _read_schema_version(engine) < _SCHEMA_VERSION:
+                SqlAlchemyBase.metadata.create_all(engine)
+                _apply_light_migrations(engine)
+
+
+def _read_schema_version(engine):
+    with engine.connect() as conn:
+        return int(conn.exec_driver_sql("PRAGMA user_version").scalar() or 0)
 
 
 def _apply_light_migrations(engine):
