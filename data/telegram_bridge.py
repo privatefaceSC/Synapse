@@ -98,7 +98,6 @@ _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
 _RECENTLY_ACTIVE_WINDOW = 15 * 60
 _FILTER_REFRESH_INTERVAL = 15 * 60
-_STARTUP_STAGGER_SECONDS = 20
 _DEFAULT_MEDIA_MAX_MB = 20
 _DEFAULT_MEDIA_STORE_MAX_MB = 450
 _DEFAULT_MEDIA_CACHE_TARGET_MB = 350
@@ -4701,33 +4700,19 @@ def start(user_id=None):
         return
     _quiet_telethon_logging()
     _ensure_loop()
-    owners = {_normalize_user_id(user_id)} if user_id is not None else {
-        _owner_user_id()
-    }
-    if user_id is None:
-        session_dir = os.path.join(os.getcwd(), "db", "tg_sessions")
-        try:
-            for name in os.listdir(session_dir):
-                match = re.fullmatch(r"user_(\d+)\.session", name)
-                if match:
-                    owners.add(int(match.group(1)))
-        except OSError:
-            pass
-    primary_owner = _owner_user_id()
-    ordered_owners = sorted(
-        owners, key=lambda owner: (owner != primary_owner, owner))
-    for index, owner in enumerate(ordered_owners):
-        task = _startup_tasks.get(owner)
-        if task is None or task.done():
-            expected_lifecycle = _lifecycle_token(owner)
-            initial_delay = (
-                0 if user_id is not None
-                else index * _STARTUP_STAGGER_SECONDS)
-            _startup_tasks[owner] = asyncio.run_coroutine_threadsafe(
-                _safe_startup(
-                    owner, expected_lifecycle=expected_lifecycle,
-                    initial_delay=initial_delay),
-                _loop)
+    # Не поднимаем здесь каждый найденный session-файл. На AlwaysData девять
+    # сохранённых аккаунтов превращали старт одного слабого uWSGI worker в
+    # непрерывную очередь Telethon connect/auth, и Flask не успевал отвечать.
+    # Вторичные аккаунты подключатся лениво через status/sync_recent, когда
+    # соответствующий пользователь действительно откроет сайт.
+    owner = (_normalize_user_id(user_id) if user_id is not None
+             else _owner_user_id())
+    task = _startup_tasks.get(owner)
+    if task is None or task.done():
+        expected_lifecycle = _lifecycle_token(owner)
+        _startup_tasks[owner] = asyncio.run_coroutine_threadsafe(
+            _safe_startup(owner, expected_lifecycle=expected_lifecycle),
+            _loop)
 
 
 class TelegramAuthError(RuntimeError):
