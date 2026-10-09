@@ -86,8 +86,13 @@
             <a class="navbar-brand" href="/">Synapse</a>
             <div class="ms-auto d-flex gap-2 align-items-center">
                 {% if session.get('user_id') %}
+                    {% if service_restricted %}
+                    <a class="btn btn-sm btn-primary" href="/home">Главная</a>
+                    {% else %}
                     <a class="btn btn-sm btn-primary" href="/contacts">Контакты</a>
+                    {% endif %}
                     <a class="btn btn-sm btn-outline-danger" href="/logout">Выход</a>
+                    {% if not service_restricted %}
                     <div class="gear-wrap">
                         <button id="gear-btn"
                                 class="btn btn-sm btn-outline-secondary gear-btn"
@@ -119,6 +124,7 @@
                             </button>
                         </div>
                     </div>
+                    {% endif %}
                 {% else %}
                     <a class="btn btn-sm btn-outline-primary" href="/login">Вход</a>
                     <a class="btn btn-sm btn-primary" href="/register">Регистрация</a>
@@ -183,7 +189,7 @@
             });
         })();
     </script>
-    {% if session.get('user_id') %}
+    {% if session.get('user_id') and not service_restricted %}
     <script>
         // Лёгкий heartbeat поддерживает точный статус «В сети» на всех
         // страницах, в том числе там, где нет собственного polling.

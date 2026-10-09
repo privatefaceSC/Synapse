@@ -153,6 +153,35 @@ def _configured_creator_ids() -> set[int]:
     return ids
 
 
+def _configured_active_user_ids() -> set[int] | None:
+    """Пользователи с полным доступом во временном owner-only режиме.
+
+    Если переменная не задана, сайт работает для всех как раньше. Пустое или
+    некорректное значение намеренно никого не включает: это безопаснее, чем
+    случайно открыть сервис при ошибке конфигурации.
+    """
+    raw = os.environ.get('SKILLWOOD_ACTIVE_USER_IDS')
+    if raw is None:
+        return None
+    ids = set()
+    for part in raw.split(','):
+        try:
+            ids.add(int(part.strip()))
+        except (TypeError, ValueError):
+            continue
+    return ids
+
+
+def _service_enabled_for_user_id(user_id) -> bool:
+    active_ids = _configured_active_user_ids()
+    if active_ids is None:
+        return True
+    try:
+        return int(user_id) in active_ids
+    except (TypeError, ValueError):
+        return False
+
+
 def _is_creator_user(user) -> bool:
     if bool(getattr(user, 'is_creator', False)):
         return True
@@ -673,6 +702,17 @@ def _notify_webpush_message(message_id):
     if not message_id:
         return
     try:
+        active_ids = _configured_active_user_ids()
+        if active_ids is not None:
+            db = db_sessions.create_session()
+            try:
+                owner_id = (db.query(Messages.user_id)
+                            .filter(Messages.id == int(message_id))
+                            .scalar())
+            finally:
+                db.close()
+            if owner_id not in active_ids:
+                return
         from data import webpush
         webpush.enqueue_message(message_id)
     except Exception as exc:  # noqa: BLE001
@@ -3481,6 +3521,31 @@ def register_routes(app: Flask) -> None:
     device_poll_cache_guard = threading.Lock()
     pending_empty_until = {}
 
+    @app.before_request
+    def _limit_restricted_web_users():
+        """В owner-only режиме оставляет остальным только безопасный Home."""
+        user_id = session.get('user_id')
+        if not user_id or _service_enabled_for_user_id(user_id):
+            return None
+        allowed_endpoints = {
+            'static', 'main_menu', 'index', 'logout',
+            'service_worker', 'web_manifest',
+        }
+        if request.endpoint in allowed_endpoints:
+            return None
+        wants_json = (
+            request.path.startswith('/api/')
+            or request.path.endswith('.json')
+            or request.is_json
+            or request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+        )
+        if wants_json:
+            return jsonify({
+                'error': 'service_temporarily_restricted',
+                'detail': 'Мессенджер временно недоступен.',
+            }), 403
+        return redirect('/home')
+
     def _flush_presence_updates():
         """Один короткоживущий worker для best-effort presence.
 
@@ -3540,6 +3605,8 @@ def register_routes(app: Flask) -> None:
         """Ставим активность в фоновую очередь не чаще раза в 20 секунд."""
         user_id = session.get('user_id')
         if not user_id or request.endpoint == 'static':
+            return None
+        if not _service_enabled_for_user_id(user_id):
             return None
         # Одновременно обновляем старые непостоянные сессии, созданные до
         # включения «запомнить вход». Достаточно одного запроса пользователя.
@@ -3610,15 +3677,27 @@ def register_routes(app: Flask) -> None:
         db = get_db()
         _seed_legacy_creator_flags(db)
         user = db.query(User).filter(User.id == session['user_id']).first()
+        if user is None:
+            session.clear()
+            return redirect('/login')
+        service_restricted = not _service_enabled_for_user_id(user.id)
         contacts_count = db.query(Contact).filter(Contact.user_id == user.id).count()
         messages_count = db.query(Messages).filter(Messages.user_id == user.id).count()
-        device_connected = db.query(Device.id).filter(Device.user_id == user.id).first() is not None
-        unread_summary = _home_unread_summary(db, user.id)
+        device_connected = (
+            not service_restricted
+            and db.query(Device.id).filter(
+                Device.user_id == user.id).first() is not None
+        )
+        unread_summary = (
+            {'sound': 0, 'muted': 0, 'total': 0}
+            if service_restricted else _home_unread_summary(db, user.id)
+        )
         return render_template(
             'index.html',
             user=_mark_profile_badges(user),
+            service_restricted=service_restricted,
             device_connected=device_connected,
-            connect_code=user.connect_code,
+            connect_code=(None if service_restricted else user.connect_code),
             contacts_count=contacts_count,
             messages_count=messages_count,
             unread_summary=unread_summary,
@@ -8527,6 +8606,9 @@ def register_routes(app: Flask) -> None:
         device = _device_from_bearer(db)
         if device is None:
             return jsonify({'error': 'unauthorized'}), 401
+        if not _service_enabled_for_user_id(device.user_id):
+            db.rollback()
+            return jsonify({'disabled': True})
         user = db.query(User).filter(User.id == device.user_id).first()
         return jsonify({
             'user': {'id': user.id, 'name': user.name},
@@ -8557,6 +8639,9 @@ def register_routes(app: Flask) -> None:
             device = _poll_device_identity(db)
             if device is None:
                 return jsonify({'error': 'unauthorized'}), 401
+            if not _service_enabled_for_user_id(device['user_id']):
+                db.rollback()
+                return jsonify({'replies': [], 'disabled': True})
             now = datetime.now()
             last_seen_at = device['last_seen_at']
             heartbeat_due = (
@@ -8635,6 +8720,9 @@ def register_routes(app: Flask) -> None:
         device = _device_from_bearer(db)
         if device is None:
             return jsonify({'error': 'unauthorized'}), 401
+        if not _service_enabled_for_user_id(device.user_id):
+            db.rollback()
+            return jsonify({'ok': True, 'disabled': True})
 
         pr = db.query(PendingReply).filter(
             PendingReply.id == reply_id,
@@ -8926,6 +9014,9 @@ def register_routes(app: Flask) -> None:
         device = _device_from_bearer(db)
         if device is None:
             return 'Unauthorized', 401
+        if not _service_enabled_for_user_id(device.user_id):
+            db.rollback()
+            return 'OK Disabled', 200
         chat_avatar_path = _save_notification_avatar(
             device.user_id, request.form.get('chat_avatar'))
         author_avatar_path = _save_notification_avatar(
@@ -8973,6 +9064,9 @@ def register_routes(app: Flask) -> None:
         if device is None:
             return 'Unauthorized', 401
         user_id = device.user_id
+        if not _service_enabled_for_user_id(user_id):
+            db.rollback()
+            return 'OK Disabled', 200
 
         # Если это фото уже было (Max/VK шлёт повторно) - не создаём дубль
         if dedup_key is not None:
@@ -9328,6 +9422,12 @@ def register_routes(app: Flask) -> None:
         user = db.query(User).filter(User.connect_code == code).first()
         if not user:
             return jsonify({'error': 'unknown code'}), 404
+        if not _service_enabled_for_user_id(user.id):
+            db.rollback()
+            return jsonify({
+                'error': 'service_temporarily_restricted',
+                'detail': 'Подключение устройства временно недоступно.',
+            }), 403
 
         token = generate_token()
         device = Device(user_id=user.id, name=device_name,

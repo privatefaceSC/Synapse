@@ -184,6 +184,19 @@
     .btn-creator:hover {
         background: #ffefba; border-color: #f1b434; color: #704500;
     }
+    .service-notice {
+        padding: 16px 18px; border-left: 4px solid #64748b;
+        color: #475569; background: #f8fafc;
+    }
+    .service-notice strong { color: #1e293b; }
+    .restricted-cta {
+        cursor: default; background: #64748b; border-color: #64748b;
+        box-shadow: none;
+    }
+    .restricted-cta:hover {
+        transform: none; background: #64748b; border-color: #64748b;
+        box-shadow: none;
+    }
 
     /* Тёмная тема. */
     [data-bs-theme="dark"] .card-soft {
@@ -223,6 +236,10 @@
     [data-bs-theme="dark"] .home-unread-pill.muted {
         background: #64748b;
     }
+    [data-bs-theme="dark"] .service-notice {
+        background: #171b22; border-left-color: #94a3b8; color: #aab6c5;
+    }
+    [data-bs-theme="dark"] .service-notice strong { color: #e2e8f0; }
 
     @media (prefers-reduced-motion: reduce) {
         .home-card { opacity: 1; animation: none; }
@@ -237,25 +254,38 @@
 </style>
 
 <div class="container home-wrap">
+    {% if not service_restricted %}
     <form id="avatar-form" method="post" action="/home/avatar"
           enctype="multipart/form-data" class="d-none">
         <input id="avatar-input" type="file" name="avatar"
                accept="image/*" required>
     </form>
+    {% endif %}
 
     <div class="home-card hero mb-3">
         <div class="inner">
+            {% if service_restricted %}
+            <div class="avatar-edit">
+            {% else %}
             <label for="avatar-input" class="avatar-edit" title="Изменить фото">
+            {% endif %}
                 {% if has_avatar %}
                     <img src="/home/avatar" alt="Аватар">
                 {% else %}
                     <span class="ph">{{ user.name[0]|upper if user.name else '?' }}</span>
                 {% endif %}
+                {% if not service_restricted %}
                 <span class="overlay"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#pencil"></use></svg> Изменить</span>
-            </label>
+                {% endif %}
+            {% if service_restricted %}</div>{% else %}</label>{% endif %}
             <div class="flex-grow-1">
                 <h2>Привет, {{ user.name }}!</h2>
-                {% if device_connected %}
+                {% if service_restricted %}
+                    <span class="status-pill">
+                        <span class="dot off"></span>
+                        Мессенджер временно недоступен
+                    </span>
+                {% elif device_connected %}
                     <span class="status-pill">
                         <span class="dot on"></span>
                         Устройство подключено — уведомления приходят автоматически
@@ -270,9 +300,12 @@
                 <div class="mt-2 d-flex flex-wrap gap-2">
                     <span class="status-pill">
                         <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#user"></use></svg> <span id="uid-value">@{{ username }}</span>
+                        {% if not service_restricted %}
                         <a href="#" id="uid-edit" title="Изменить User ID"
                            style="margin-left:2px;" aria-label="Изменить User ID"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#pencil"></use></svg></a>
+                        {% endif %}
                     </span>
+                    {% if not service_restricted %}
                     <span class="status-pill" title="Язык, на который переводятся чужие сообщения">
                         <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#globe"></use></svg>
                         <select id="lang-select" class="lang-inline-select">
@@ -293,6 +326,7 @@
                         </select>
                         <span id="lang-status" class="lang-status"></span>
                     </span>
+                    {% endif %}
                 </div>
             </div>
         </div>
@@ -318,7 +352,7 @@
     {# Плашка «Клиент для Android» показывается только пока устройство
        не подключено: дальше она не нужна, и доступ к скачиванию остаётся
        в меню-шестерёнке (пункт «Клиент для Android»). #}
-    {% if not device_connected %}
+    {% if not service_restricted and not device_connected %}
     <div class="home-card card-soft mb-3" style="padding: 20px;">
         <div class="d-flex justify-content-between align-items-center mb-1">
             <strong>Клиент для Android</strong>
@@ -335,9 +369,24 @@
     </div>
     {% endif %}
 
+    {% if service_restricted %}
+    <div class="home-card service-notice mb-3" role="status">
+        <strong>Доступ временно ограничен.</strong>
+        Ваши сообщения сохранены. Сейчас доступна только главная страница.
+    </div>
+    {% endif %}
+
     {% set sound_unread = unread_summary.sound if unread_summary else 0 %}
     {% set muted_unread = unread_summary.muted if unread_summary else 0 %}
     <div class="home-card d-grid gap-2">
+        {% if service_restricted %}
+        <div class="btn btn-secondary btn-cta restricted-cta" aria-disabled="true">
+            <span class="btn-cta-main">
+                <svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#messages"></use></svg>
+                <span>Мессенджер временно недоступен</span>
+            </span>
+        </div>
+        {% else %}
         <a href="/contacts" class="btn btn-primary btn-cta home-messenger-cta"
            aria-label="Открыть мессенджер: {{ sound_unread }} со звуком, {{ muted_unread }} без звука">
             <span class="btn-cta-main">
@@ -360,8 +409,11 @@
                 </span>
             </span>
         </a>
+        {% endif %}
+        {% if not service_restricted %}
         <a href="/about" class="btn btn-about">Что вообще это за сайт?</a>
         <a href="/messenger?creators=1" class="btn btn-creator"><svg class="ui-icon" aria-hidden="true" focusable="false"><use href="/static/ui-icons.svg#crown"></use></svg> Задать вопрос создателям</a>
+        {% endif %}
     </div>
 </div>
 
@@ -400,6 +452,7 @@
 
 // Счётчики непрочитанного на главной: красный — обычные уведомления,
 // серый — чаты без звука. Обновляем только лёгкий SQL summary.
+{% if not service_restricted %}
 (function() {
     var root = document.getElementById('home-unread-summary');
     if (!root) return;
@@ -445,6 +498,7 @@
         if (!document.hidden) refresh();
     });
 })();
+{% endif %}
 
 // Копирование кода подключения с обратной связью.
 (function() {
