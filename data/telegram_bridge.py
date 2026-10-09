@@ -47,6 +47,8 @@ _handler_locks = {}
 _sync_locks = {}
 _maintenance_lock = None
 _maintenance_lock_loop = None
+_startup_lock = None
+_startup_lock_loop = None
 _dialog_folder_locks = {}
 _dialog_folder_refresh_at = {}
 _dialog_folder_refresh_futures = {}
@@ -96,6 +98,7 @@ _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
 _RECENTLY_ACTIVE_WINDOW = 15 * 60
 _FILTER_REFRESH_INTERVAL = 15 * 60
+_STARTUP_STAGGER_SECONDS = 20
 _DEFAULT_MEDIA_MAX_MB = 20
 _DEFAULT_MEDIA_STORE_MAX_MB = 450
 _DEFAULT_MEDIA_CACHE_TARGET_MB = 350
@@ -966,6 +969,16 @@ def _maintenance_lock_for_loop():
         _maintenance_lock = asyncio.Lock()
         _maintenance_lock_loop = running_loop
     return _maintenance_lock
+
+
+def _startup_lock_for_loop():
+    """Не даёт нескольким Telethon-сессиям подключаться одновременно."""
+    global _startup_lock, _startup_lock_loop
+    running_loop = asyncio.get_running_loop()
+    if (_startup_lock is None or _startup_lock_loop is not running_loop):
+        _startup_lock = asyncio.Lock()
+        _startup_lock_loop = running_loop
+    return _startup_lock
 
 
 def _recently_active(owner):
@@ -4633,16 +4646,27 @@ def _quiet_telethon_logging():
     logging.getLogger("telethon").setLevel(logging.CRITICAL)
 
 
-async def _safe_startup(user_id=None, expected_lifecycle=None):
+async def _safe_startup(user_id=None, expected_lifecycle=None,
+                        initial_delay=0):
     owner = _normalize_user_id(user_id)
     if expected_lifecycle is None:
         expected_lifecycle = _lifecycle_token(owner)
+    if initial_delay:
+        await asyncio.sleep(max(0, initial_delay))
     delay = 5
     while True:
         if _lifecycle_token(owner) != expected_lifecycle:
             return
         try:
-            await _startup(owner, expected_lifecycle=expected_lifecycle)
+            # Несколько session-файлов раньше одновременно запускали
+            # connect/auth и забирали весь CPU слабого uWSGI worker. Держим
+            # только одну попытку подключения, но освобождаем очередь на
+            # время backoff, чтобы проблемный аккаунт не блокировал другие.
+            async with _startup_lock_for_loop():
+                if _lifecycle_token(owner) != expected_lifecycle:
+                    return
+                await _startup(
+                    owner, expected_lifecycle=expected_lifecycle)
             return
         except asyncio.CancelledError:
             raise
@@ -4689,12 +4713,20 @@ def start(user_id=None):
                     owners.add(int(match.group(1)))
         except OSError:
             pass
-    for owner in owners:
+    primary_owner = _owner_user_id()
+    ordered_owners = sorted(
+        owners, key=lambda owner: (owner != primary_owner, owner))
+    for index, owner in enumerate(ordered_owners):
         task = _startup_tasks.get(owner)
         if task is None or task.done():
             expected_lifecycle = _lifecycle_token(owner)
+            initial_delay = (
+                0 if user_id is not None
+                else index * _STARTUP_STAGGER_SECONDS)
             _startup_tasks[owner] = asyncio.run_coroutine_threadsafe(
-                _safe_startup(owner, expected_lifecycle=expected_lifecycle),
+                _safe_startup(
+                    owner, expected_lifecycle=expected_lifecycle,
+                    initial_delay=initial_delay),
                 _loop)
 
 
