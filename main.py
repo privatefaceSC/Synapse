@@ -1501,7 +1501,6 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
                             'detail': detail}), 507
         return detail, 507
 
-    telegram_bridge.start()
     return app
 
 
@@ -9364,7 +9363,5 @@ def _generate_unique_code(db, exclude=None) -> str:
 
 if __name__ == '__main__':
     app = create_app()
-    from data import telegram_bridge
-    telegram_bridge.schedule_media_cache_trim()
     port = int(os.environ.get('PORT', '5000'))
     app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
