@@ -87,7 +87,9 @@ _presence_lock = threading.Lock()
 _PRESENCE_REFRESH_INTERVAL = 45
 _recent_sync_at_by_user = {}
 _recent_sync_inflight_users = set()
-_RECENT_SYNC_INTERVAL = 10
+# Live-события приходят сразу. Catch-up ходит в Telegram и сетевую SQLite,
+# поэтому он лишь страхует редкие пропуски и не должен работать непрерывно.
+_RECENT_SYNC_INTERVAL = 60
 _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
 _DEFAULT_MEDIA_MAX_MB = 20
@@ -1748,41 +1750,66 @@ def _archive_handle_types_for_peer(peer):
     return None
 
 
-def _telegram_message_state(user_id, chat_id, tg_message_id):
-    """Возвращает (message_id, has_live_attachment) для Telegram-id."""
-    if tg_message_id is None:
-        return None, False
+def _telegram_message_states(user_id, chat_id, tg_message_ids):
+    """Пакетно возвращает состояние недавних Telegram-сообщений чата."""
     from data import db_sessions
     from data.attachments import Attachment
     from data.contacts import MessengerHandle
     from data.users import Messages as _Messages
 
     owner = _normalize_user_id(user_id)
+    message_ids = []
+    for value in tg_message_ids:
+        try:
+            message_ids.append(int(value))
+        except (TypeError, ValueError):
+            continue
+    message_ids = list(dict.fromkeys(message_ids))
+    if not message_ids:
+        return {}
+
     db = db_sessions.create_session()
     try:
-        handle_ids = [hid for (hid,) in db.query(MessengerHandle.id).filter(
+        rows = (db.query(_Messages.id, _Messages.tg_message_id)
+                .join(MessengerHandle,
+                      MessengerHandle.id == _Messages.handle_id)
+                .filter(
             MessengerHandle.user_id == owner,
             MessengerHandle.messenger_name == "Telegram",
-            MessengerHandle.tg_chat_id == chat_id).all()]
-        if not handle_ids:
-            return None, False
-        message = db.query(_Messages).filter(
+            MessengerHandle.tg_chat_id == chat_id,
             _Messages.user_id == owner,
-            _Messages.tg_message_id == int(tg_message_id),
-            _Messages.handle_id.in_(handle_ids)).first()
-        if message is None:
-            return None, False
-        attachments = db.query(Attachment).filter(
+            _Messages.tg_message_id.in_(message_ids))
+                .all())
+        if not rows:
+            return {}
+        local_ids = [int(message_id) for message_id, _tg_id in rows]
+        attachment_rows = db.query(
+            Attachment.message_id, Attachment.stored_path).filter(
             Attachment.user_id == owner,
-            Attachment.message_id == message.id).all()
-        has_live = any(
-            att.stored_path
-            and os.path.exists(os.path.join(_media_root(), att.stored_path))
-            for att in attachments
-        )
-        return message.id, has_live
+            Attachment.message_id.in_(local_ids)).all()
+        live_message_ids = {
+            int(message_id)
+            for message_id, stored_path in attachment_rows
+            if stored_path and os.path.exists(
+                os.path.join(_media_root(), stored_path))
+        }
+        return {
+            int(tg_id): (int(message_id),
+                         int(message_id) in live_message_ids)
+            for message_id, tg_id in rows
+        }
     finally:
         db.close()
+
+
+def _telegram_message_state(user_id, chat_id, tg_message_id):
+    """Возвращает (message_id, has_live_attachment) для Telegram-id."""
+    try:
+        key = int(tg_message_id)
+    except (TypeError, ValueError):
+        return None, False
+    return _telegram_message_states(
+        user_id, chat_id, [key]).get(key, (None, False))
 
 
 def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
@@ -1838,10 +1865,8 @@ def _apply_message_discussion_meta(message, msg):
     return changed
 
 
-def _replace_reactions_if_changed(db, message_id, items):
-    from data.reactions import MessageReaction, replace_reactions
-
-    wanted = [
+def _normalized_reactions(items):
+    return sorted((
         {
             "emoji": item.get("emoji"),
             "count": int(item.get("count") or 0),
@@ -1849,15 +1874,21 @@ def _replace_reactions_if_changed(db, message_id, items):
         }
         for item in (items or [])
         if item.get("emoji")
-    ]
-    existing = [
+    ), key=lambda item: item["emoji"])
+
+
+def _replace_reactions_if_changed(db, message_id, items):
+    from data.reactions import MessageReaction, replace_reactions
+
+    wanted = _normalized_reactions(items)
+    existing = sorted([
         {"emoji": row.emoji, "count": int(row.count or 0),
          "mine": bool(row.mine)}
         for row in (db.query(MessageReaction)
                     .filter(MessageReaction.message_id == int(message_id))
                     .order_by(MessageReaction.id.asc())
                     .all())
-    ]
+    ], key=lambda item: item["emoji"])
     if existing == wanted:
         return False
     replace_reactions(db, int(message_id), wanted)
@@ -1871,34 +1902,72 @@ def _sync_message_reactions(db, message_id, msg):
         db, message_id, _parse_reactions(getattr(msg, "reactions", None)))
 
 
+def _sync_telegram_message_snapshots(items, user_id=None):
+    """Одной SQLite-сессией обновляет метаданные недавних сообщений."""
+    from data import db_sessions
+    from data.reactions import MessageReaction, replace_reactions
+    from data.users import Messages as _Messages
+
+    owner = _normalize_user_id(user_id)
+    snapshots = {
+        int(message_id): msg
+        for message_id, msg in items
+        if message_id is not None
+    }
+    if not snapshots:
+        return 0
+
+    db = db_sessions.create_session()
+    try:
+        messages = db.query(_Messages).filter(
+            _Messages.id.in_(list(snapshots)),
+            _Messages.user_id == owner).all()
+        existing_reactions = {}
+        for row in (db.query(MessageReaction)
+                    .filter(MessageReaction.message_id.in_(list(snapshots)))
+                    .order_by(MessageReaction.message_id.asc(),
+                              MessageReaction.id.asc()).all()):
+            existing_reactions.setdefault(int(row.message_id), []).append({
+                "emoji": row.emoji,
+                "count": int(row.count or 0),
+                "mine": bool(row.mine),
+            })
+
+        changed_count = 0
+        for message in messages:
+            msg = snapshots.get(int(message.id))
+            if msg is None:
+                continue
+            changed = False
+            grouped_id = getattr(msg, "grouped_id", None)
+            if grouped_id is not None and message.tg_grouped_id is None:
+                message.tg_grouped_id = int(grouped_id)
+                changed = True
+            changed = _apply_message_discussion_meta(message, msg) or changed
+            if hasattr(msg, "reactions"):
+                wanted = _normalized_reactions(
+                    _parse_reactions(getattr(msg, "reactions", None)))
+                existing = sorted(
+                    existing_reactions.get(int(message.id), []),
+                    key=lambda item: item["emoji"])
+                if existing != wanted:
+                    replace_reactions(db, int(message.id), wanted)
+                    changed = True
+            if changed:
+                changed_count += 1
+        if changed_count:
+            db.commit()
+        return changed_count
+    finally:
+        db.close()
+
+
 def _sync_telegram_message_snapshot(message_id, msg, user_id=None):
     """Update cached Telegram metadata for an already saved message."""
     if message_id is None:
         return False
-
-    from data import db_sessions
-    from data.users import Messages as _Messages
-
-    owner = _normalize_user_id(user_id)
-    db = db_sessions.create_session()
-    try:
-        message = db.query(_Messages).filter(
-            _Messages.id == int(message_id),
-            _Messages.user_id == owner).first()
-        if message is None:
-            return False
-        changed = False
-        grouped_id = getattr(msg, "grouped_id", None)
-        if grouped_id is not None and message.tg_grouped_id is None:
-            message.tg_grouped_id = int(grouped_id)
-            changed = True
-        changed = _apply_message_discussion_meta(message, msg) or changed
-        changed = _sync_message_reactions(db, message.id, msg) or changed
-        if changed:
-            db.commit()
-        return changed
-    finally:
-        db.close()
+    return bool(_sync_telegram_message_snapshots(
+        [(message_id, msg)], user_id=user_id))
 
 
 def _ensure_message_attachment_stub(message_id, msg, kind, user_id=None):
@@ -2050,19 +2119,42 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
                 owner, chat_id, getattr(chat, "status", None))
         archived = int(getattr(dialog, "folder_id", 0) or 0) == 1
 
+        recent_messages = []
         async for msg in client.iter_messages(chat or chat_id,
                                               limit=message_limit):
+            recent_messages.append(msg)
+        states = await asyncio.to_thread(
+            _telegram_message_states, owner, chat_id,
+            [getattr(msg, "id", None) for msg in recent_messages])
+        snapshots = []
+        for msg in recent_messages:
+            tg_id = getattr(msg, "id", None)
+            try:
+                state_key = int(tg_id)
+            except (TypeError, ValueError):
+                continue
+            existing_id, _has_live_attachment = states.get(
+                state_key, (None, False))
+            if existing_id is not None:
+                snapshots.append((existing_id, msg))
+        if snapshots:
+            await asyncio.to_thread(
+                _sync_telegram_message_snapshots, snapshots, owner)
+
+        for msg in recent_messages:
             if _lifecycle_token(owner) != expected_lifecycle:
                 return saved
             tg_id = getattr(msg, "id", None)
             if tg_id is None:
                 continue
             kind = _media_kind(msg)
-            existing_id, has_live_attachment = _telegram_message_state(
-                owner, chat_id, tg_id)
+            try:
+                state_key = int(tg_id)
+            except (TypeError, ValueError):
+                continue
+            existing_id, has_live_attachment = states.get(
+                state_key, (None, False))
             if existing_id is not None:
-                _sync_telegram_message_snapshot(
-                    existing_id, msg, user_id=owner)
                 if (kind in _REMOTE_ATTACHMENT_KINDS
                         and not has_live_attachment):
                     _ensure_message_attachment_stub(
