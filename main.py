@@ -1433,7 +1433,9 @@ def _recover_interrupted_media_deliveries(force=False):
 def create_app(db_path: str = "db/blogs.db") -> Flask:
     _configure_timezone()
     db_sessions.global_init(db_path)
-    _recover_interrupted_media_deliveries(force=True)
+    # На AlwaysData SQLite лежит на сетевом диске. Проверка прерванных
+    # отправок остаётся в contact_messages_json, но не должна задерживать
+    # создание WSGI-приложения и даже лёгкий /api/ping после reload.
 
     app = Flask(__name__)
     app.config.update(
