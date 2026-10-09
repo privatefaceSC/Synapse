@@ -74,7 +74,8 @@ def restrict_users(db_path: str, media_root: str, keep_user_ids: set[int],
                         .filter(Device.user_id.in_(restricted_ids)).count()
                         if restricted_ids else 0)
 
-        if apply and restricted_ids:
+        needs_db_update = bool(push_count or pending_count)
+        if apply and restricted_ids and needs_db_update:
             now = datetime.now()
             (db.query(WebPushSubscription)
              .filter(WebPushSubscription.user_id.in_(restricted_ids),
@@ -92,6 +93,8 @@ def restrict_users(db_path: str, media_root: str, keep_user_ids: set[int],
                      synchronize_session=False))
             db.commit()
         else:
+            # Не делаем пустой commit: на сетевом SQLite он всё равно
+            # запрашивает write-lock и может мешать работающему сайту.
             db.rollback()
     finally:
         db.close()
