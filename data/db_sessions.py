@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from contextlib import contextmanager
 
 import sqlalchemy as sa
@@ -12,6 +13,7 @@ SqlAlchemyBase = orm.declarative_base()
 __factory = None
 __engine = None
 __schema_thread_lock = threading.Lock()
+__write_transaction_lock = threading.Lock()
 # Увеличивать при каждом изменении wanted/indexes ниже. Первый WSGI worker
 # применяет миграции, остальные читают только PRAGMA без file-lock.
 _SCHEMA_VERSION = 3
@@ -260,6 +262,60 @@ def _apply_light_migrations(engine):
 def create_session() -> Session:
     global __factory
     return __factory()
+
+
+def is_database_busy_error(exc) -> bool:
+    """True только для временной SQLite lock/busy ошибки."""
+    current = exc
+    seen = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        text = str(current).casefold()
+        if ("database is locked" in text
+                or "database table is locked" in text
+                or "database schema is locked" in text):
+            return True
+        current = (getattr(current, "orig", None)
+                   or getattr(current, "__cause__", None))
+    return False
+
+
+def run_write_transaction(operation, *, attempts=4,
+                          busy_timeout_ms=1200):
+    """Повторить короткую идемпотентную DB-операцию при SQLite lock.
+
+    Каждый повтор получает новую Session: после неудачного COMMIT прежняя
+    транзакция уже непригодна. В callback нельзя выполнять сеть или писать
+    большие файлы; для этого данные готовятся до вызова.
+    """
+    attempts = max(1, int(attempts or 1))
+    # В production один uWSGI worker. Сериализуем только критичные входящие
+    # записи, которые явно используют этот helper; read-only HTTP и прочие
+    # Session не блокируем. Context manager гарантированно отпустит lock даже
+    # после исключения или остановки тестового приложения.
+    with __write_transaction_lock:
+        last_error = None
+        for attempt in range(attempts):
+            db = create_session()
+            try:
+                db.connection().exec_driver_sql(
+                    f"PRAGMA busy_timeout={max(0, int(busy_timeout_ms))}")
+                result = operation(db)
+                db.commit()
+                return result
+            except Exception as exc:
+                last_error = exc
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                if (not is_database_busy_error(exc)
+                        or attempt + 1 >= attempts):
+                    raise
+            finally:
+                db.close()
+            time.sleep(0.05 * (2 ** attempt))
+        raise last_error
 
 
 def _reset_for_tests():

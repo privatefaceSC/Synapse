@@ -90,6 +90,7 @@ _presence_refreshing = set()
 _presence_lock = threading.Lock()
 _PRESENCE_REFRESH_INTERVAL = 45
 _recent_sync_at_by_user = {}
+_recent_ui_activity_at_by_user = {}
 _recent_sync_inflight_users = set()
 # Live-события приходят сразу. Catch-up ходит в Telegram и сетевую SQLite,
 # поэтому он лишь страхует редкие пропуски и не должен работать непрерывно.
@@ -857,17 +858,16 @@ async def _reserve_media_write_async(size, replacing_size=0):
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        # shield оставляет worker жить. Когда он закончит, обязательно снимем
-        # возможную reservation; иначе один logout способен ложно заполнить
-        # хранилище до следующего перезапуска WSGI.
-        def _release(done):
-            try:
-                reservation = done.result()
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                return
+        # shield оставляет worker жить. Дожидаемся его здесь и снимаем
+        # reservation до завершения coroutine: callback мог остаться в уже
+        # закрывающемся event-loop, из-за чего asyncio.run зависал при
+        # остановке, а зарезервированные байты жили до рестарта WSGI.
+        try:
+            reservation = await task
+        except (asyncio.CancelledError, Exception):  # noqa: BLE001
+            reservation = None
+        if reservation is not None:
             finish_media_write(reservation, False)
-
-        task.add_done_callback(_release)
         raise
 
 
@@ -981,10 +981,22 @@ def _startup_lock_for_loop():
 
 
 def _recently_active(owner):
-    last_sync = float(_recent_sync_at_by_user.get(
+    last_activity = float(_recent_ui_activity_at_by_user.get(
         _normalize_user_id(owner), 0) or 0)
-    return bool(last_sync and time.monotonic() - last_sync
+    return bool(last_activity and time.monotonic() - last_activity
                 <= _RECENTLY_ACTIVE_WINDOW)
+
+
+def _live_updates_ready(owner):
+    """Есть ли исправный live-handler, делающий минутный catch-up лишним."""
+    owner = _normalize_user_id(owner)
+    client = _clients.get(owner)
+    if client is None or owner not in _handler_registered_users:
+        return False
+    try:
+        return bool(client.is_connected())
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _dialog_folder_lock_for(owner):
@@ -1652,9 +1664,9 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
 
     from data import db_sessions
     from data.contacts import record_message
-    db = db_sessions.create_session()
     notify_message_id = None
-    try:
+
+    def persist_message_row(db):
         comments_available, reply_count = _message_discussion_meta(msg)
         message = record_message(db, owner, "Telegram", chat_key, text,
                                  tg_chat_id=chat_id, author=author,
@@ -1673,20 +1685,27 @@ async def _persist_telegram_message(msg, chat_id, chat, chat_key, chat_type,
                                  tg_reply_count=reply_count,
                                  text_html=text_html,
                                  archived=archived,
-                                 muted=muted)
-        if message is not None and not was_known:
-            notify_message_id = message.id
-        if (message is not None
-                and _sync_message_reactions(db, message.id, msg)):
-            db.commit()
-        # message is None — контакт в блок-листе, медиа тоже пропускаем.
-        if message is not None and kind is not None:
+                                 muted=muted, commit=False)
+        if message is not None:
+            _sync_message_reactions(db, message.id, msg)
+        return message
+
+    # Вся сеть и загрузка медиа уже завершены выше. DB-часть можно безопасно
+    # повторить с новой Session, если сетевой SQLite кратко занят другим
+    # потоком. Точный tg_message_id не даст создать дубль.
+    message = db_sessions.run_write_transaction(persist_message_row)
+    if message is not None and not was_known:
+        notify_message_id = message.id
+
+    if message is not None and kind is not None:
+        db = db_sessions.create_session()
+        try:
             if data is not None:
                 _save_attachment(db, owner, message.id, kind, data, msg)
             elif kind in _REMOTE_ATTACHMENT_KINDS:
                 _ensure_attachment_stub(db, owner, message.id, kind, msg)
-    finally:
-        db.close()
+        finally:
+            db.close()
 
     if (_lifecycle_token(owner) == expected_lifecycle
             and notify and notify_message_id is not None):
@@ -2279,6 +2298,13 @@ def sync_recent(user_id=None, wait=False):
         return None
     owner = _normalize_user_id(user_id)
     now = time.monotonic()
+    _recent_ui_activity_at_by_user[owner] = now
+    # NewMessage/Raw handlers уже принимают сообщения, реакции, архив и mute
+    # сразу. Полный обход 12 диалогов каждую минуту на 0.25 CPU и сетевой
+    # SQLite создавал 8-11-секундные стопоры всего сайта. Catch-up остаётся
+    # для старта/реального reconnect, когда live-поток недоступен.
+    if not wait and _live_updates_ready(owner):
+        return None
     if wait:
         _recent_sync_at_by_user[owner] = now
         return _call(_sync_recent_dialogs(owner), timeout=60)

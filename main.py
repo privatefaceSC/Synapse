@@ -3641,11 +3641,19 @@ def register_routes(app: Flask) -> None:
     def presence_ping():
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        db = get_db()
-        user = db.query(User).filter(User.id == session['user_id']).first()
-        if user is None:
-            return jsonify({'error': 'not_found'}), 404
-        return jsonify({'ok': True, 'presence': _user_presence(user)})
+        # Ответ heartbeat нигде не читается. Сам last_seen уже ставится
+        # неблокирующим before_request worker-ом, поэтому второй SELECT здесь
+        # только мог вернуть 500 во время краткого SQLite write-lock.
+        now = datetime.now()
+        return jsonify({
+            'ok': True,
+            'presence': {
+                'online': True,
+                'label': 'В сети',
+                'detail': 'В сети',
+                'last_seen_at_iso': _iso_dt(now),
+            },
+        })
 
     @app.route('/')
     def main_menu():
@@ -4858,12 +4866,11 @@ def register_routes(app: Flask) -> None:
     def contacts_index_json():
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.contacts import Contact, consolidate_android_group_contacts
+        from data.contacts import Contact
         db = get_db()
         user_id = session['user_id']
         archive_mode = _archive_mode_from_request()
         _kick_telegram_recent_sync(user_id)
-        consolidate_android_group_contacts(db, user_id)
         contacts = (
             db.query(Contact)
             .filter(Contact.user_id == user_id)
@@ -5055,12 +5062,17 @@ def register_routes(app: Flask) -> None:
     def contact_detail(contact_id):
         if not session.get('user_id'):
             return redirect('/login')
-        from data.contacts import Contact, MessengerHandle
+        from data.contacts import (Contact, MessengerHandle,
+                                   consolidate_android_group_contacts)
         from data.matching import display_author
         db = get_db()
         user_id = session['user_id']
         archive_mode = _archive_mode_from_request()
         _sync_direct_messages_to_contacts(db, user_id)
+        # Legacy MAX/VK-группы объединяем один раз при загрузке HTML.
+        # Делать полный обход всех handle-ов в /contacts.json каждые пять
+        # секунд дорого на сетевой SQLite и после первой миграции бесполезно.
+        consolidate_android_group_contacts(db, user_id)
         contact = (
             db.query(Contact)
             .filter(Contact.id == contact_id, Contact.user_id == user_id)
@@ -9014,21 +9026,35 @@ def register_routes(app: Flask) -> None:
         device = _device_from_bearer(db)
         if device is None:
             return 'Unauthorized', 401
-        if not _service_enabled_for_user_id(device.user_id):
+        user_id = int(device.user_id)
+        if not _service_enabled_for_user_id(user_id):
             db.rollback()
             return 'OK Disabled', 200
+        # Аватар и возможное освобождение media-кэша работают с диском и
+        # могут открыть отдельную DB-session. Авторизационный SELECT не
+        # должен всё это время удерживать read-транзакцию SQLite.
+        db.rollback()
         chat_avatar_path = _save_notification_avatar(
-            device.user_id, request.form.get('chat_avatar'))
+            user_id, request.form.get('chat_avatar'))
         author_avatar_path = _save_notification_avatar(
-            device.user_id, request.form.get('author_avatar'))
+            user_id, request.form.get('author_avatar'))
         message_author = author if is_group and author else None
-        msg = record_message(db, device.user_id, messenger_name, sender,
-                             text_value, author=message_author,
-                             package_name=package_name, is_group=is_group,
-                             contact_avatar_path=chat_avatar_path,
-                             author_avatar_path=author_avatar_path,
-                             notification_dedup_key=dedup_key,
-                             created_at=created_at)
+
+        def persist_notification(write_db):
+            return record_message(
+                write_db, user_id, messenger_name, sender, text_value,
+                author=message_author, package_name=package_name,
+                is_group=is_group, contact_avatar_path=chat_avatar_path,
+                author_avatar_path=author_avatar_path,
+                notification_dedup_key=dedup_key,
+                created_at=created_at, commit=False)
+
+        try:
+            msg = db_sessions.run_write_transaction(persist_notification)
+        except Exception as exc:  # noqa: BLE001
+            if db_sessions.is_database_busy_error(exc):
+                return 'Busy', 503
+            raise
         if msg is not None:
             _notify_webpush_message(msg.id)
         return 'OK', 200
@@ -9107,25 +9133,29 @@ def register_routes(app: Flask) -> None:
                        'file': '📎 Файл'}.get(kind, '📎 Вложение')
         message_author = author if is_group and author else None
         stored_path = _store_media_bytes(user_id, data)
-        try:
+        def persist_media(write_db):
             msg = record_message(
-                db, user_id, messenger_name, sender, caption or placeholder,
-                author=message_author, package_name=package_name,
-                is_group=is_group, contact_avatar_path=chat_avatar_path,
+                write_db, user_id, messenger_name, sender,
+                caption or placeholder, author=message_author,
+                package_name=package_name, is_group=is_group,
+                contact_avatar_path=chat_avatar_path,
                 author_avatar_path=author_avatar_path,
                 notification_dedup_key=message_dedup_key,
                 created_at=created_at, commit=False)
             if msg is None:
-                db.rollback()
-                _remove_media_paths([stored_path])
-                return 'OK', 200
-            att = Attachment(
+                return None
+            write_db.add(Attachment(
                 user_id=user_id, message_id=msg.id, kind=kind,
                 mime=upload.mimetype, original_name=upload.filename or None,
                 stored_path=stored_path, size=len(data), dedup_key=dedup_key,
-            )
-            db.add(att)
-            db.commit()
+            ))
+            return msg
+
+        try:
+            msg = db_sessions.run_write_transaction(persist_media)
+            if msg is None:
+                _remove_media_paths([stored_path])
+                return 'OK', 200
         except IntegrityError:
             db.rollback()
             _remove_media_paths([stored_path])
@@ -9134,9 +9164,11 @@ def register_routes(app: Flask) -> None:
                     Attachment.dedup_key == dedup_key).first():
                 raise
             return 'OK Duplicate', 200
-        except Exception:
+        except Exception as exc:
             db.rollback()
             _remove_media_paths([stored_path])
+            if db_sessions.is_database_busy_error(exc):
+                return 'Busy', 503
             raise
         _notify_webpush_message(msg.id)
         return 'OK', 200
