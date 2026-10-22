@@ -2932,6 +2932,159 @@ def _prepare_direct_upload(owner_id: int, upload, voice_upload: bool = False):
                 stored_path=stored_path, size=len(data))
 
 
+class _DirectMediaUnavailableError(RuntimeError):
+    """Пересылаемый локальный файл исчез до публикации сообщения."""
+
+
+def _persist_direct_message(sender_id: int, recipient_id: int,
+                            text: str | None, created_at: datetime,
+                            *, attachment=None, client_send_key=None,
+                            sender_handle_id=None, sender_contact_name=None,
+                            reply_to_message_id=None,
+                            forward_source_id=None, forward_meta=None):
+    """Атомарно сохранить DirectMessage и оба зеркала с retry SQLite."""
+    from data import telegram_bridge
+    from data.direct import DirectMessage
+
+    def persist(write_db):
+        if client_send_key:
+            existing = (write_db.query(Messages)
+                        .filter(Messages.user_id == sender_id,
+                                Messages.notification_dedup_key
+                                == client_send_key)
+                        .order_by(Messages.id.desc())
+                        .first())
+            if existing is not None:
+                return {
+                    'duplicate': True,
+                    'direct_message_id': None,
+                    'sender_message_id': existing.id,
+                    'recipient_message_id': None,
+                    'reply_quote': None,
+                }
+
+        source = None
+        if forward_source_id is not None:
+            source = (write_db.query(Messages)
+                      .filter(Messages.id == int(forward_source_id),
+                              Messages.user_id == sender_id)
+                      .first())
+            if source is None:
+                raise _DirectMediaUnavailableError(
+                    'Пересылаемое сообщение больше недоступно')
+
+        direct_msg = DirectMessage(
+            sender_id=sender_id,
+            recipient_id=recipient_id,
+            text=text or None,
+            created_at=created_at,
+        )
+        write_db.add(direct_msg)
+        write_db.flush()
+
+        if attachment is not None:
+            direct_att = _add_direct_attachment_ref(
+                write_db, direct_msg.id, **attachment)
+            if not direct_msg.text:
+                direct_msg.text = _DM_PLACEHOLDER.get(
+                    direct_att.kind, '📎 Файл')
+
+        shared_forward_paths = []
+        if source is not None:
+            copied = _copy_message_attachments_to_direct(
+                write_db, source, direct_msg.id)
+            shared_forward_paths = [row.stored_path for row in copied]
+            if copied and not direct_msg.text:
+                direct_msg.text = _DM_PLACEHOLDER.get(
+                    copied[0].kind, '📎 Файл')
+        write_db.flush()
+
+        me = write_db.get(User, sender_id)
+        partner = write_db.get(User, recipient_id)
+        users_by_id = {sender_id: me, recipient_id: partner}
+        sender_msg = _mirror_direct_message_for_owner(
+            write_db, direct_msg, sender_id, users_by_id)
+        recipient_msg = _mirror_direct_message_for_owner(
+            write_db, direct_msg, recipient_id, users_by_id)
+
+        if forward_meta is not None:
+            _apply_forward_meta(sender_msg, forward_meta)
+            _apply_forward_meta(recipient_msg, forward_meta)
+        if sender_msg is not None and client_send_key:
+            sender_msg.notification_dedup_key = client_send_key
+        if sender_msg is None and sender_handle_id is not None:
+            sender_msg = Messages(
+                sender='Вы',
+                text=direct_msg.text,
+                messenger_name=SYNAPSE_MESSENGER,
+                time=created_at.strftime('%H:%M'),
+                user_id=sender_id,
+                handle_id=sender_handle_id,
+                created_at=created_at,
+                outgoing=True,
+                notification_dedup_key=client_send_key,
+            )
+            write_db.add(sender_msg)
+            write_db.flush()
+            _apply_forward_meta(sender_msg, forward_meta)
+            _mirror_direct_attachments_to_message(
+                write_db, direct_msg, sender_id, sender_msg)
+
+        reply_quote = None
+        if (reply_to_message_id is not None and sender_msg is not None
+                and sender_handle_id is not None):
+            target = (write_db.query(Messages)
+                      .filter(Messages.id == int(reply_to_message_id),
+                              Messages.user_id == sender_id,
+                              Messages.handle_id == sender_handle_id)
+                      .first())
+            if target is not None:
+                sender_msg.reply_to_message_id = target.id
+                from data.matching import display_author
+                reply_text = target.text or ''
+                reply_quote = {
+                    'id': target.id,
+                    'author': ('Вы' if target.outgoing else display_author(
+                        target.sender, sender_contact_name or '')),
+                    'text': (reply_text[:120]
+                             + ('...' if len(reply_text) > 120 else '')),
+                }
+
+        if shared_forward_paths and not all(
+                _media_rel_path_exists(path)
+                for path in shared_forward_paths):
+            raise _DirectMediaUnavailableError(
+                'Файл уже выгружен из кэша')
+
+        return {
+            'duplicate': False,
+            'direct_message_id': direct_msg.id,
+            'sender_message_id': (sender_msg.id
+                                  if sender_msg is not None else None),
+            'recipient_message_id': (recipient_msg.id
+                                     if recipient_msg is not None else None),
+            'reply_quote': reply_quote,
+        }
+
+    if forward_source_id is not None:
+        # Очистка кэша не должна удалить общий blob между проверкой и COMMIT.
+        with telegram_bridge.media_reference_guard():
+            return db_sessions.run_write_transaction(persist)
+    return db_sessions.run_write_transaction(persist)
+
+
+def _discard_failed_direct_upload(attachment) -> None:
+    if not attachment or not attachment.get('stored_path'):
+        return
+    try:
+        full_path = _safe_media_full_path(attachment['stored_path'])
+        os.remove(full_path)
+    except (OSError, ValueError):
+        return
+    from data import telegram_bridge
+    telegram_bridge._invalidate_media_usage_cache()
+
+
 def _copy_message_attachments_to_direct(db, source_msg, direct_message_id: int):
     copied = []
     for att in _message_attachment_rows(db, source_msg.id):
@@ -3951,7 +4104,7 @@ def register_routes(app: Flask) -> None:
     def messenger_send(user_id):
         if not session.get('user_id'):
             return jsonify({'error': 'unauthorized'}), 401
-        from data.direct import DirectMessage
+        from data.direct import DirectAttachment, DirectMessage
         db = get_db()
         me_id = session['user_id']
         if user_id == me_id:
@@ -3977,34 +4130,36 @@ def register_routes(app: Flask) -> None:
                             'detail': 'Получен пустой файл. Выберите фото заново.'}), 400
 
         now = datetime.now()
-        msg = DirectMessage(sender_id=me_id, recipient_id=user_id,
-                            text=text or None, created_at=now)
-        db.add(msg)
-        db.flush()
+        try:
+            persisted = _persist_direct_message(
+                me_id, user_id, text or None, now,
+                attachment=prepared if has_file else None)
+        except Exception as exc:
+            db.rollback()
+            _discard_failed_direct_upload(prepared)
+            if db_sessions.is_database_busy_error(exc):
+                return jsonify({
+                    'error': 'database_busy',
+                    'detail': ('Сервер занят сохранением сообщений. '
+                               'Отправка будет повторена.'),
+                }), 503
+            raise
 
-        attachments = []
-        if has_file:
-            att = _add_direct_attachment_ref(db, msg.id, **prepared)
-            if not msg.text:
-                msg.text = _DM_PLACEHOLDER.get(att.kind, '📎 Файл')
-            db.flush()
-            attachments = [{'id': att.id, 'kind': att.kind,
-                            'mime': att.mime,
-                            'name': att.original_name}]
-
-        sender = db.query(User).filter(User.id == me_id).first()
-        users_by_id = {me_id: sender, user_id: partner}
-        _mirror_direct_message_for_owner(
-            db, msg, me_id, users_by_id)
-        recipient_msg = _mirror_direct_message_for_owner(
-            db, msg, user_id, users_by_id)
-
-        db.commit()
-        if recipient_msg is not None:
-            _notify_webpush_message(recipient_msg.id)
+        if persisted['recipient_message_id'] is not None:
+            _notify_webpush_message(persisted['recipient_message_id'])
+        db.expire_all()
+        msg = db.get(DirectMessage, persisted['direct_message_id'])
+        attachments = (db.query(DirectAttachment)
+                       .filter(DirectAttachment.message_id == msg.id)
+                       .order_by(DirectAttachment.id.asc())
+                       .all())
         return jsonify({'ok': True, 'id': msg.id, 'text': msg.text or '',
                         'time': now.strftime('%H:%M'), 'outgoing': True,
-                        'attachments': attachments})
+                        'attachments': [
+                            {'id': att.id, 'kind': att.kind,
+                             'mime': att.mime, 'name': att.original_name}
+                            for att in attachments
+                        ]})
 
     @app.route('/messenger/avatar/<int:user_id>')
     def messenger_avatar(user_id):
@@ -5917,7 +6072,6 @@ def register_routes(app: Flask) -> None:
             if partner_id is None or partner_id == user_id:
                 return jsonify({'error': 'not_found'}), 404
 
-            from data.direct import DirectMessage
             now = datetime.now()
             direct_text = text
             if forward_source is not None:
@@ -5934,106 +6088,53 @@ def register_routes(app: Flask) -> None:
             if upload is not None and prepared is None:
                 return jsonify({'error': 'empty_file',
                                 'detail': 'Получен пустой файл. Выберите фото заново.'}), 400
-
-            direct_msg = DirectMessage(
-                sender_id=user_id,
-                recipient_id=partner_id,
-                text=direct_text or None,
-                created_at=now,
-            )
-            db.add(direct_msg)
-            db.flush()
-
-            if upload is not None:
-                direct_att = _add_direct_attachment_ref(
-                    db, direct_msg.id, **prepared)
-                if not direct_msg.text:
-                    direct_msg.text = _DM_PLACEHOLDER.get(
-                        direct_att.kind, '📎 Файл')
-            shared_forward_paths = []
-            if forward_source is not None:
-                copied = _copy_message_attachments_to_direct(
-                    db, forward_source, direct_msg.id)
-                shared_forward_paths = [row.stored_path for row in copied]
-                if copied and not direct_msg.text:
-                    direct_msg.text = _DM_PLACEHOLDER.get(
-                        copied[0].kind, '📎 Файл')
-            db.flush()
-
-            me = db.query(User).filter(User.id == user_id).first()
-            partner = db.query(User).filter(User.id == partner_id).first()
-            msg = None
-            recipient_msg = None
-            if me is not None and partner is not None:
-                users_by_id = {user_id: me, partner_id: partner}
-                msg = _mirror_direct_message_for_owner(
-                    db, direct_msg, user_id, users_by_id)
-                recipient_msg = _mirror_direct_message_for_owner(
-                    db, direct_msg, partner_id, users_by_id)
-            if forward_meta is not None:
-                _apply_forward_meta(msg, forward_meta)
-                _apply_forward_meta(recipient_msg, forward_meta)
-            if msg is not None and client_send_key:
-                msg.notification_dedup_key = client_send_key
-            if msg is None:
-                msg = Messages(
-                    sender='Вы',
-                    text=direct_msg.text,
-                    messenger_name=SYNAPSE_MESSENGER,
-                    time=now.strftime('%H:%M'),
-                    user_id=user_id,
-                    handle_id=synapse_handle.id,
-                    created_at=now,
-                    outgoing=True,
-                    notification_dedup_key=client_send_key,
-                )
-                db.add(msg)
-                db.flush()
-                _apply_forward_meta(msg, forward_meta)
-                _mirror_direct_attachments_to_message(
-                    db, direct_msg, user_id, msg)
-
-            reply_quote = None
             reply_raw = request.form.get('reply_to')
-            if reply_raw and msg is not None:
-                try:
-                    reply_id = int(reply_raw)
-                except (TypeError, ValueError):
-                    reply_id = None
-                if reply_id:
-                    target = db.query(Messages).filter(
-                        Messages.id == reply_id,
-                        Messages.user_id == user_id,
-                        Messages.handle_id == synapse_handle.id).first()
-                    if target is not None:
-                        msg.reply_to_message_id = target.id
-                        from data.matching import display_author
-                        rt_text = target.text or ''
-                        reply_quote = {
-                            'id': target.id,
-                            'author': ('Вы' if target.outgoing
-                                       else display_author(target.sender,
-                                                            contact.display_name)),
-                            'text': rt_text[:120] + ('...' if len(rt_text) > 120 else ''),
-                        }
-            if shared_forward_paths:
-                # Между подготовкой DirectAttachment и commit очистка могла
-                # успеть вытеснить source blob. Под общим lock проверяем его
-                # ещё раз и одним атомарным commit публикуем все зеркала.
-                with telegram_bridge.media_reference_guard():
-                    if not all(_media_rel_path_exists(path)
-                               for path in shared_forward_paths):
-                        db.rollback()
-                        return jsonify({
-                            'error': 'media_unavailable',
-                            'detail': ('Файл уже выгружен из кэша. '
-                                       'Сначала загрузите его в чате.'),
-                        }), 409
-                    db.commit()
-            else:
-                db.commit()
-            if recipient_msg is not None:
-                _notify_webpush_message(recipient_msg.id)
+            try:
+                reply_id = int(reply_raw) if reply_raw else None
+            except (TypeError, ValueError):
+                reply_id = None
+
+            try:
+                persisted = _persist_direct_message(
+                    user_id, partner_id, direct_text or None, now,
+                    attachment=prepared,
+                    client_send_key=client_send_key,
+                    sender_handle_id=synapse_handle.id,
+                    sender_contact_name=contact.display_name,
+                    reply_to_message_id=reply_id,
+                    forward_source_id=(forward_source.id
+                                       if forward_source is not None else None),
+                    forward_meta=forward_meta)
+            except _DirectMediaUnavailableError:
+                db.rollback()
+                _discard_failed_direct_upload(prepared)
+                return jsonify({
+                    'error': 'media_unavailable',
+                    'detail': ('Файл уже выгружен из кэша. '
+                               'Сначала загрузите его в чате.'),
+                }), 409
+            except Exception as exc:
+                db.rollback()
+                _discard_failed_direct_upload(prepared)
+                if db_sessions.is_database_busy_error(exc):
+                    return jsonify({
+                        'error': 'database_busy',
+                        'detail': ('Сервер занят сохранением сообщений. '
+                                   'Отправка будет повторена.'),
+                    }), 503
+                raise
+
+            if persisted['duplicate']:
+                _discard_failed_direct_upload(prepared)
+                db.expire_all()
+                msg = db.get(Messages, persisted['sender_message_id'])
+                return jsonify(_manual_send_duplicate_payload(
+                    db, msg, user_id))
+            reply_quote = persisted['reply_quote']
+            if persisted['recipient_message_id'] is not None:
+                _notify_webpush_message(persisted['recipient_message_id'])
+            db.expire_all()
+            msg = db.get(Messages, persisted['sender_message_id'])
             local_atts = _message_attachment_rows(db, msg.id)
             msg.media = local_atts
             msg.visible_text = msg.text or ''
