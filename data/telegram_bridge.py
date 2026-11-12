@@ -56,6 +56,7 @@ _dialog_folder_refresh_errors = {}
 _recent_sync_futures = {}
 _lifecycle_generation = {}
 _auth_retry_after = {}
+_qr_logins = {}
 _file_send_semaphore = None
 _file_send_semaphore_loop = None
 _pending_file_sends = 0
@@ -5002,6 +5003,115 @@ def _clear_pending_code(state, keep_phone=True):
     })
 
 
+def _cancel_qr_login(owner):
+    login = _qr_logins.pop(owner, None)
+    if login is not None:
+        task = login.get("task")
+        if task is not None and not task.done():
+            task.cancel()
+
+
+async def _wait_for_qr_login(owner, qr_login, login, client, lifecycle):
+    from telethon.errors import SessionPasswordNeededError
+
+    try:
+        await qr_login.wait()
+        if _qr_logins.get(owner) is not login or _lifecycle_token(owner) != lifecycle:
+            return
+        async with _auth_lock_for(owner):
+            if _qr_logins.get(owner) is not login or _lifecycle_token(owner) != lifecycle:
+                return
+            state = _state_for(owner)
+            state["authorized"] = True
+            _clear_pending_code(state, keep_phone=True)
+            login["phase"] = "authorized"
+            login["svg"] = None
+            await _activate(owner, client=client)
+    except SessionPasswordNeededError:
+        if _qr_logins.get(owner) is login and _lifecycle_token(owner) == lifecycle:
+            _state_for(owner)["needs_password"] = True
+            login["phase"] = "password"
+            login["svg"] = None
+    except asyncio.TimeoutError:
+        if _qr_logins.get(owner) is login:
+            login["phase"] = "expired"
+            login["svg"] = None
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Telegram QR login failed for user_id=%s: %s",
+                       owner, exc.__class__.__name__)
+        if _qr_logins.get(owner) is login:
+            login["phase"] = "error"
+            login["svg"] = None
+
+
+async def _start_qr_login(user_id=None):
+    owner = _normalize_user_id(user_id)
+    async with _auth_lock_for(owner):
+        client = await _get_client(owner)
+        state = _state_for(owner)
+        if await client.is_user_authorized():
+            state["authorized"] = True
+            await _activate(owner, client=client)
+            return
+        _cancel_qr_login(owner)
+        try:
+            qr_login = await client.qr_login()
+            # SVG строится локально: токен не уходит в сторонний QR-сервис.
+            import qrcode
+            from qrcode.image.svg import SvgPathFillImage
+            svg = qrcode.make(qr_login.url,
+                              image_factory=SvgPathFillImage).to_string()
+        except Exception as exc:  # noqa: BLE001
+            _raise_auth_error("qr_login", owner, exc)
+        _clear_pending_code(state, keep_phone=True)
+        state["error"] = None
+        login = {
+            "phase": "pending",
+            "expires": qr_login.expires.timestamp(),
+            "svg": svg,
+        }
+        _qr_logins[owner] = login
+        login["task"] = asyncio.create_task(_wait_for_qr_login(
+            owner, qr_login, login, client, _lifecycle_token(owner)))
+        # QRLogin.wait() должен установить обработчик до показа кода.
+        await asyncio.sleep(0)
+
+
+def start_qr_login(user_id=None):
+    owner = _normalize_user_id(user_id)
+    try:
+        _call(_start_qr_login(owner), timeout=20)
+    except TelegramAuthError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        _raise_auth_error("qr_login", owner, exc)
+
+
+def qr_login_status(user_id=None):
+    owner = _normalize_user_id(user_id)
+    state = _state_for(owner)
+    if state["authorized"]:
+        return {"phase": "authorized"}
+    if state["needs_password"]:
+        return {"phase": "password"}
+    login = _qr_logins.get(owner)
+    if login is None:
+        return {"phase": "idle"}
+    if login["phase"] == "pending" and login["expires"] <= time.time():
+        return {"phase": "expired"}
+    return {"phase": login["phase"]}
+
+
+def qr_login_image(user_id=None):
+    owner = _normalize_user_id(user_id)
+    if qr_login_status(owner)["phase"] != "pending":
+        return None
+    login = _qr_logins.get(owner)
+    return login["svg"] if login is not None else None
+
+
 async def _request_code(phone, user_id=None, force_sms=False):
     owner = _normalize_user_id(user_id)
     state = _state_for(owner)
@@ -5017,6 +5127,7 @@ async def _request_code(phone, user_id=None, force_sms=False):
         if await client.is_user_authorized():
             state["authorized"] = True
             return
+        _cancel_qr_login(owner)
         try:
             # force_sms в новых Telethon не работает; способ выбирает Telegram.
             sent = await client.send_code_request(phone)
@@ -5140,6 +5251,7 @@ async def _submit_password(password, user_id=None):
             _raise_auth_error("submit_password", owner, exc)
         state["authorized"] = True
         _clear_pending_code(state, keep_phone=True)
+        _cancel_qr_login(owner)
         await _activate(owner, client=client)
 
 
@@ -5162,6 +5274,7 @@ async def _reset_login(user_id=None):
     startup = _startup_tasks.pop(owner, None)
     if startup is not None and not startup.done():
         startup.cancel()
+    _cancel_qr_login(owner)
     async with _auth_lock_for(owner):
         client = _clients.get(owner)
         if client is not None and await client.is_user_authorized():
@@ -5221,6 +5334,7 @@ async def _logout(user_id=None):
     startup = _startup_tasks.pop(owner, None)
     if startup is not None and not startup.done():
         startup.cancel()
+    _cancel_qr_login(owner)
     sync_future = _recent_sync_futures.pop(owner, None)
     if sync_future is not None and not sync_future.done():
         sync_future.cancel()
@@ -6618,6 +6732,7 @@ def status(user_id=None, refresh=True) -> dict:
         "available": telethon_available(),
         "configured": is_configured(),
         "authorized": state["authorized"],
+        "qr_phase": qr_login_status(user_id)["phase"],
         "needs_password": state["needs_password"],
         "phone": state["phone"],
         "awaiting_code": bool(state.get("phone_code_hash")),

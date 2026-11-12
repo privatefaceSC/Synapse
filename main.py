@@ -4379,6 +4379,44 @@ def register_routes(app: Flask) -> None:
                     error='Не удалось связаться с Telegram. Попробуйте позже.')
         return redirect('/telegram')
 
+    @app.route('/telegram/qr/start', methods=['POST'])
+    def telegram_qr_start():
+        if not session.get('user_id'):
+            return redirect('/login')
+        from data import telegram_bridge
+        user_id = session['user_id']
+        try:
+            telegram_bridge.start_qr_login(user_id=user_id)
+        except telegram_bridge.TelegramAuthError as exc:
+            return render_template(
+                'telegram.html',
+                tg=telegram_bridge.status(user_id, refresh=False),
+                error=str(exc))
+        return redirect('/telegram')
+
+    @app.route('/telegram/qr/status')
+    def telegram_qr_status():
+        if not session.get('user_id'):
+            return jsonify({'phase': 'idle'}), 401
+        from data import telegram_bridge
+        response = jsonify(telegram_bridge.qr_login_status(session['user_id']))
+        response.headers['Cache-Control'] = 'no-store'
+        return response
+
+    @app.route('/telegram/qr/image')
+    def telegram_qr_image():
+        if not session.get('user_id'):
+            return '', 401
+        from data import telegram_bridge
+        svg = telegram_bridge.qr_login_image(session['user_id'])
+        if svg is None:
+            return '', 404
+        response = Response(svg, mimetype='image/svg+xml')
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['Content-Security-Policy'] = 'sandbox'
+        return response
+
     @app.route('/telegram/resend', methods=['POST'])
     def telegram_resend():
         if not session.get('user_id'):
