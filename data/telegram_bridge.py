@@ -92,11 +92,15 @@ _PRESENCE_REFRESH_INTERVAL = 45
 _recent_sync_at_by_user = {}
 _recent_ui_activity_at_by_user = {}
 _recent_sync_inflight_users = set()
+_recent_sync_backlog_users = set()
 # Live-события приходят сразу. Catch-up ходит в Telegram и сетевую SQLite,
 # поэтому он лишь страхует редкие пропуски и не должен работать непрерывно.
 _RECENT_SYNC_INTERVAL = 60
 _RECENT_SYNC_DIALOG_LIMIT = 12
 _RECENT_SYNC_MESSAGE_LIMIT = 8
+_RECENT_SYNC_BACKLOG_MESSAGE_LIMIT = 24
+_RECENT_SYNC_BACKLOG_TOTAL_LIMIT = 48
+_LIVE_SYNC_PROBE_INTERVAL = 5 * 60
 _RECENTLY_ACTIVE_WINDOW = 15 * 60
 _FILTER_REFRESH_INTERVAL = 15 * 60
 _DEFAULT_MEDIA_MAX_MB = 20
@@ -1871,6 +1875,34 @@ def _telegram_message_exists(user_id, chat_id, tg_message_id) -> bool:
     return message_id is not None
 
 
+def _telegram_latest_message_ids(user_id, chat_ids):
+    """Один короткий запрос к БД для сверки Telegram dialog.message.id."""
+    from sqlalchemy import func
+    from data import db_sessions
+    from data.contacts import MessengerHandle
+    from data.users import Messages as _Messages
+
+    ids = list(dict.fromkeys(int(value) for value in chat_ids))
+    if not ids:
+        return {}
+    owner = _normalize_user_id(user_id)
+    db = db_sessions.create_session()
+    try:
+        rows = (db.query(MessengerHandle.tg_chat_id,
+                         func.max(_Messages.tg_message_id))
+                .join(_Messages, _Messages.handle_id == MessengerHandle.id)
+                .filter(MessengerHandle.user_id == owner,
+                        MessengerHandle.messenger_name == "Telegram",
+                        MessengerHandle.tg_chat_id.in_(ids),
+                        _Messages.user_id == owner,
+                        _Messages.tg_message_id.isnot(None))
+                .group_by(MessengerHandle.tg_chat_id).all())
+        return {int(chat_id): int(message_id)
+                for chat_id, message_id in rows if message_id is not None}
+    finally:
+        db.close()
+
+
 def _backfill_telegram_grouped_id(message_id, msg, user_id=None):
     """Дополняет grouped_id у старой записи при недавней catch-up."""
     grouped_id = getattr(msg, "grouped_id", None)
@@ -2089,7 +2121,8 @@ async def _repair_telegram_photo(message_id, msg, user_id=None,
 
 
 async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
-                               message_limit=None):
+                               message_limit=None, only_chat_ids=None,
+                               max_new_messages=None):
     """Сериализует ограниченную догонку Telegram-аккаунтов."""
     owner = _normalize_user_id(user_id)
     lock = _sync_lock_for(owner)
@@ -2109,12 +2142,16 @@ async def _sync_recent_dialogs(user_id=None, client=None, dialog_limit=None,
             return await _sync_recent_dialogs_once(
                 owner, client=client, dialog_limit=dialog_limit,
                 message_limit=message_limit,
+                only_chat_ids=only_chat_ids,
+                max_new_messages=max_new_messages,
                 expected_lifecycle=expected_lifecycle)
 
 
 async def _sync_recent_dialogs_once(user_id=None, client=None,
                                     dialog_limit=None, message_limit=None,
-                                    expected_lifecycle=None):
+                                    expected_lifecycle=None,
+                                    only_chat_ids=None,
+                                    max_new_messages=None):
     """Best-effort catch-up последних Telegram-сообщений.
 
     Live NewMessage обычно ловит входящие/исходящие сразу. Но после рестарта,
@@ -2146,6 +2183,8 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
     async for dialog in client.iter_dialogs(limit=dialog_limit):
         if _lifecycle_token(owner) != expected_lifecycle:
             return saved
+        if max_new_messages is not None and saved >= max_new_messages:
+            break
         if seen_dialogs >= dialog_limit:
             break
         seen_dialogs += 1
@@ -2162,6 +2201,8 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
         try:
             chat_id = int(chat_id)
         except (TypeError, ValueError):
+            continue
+        if only_chat_ids is not None and chat_id not in only_chat_ids:
             continue
         if chat_id in _skip_chat_ids:
             continue
@@ -2183,9 +2224,19 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
         if _is_muted(dialog):
             muted_ids.update(dialog_ids)
 
+        latest_local_id = (await asyncio.to_thread(
+            _telegram_latest_message_ids, owner, [chat_id])).get(chat_id, 0)
+        # При длинном обрыве идём от первого пропущенного сообщения вперёд.
+        # Иначе сохранение восьми самых новых перескочит через весь пробел.
+        history_kwargs = ({"min_id": latest_local_id, "reverse": True}
+                          if latest_local_id else {})
+        per_dialog_limit = (min(message_limit, max_new_messages - saved)
+                            if max_new_messages is not None
+                            else message_limit)
         recent_messages = []
         async for msg in client.iter_messages(chat or chat_id,
-                                              limit=message_limit):
+                                              limit=per_dialog_limit,
+                                              **history_kwargs):
             recent_messages.append(msg)
         states = await asyncio.to_thread(
             _telegram_message_states, owner, chat_id,
@@ -2268,17 +2319,59 @@ async def _sync_recent_dialogs_once(user_id=None, client=None,
                 owner, chat_id, bool(getattr(chat, 'forum', False)),
                 allowed_types=archive_handle_types)
     if _lifecycle_token(owner) == expected_lifecycle:
-        await asyncio.to_thread(
-            _apply_telegram_archive_snapshot, owner, archive_states)
+        # Снимок только изменившихся диалогов не является полным: его
+        # применение могло бы снять архив с объединённого контакта.
+        if only_chat_ids is None:
+            await asyncio.to_thread(
+                _apply_telegram_archive_snapshot, owner, archive_states)
         await asyncio.to_thread(
             _apply_telegram_mute_cache, owner,
             known_mute_ids, muted_ids)
     return saved
 
 
-async def _safe_sync_recent_dialogs(user_id=None):
+async def _probe_live_dialog_gaps(user_id=None):
+    """Дешёвая сверка последних ID без загрузки медиа и истории чатов."""
+    owner = _normalize_user_id(user_id)
+    client = await _get_client(owner)
+    if not await client.is_user_authorized():
+        return {}, {}
+    remote = {}
+    async for dialog in client.iter_dialogs(limit=_RECENT_SYNC_DIALOG_LIMIT):
+        try:
+            chat_id = int(dialog.id)
+            latest_id = int(dialog.message.id)
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if chat_id in _skip_chat_ids:
+            continue
+        remote[chat_id] = latest_id
+    local = await asyncio.to_thread(
+        _telegram_latest_message_ids, owner, remote.keys())
+    return ({chat_id: remote_id for chat_id, remote_id in remote.items()
+             if remote_id > local.get(chat_id, 0)}, local)
+
+
+async def _safe_sync_recent_dialogs(user_id=None, probe_only=False):
     owner = _normalize_user_id(user_id)
     try:
+        if probe_only:
+            gaps, before = await _probe_live_dialog_gaps(owner)
+            if not gaps:
+                _recent_sync_backlog_users.discard(owner)
+                return 0
+            saved = await _sync_recent_dialogs(
+                owner, only_chat_ids=set(gaps),
+                message_limit=_RECENT_SYNC_BACKLOG_MESSAGE_LIMIT,
+                max_new_messages=_RECENT_SYNC_BACKLOG_TOTAL_LIMIT)
+            after = await asyncio.to_thread(
+                _telegram_latest_message_ids, owner, gaps.keys())
+            if any(before.get(chat_id, 0) < after.get(chat_id, 0) < remote_id
+                   for chat_id, remote_id in gaps.items()):
+                _recent_sync_backlog_users.add(owner)
+            else:
+                _recent_sync_backlog_users.discard(owner)
+            return saved
         return await _sync_recent_dialogs(owner)
     except Exception as exc:  # noqa: BLE001
         _state_for(owner)["error"] = f"sync_recent: {exc}"
@@ -2299,25 +2392,26 @@ def sync_recent(user_id=None, wait=False):
     owner = _normalize_user_id(user_id)
     now = time.monotonic()
     _recent_ui_activity_at_by_user[owner] = now
-    # NewMessage/Raw handlers уже принимают сообщения, реакции, архив и mute
-    # сразу. Полный обход 12 диалогов каждую минуту на 0.25 CPU и сетевой
-    # SQLite создавал 8-11-секундные стопоры всего сайта. Catch-up остаётся
-    # для старта/реального reconnect, когда live-поток недоступен.
-    if not wait and _live_updates_ready(owner):
-        return None
+    # is_connected() означает живой TCP, а не гарантирует получение всех
+    # событий. Раз в пять минут сверяем только верхние ID диалогов; полный
+    # catch-up запускаем лишь если Telegram знает отсутствующие у нас ID.
+    live_ready = _live_updates_ready(owner)
     if wait:
         _recent_sync_at_by_user[owner] = now
         return _call(_sync_recent_dialogs(owner), timeout=60)
     last = _recent_sync_at_by_user.get(owner, 0)
     if owner in _recent_sync_inflight_users:
         return None
-    if now - last < _RECENT_SYNC_INTERVAL:
+    interval = (_RECENT_SYNC_INTERVAL if not live_ready
+                or owner in _recent_sync_backlog_users
+                else _LIVE_SYNC_PROBE_INTERVAL)
+    if now - last < interval:
         return None
     _recent_sync_at_by_user[owner] = now
     _recent_sync_inflight_users.add(owner)
     _ensure_loop()
     future = asyncio.run_coroutine_threadsafe(
-        _safe_sync_recent_dialogs(owner), _loop)
+        _safe_sync_recent_dialogs(owner, probe_only=live_ready), _loop)
     _recent_sync_futures[owner] = future
 
     def _forget(done_future):
@@ -4628,6 +4722,10 @@ async def _activate(user_id=None, client=None):
         return
     task = _refresh_tasks.get(owner)
     if task is None or task.done():
+        # После нового входа прежний throttle мог быть выставлен опросами,
+        # пока аккаунт ещё не был авторизован. Дать следующему UI poll сразу
+        # сверить Telegram и локальную историю.
+        _recent_sync_at_by_user.pop(owner, None)
         task = asyncio.ensure_future(_periodic_refresh(
             owner, expected_lifecycle=expected_lifecycle))
         _refresh_tasks[owner] = task
@@ -5076,6 +5174,7 @@ async def _reset_login(user_id=None):
         if sync_future is not None and not sync_future.done():
             sync_future.cancel()
         _recent_sync_inflight_users.discard(owner)
+        _recent_sync_backlog_users.discard(owner)
         _bump_lifecycle(owner)
         async with _handler_lock_for(owner):
             _handler_registered_users.discard(owner)
@@ -5126,6 +5225,7 @@ async def _logout(user_id=None):
     if sync_future is not None and not sync_future.done():
         sync_future.cancel()
     _recent_sync_inflight_users.discard(owner)
+    _recent_sync_backlog_users.discard(owner)
     async with _auth_lock_for(owner):
         # Меняем поколение только когда logout действительно получил lock.
         # Иначе HTTP-timeout мог отменить logout, оставив авторизованный
