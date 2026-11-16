@@ -14,6 +14,8 @@
    `ALWAYSDATA_SSH_PRIVATE_KEY` в GitHub (`Settings → Secrets and variables →
    Actions`). SSH-пользователь AlwaysData имеет доступ ко всему аккаунту,
    поэтому ключ нельзя коммитить или выдавать сторонним workflow.
+   Для беззапросного входа CI приватный ключ должен быть без пароля; проверьте
+   это командой `ssh-keygen -y -P '' -f путь_к_ключу` перед загрузкой секрета.
 2. Workflow получает публичный SSH-ключ AlwaysData и сверяет его с
    ED25519 SHA256-отпечатком из панели `Remote access → SSH/SFTP`.
    При смене сервера AlwaysData обновите отпечаток в workflow после проверки

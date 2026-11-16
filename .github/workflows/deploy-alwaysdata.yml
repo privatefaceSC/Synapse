@@ -61,7 +61,7 @@ jobs:
             echo 'AlwaysData SSH host fingerprint mismatch'; exit 1;
           }
           chmod 600 "$HOME/.ssh/synapse_deploy" "$HOME/.ssh/known_hosts"
-          ssh -v -i "$HOME/.ssh/synapse_deploy" \
+          ssh -i "$HOME/.ssh/synapse_deploy" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             synapseivan@ssh-synapseivan.alwaysdata.net \
