@@ -24,6 +24,19 @@ if [[ "$fetched_sha" != "$expected_sha" ]]; then
   exit 1
 fi
 
+if ! git diff --quiet HEAD FETCH_HEAD -- requirements.txt; then
+  if [[ ! -x .venv/bin/python ]]; then
+    echo 'Server Python virtualenv is missing at $HOME/synapse/.venv' >&2
+    exit 1
+  fi
+  requirements_file="$(mktemp "$HOME/admin/tmp/synapse-requirements.XXXXXX")"
+  trap 'rm -f "$requirements_file"' EXIT
+  git show FETCH_HEAD:requirements.txt > "$requirements_file"
+  .venv/bin/python -m pip install --disable-pip-version-check --no-input \
+    -r "$requirements_file"
+  echo 'Server dependencies updated'
+fi
+
 git merge --ff-only FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$expected_sha"
 echo "Checked out $expected_sha"
