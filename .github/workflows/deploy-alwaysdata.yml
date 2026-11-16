@@ -1,0 +1,70 @@
+name: Deploy Synapse to AlwaysData
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: synapse-alwaysdata-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: Check application
+        run: |
+          python -m pip install -r requirements.txt
+          python -m compileall -q main.py wsgi.py data
+          python - <<'PY'
+          from main import create_app
+          app = create_app(':memory:')
+          response = app.test_client().get('/api/ping')
+          assert response.status_code == 200, response.status_code
+          assert response.json['ok'] is True, response.json
+          PY
+
+      - name: Check deployment credentials
+        env:
+          DEPLOY_KEY: ${{ secrets.ALWAYSDATA_SSH_PRIVATE_KEY }}
+          API_KEY: ${{ secrets.ALWAYSDATA_API_KEY }}
+        run: |
+          test -n "$DEPLOY_KEY" || { echo 'Missing ALWAYSDATA_SSH_PRIVATE_KEY'; exit 1; }
+          test -n "$API_KEY" || { echo 'Missing ALWAYSDATA_API_KEY'; exit 1; }
+
+      - name: Update server checkout
+        env:
+          DEPLOY_KEY: ${{ secrets.ALWAYSDATA_SSH_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/synapse_deploy"
+          ssh-keyscan -T 15 -t ed25519 ssh-synapseivan.alwaysdata.net \
+            > "$HOME/.ssh/known_hosts"
+          host_fingerprint="$(ssh-keygen -lf "$HOME/.ssh/known_hosts" | awk '{print $2}')"
+          test "$host_fingerprint" = 'SHA256:5i/vJYokzNsnXAeHkwzEm+3kxPQWwsRzwXFPQ7oOvNI' || {
+            echo 'AlwaysData SSH host fingerprint mismatch'; exit 1;
+          }
+          chmod 600 "$HOME/.ssh/synapse_deploy" "$HOME/.ssh/known_hosts"
+          ssh -i "$HOME/.ssh/synapse_deploy" \
+            -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+            synapseivan@ssh-synapseivan.alwaysdata.net \
+            "bash -s -- '$GITHUB_SHA'" < deploy/alwaysdata-deploy.sh
+
+      - name: Restart site and verify revision
+        env:
+          ALWAYSDATA_API_KEY: ${{ secrets.ALWAYSDATA_API_KEY }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: python deploy/alwaysdata-release.py
