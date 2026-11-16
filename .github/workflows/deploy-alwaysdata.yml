@@ -50,6 +50,10 @@ jobs:
         run: |
           install -d -m 700 "$HOME/.ssh"
           printf '%s\n' "$DEPLOY_KEY" > "$HOME/.ssh/synapse_deploy"
+          deploy_fingerprint="$(ssh-keygen -lf "$HOME/.ssh/synapse_deploy" | awk '{print $2}')"
+          test "$deploy_fingerprint" = 'SHA256:dycqejrFN2+hPsbZPikAGGk2B4f7LrXuqRNodeH584o' || {
+            echo 'GitHub SSH private key fingerprint mismatch'; exit 1;
+          }
           ssh-keyscan -T 15 -t ed25519 ssh-synapseivan.alwaysdata.net \
             > "$HOME/.ssh/known_hosts"
           host_fingerprint="$(ssh-keygen -lf "$HOME/.ssh/known_hosts" | awk '{print $2}')"
@@ -57,7 +61,7 @@ jobs:
             echo 'AlwaysData SSH host fingerprint mismatch'; exit 1;
           }
           chmod 600 "$HOME/.ssh/synapse_deploy" "$HOME/.ssh/known_hosts"
-          ssh -i "$HOME/.ssh/synapse_deploy" \
+          ssh -v -i "$HOME/.ssh/synapse_deploy" \
             -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -o IdentitiesOnly=yes -o ConnectTimeout=15 \
             synapseivan@ssh-synapseivan.alwaysdata.net \
