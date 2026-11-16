@@ -40,14 +40,3 @@ fi
 git merge --ff-only FETCH_HEAD
 test "$(git rev-parse HEAD)" = "$expected_sha"
 echo "Checked out $expected_sha"
-
-# Одноразовая уборка дубликата, добавленного вручную при настройке CI.
-# Удаляем только если файл содержит ровно эту одну строку.
-temporary_key='ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHY+gFkDWOhJt7aQJkkjUQJ/de/lRrhhDD/g97fU5OGK synapse-github-actions-2026-11'
-if [[ -f "$HOME/.ssh/authorized_keys" ]] &&
-   [[ "$(wc -l < "$HOME/.ssh/authorized_keys")" -eq 1 ]] &&
-   grep -Fxq "$temporary_key" "$HOME/.ssh/authorized_keys"; then
-  rm -- "$HOME/.ssh/authorized_keys"
-  rmdir -- "$HOME/.ssh" 2>/dev/null || true
-  echo 'Removed duplicate authorized_keys entry'
-fi
