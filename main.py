@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from flask import (Flask, Response, abort, g, jsonify, redirect, render_template,
                    request, send_from_directory, session)
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
-from sqlalchemy import or_
+from sqlalchemy import or_, select
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 from werkzeug.security import check_password_hash, generate_password_hash
 
@@ -530,40 +530,43 @@ def _enrich_with_last_message(db, contacts):
         c.presence = _presence_during_activity(c.presence, c.activity)
 
     if contact_ids:
-        ranked = (
-            db.query(
-                MessengerHandle.contact_id.label('contact_id'),
-                Messages.id.label('message_id'),
-                func.row_number().over(
-                    partition_by=MessengerHandle.contact_id,
-                    order_by=(
-                        Messages.created_at.desc().nullslast(),
-                        Messages.id.desc(),
-                    ),
-                ).label('rn'),
-            )
-            .join(Messages, Messages.handle_id == MessengerHandle.id)
-            .filter(MessengerHandle.contact_id.in_(contact_ids))
-            .filter(or_(Messages.delivery_status.is_(None),
-                        Messages.delivery_status != 'scheduled'))
-            .subquery()
+        # Берём по одной последней записи с каждого handle через индекс
+        # (handle_id, created_at, id). Оконная функция по всему messages
+        # перечитывала историю на каждом опросе списка.
+        latest_for_handle = (
+            select(Messages.id)
+            .where(Messages.handle_id == MessengerHandle.id)
+            .where(or_(Messages.delivery_status.is_(None),
+                       Messages.delivery_status != 'scheduled'))
+            .order_by(Messages.created_at.desc().nullslast(),
+                      Messages.id.desc())
+            .limit(1)
+            .correlate(MessengerHandle)
+            .scalar_subquery()
         )
-        last_rows = (
-            db.query(ranked.c.contact_id, ranked.c.message_id)
-            .filter(ranked.c.rn == 1)
-            .all()
-        )
-        last_ids = [row.message_id for row in last_rows]
+        last_rows = (db.query(MessengerHandle.contact_id,
+                              latest_for_handle.label('message_id'))
+                     .filter(MessengerHandle.contact_id.in_(contact_ids))
+                     .all())
+        last_ids = [row.message_id for row in last_rows
+                    if row.message_id is not None]
         if last_ids:
             messages_by_id = {
                 m.id: m for m in
                 db.query(Messages).filter(Messages.id.in_(last_ids)).all()
             }
+            latest_key_by_contact = {}
             for row in last_rows:
                 contact = contacts_by_id.get(row.contact_id)
                 last = messages_by_id.get(row.message_id)
                 if contact is None or last is None:
                     continue
+                sort_key = (last.created_at is not None,
+                            last.created_at or datetime.min, last.id)
+                if sort_key <= latest_key_by_contact.get(
+                        contact.id, (False, datetime.min, 0)):
+                    continue
+                latest_key_by_contact[contact.id] = sort_key
                 contact.last_preview = last.text
                 contact.last_time = last.time
                 contact.last_at = last.created_at
@@ -1491,11 +1494,31 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
         SESSION_COOKIE_SAMESITE='Lax',
     )
 
+    @app.before_request
+    def _start_request_timer():
+        g.request_started_at = time.perf_counter()
+
     @app.after_request
     def _add_build_revision_header(response):
         # Позволяет отличить реально загруженный uWSGI-код от новых файлов
         # на диске, когда мягкий reload AlwaysData оставил старый процесс.
         response.headers['X-Synapse-Revision'] = _BUILD_REVISION
+        started = g.get('request_started_at')
+        if started is not None:
+            elapsed_ms = (time.perf_counter() - started) * 1000
+            try:
+                threshold_ms = max(0, int(os.environ.get(
+                    'SYNAPSE_SLOW_REQUEST_MS', '750')))
+            except ValueError:
+                threshold_ms = 750
+            if response.status_code >= 500 or elapsed_ms >= threshold_ms:
+                # Только имя маршрута и длительность: в логи не попадают
+                # тексты сообщений, параметры URL и Bearer-токены.
+                app.logger.warning(
+                    'Медленный HTTP-запрос: method=%s endpoint=%s '
+                    'status=%s elapsed_ms=%.0f',
+                    request.method, request.endpoint, response.status_code,
+                    elapsed_ms)
         return response
 
     @app.teardown_appcontext
@@ -6326,35 +6349,46 @@ def register_routes(app: Flask) -> None:
                     'audio': '🎵 Аудио', 'file': '📎 Файл',
                 }.get(kind, '📎 Вложение')
                 now = datetime.now()
-                msg = Messages(
-                    sender='Вы',
-                    text=md_plain or placeholder,
-                    text_html=md_html,
-                    messenger_name='Telegram',
-                    time=now.strftime('%H:%M'),
-                    user_id=user_id,
-                    handle_id=tg_handle.id,
-                    created_at=now,
-                    outgoing=True,
-                    tg_message_id=None,
-                    reply_to_message_id=(
-                        reply_target.id if reply_target else None),
-                    notification_dedup_key=client_send_key,
-                    delivery_status='sending',
-                    delivery_error=None,
-                    delivery_caption=text or '',
-                    delivery_silent=bool(silent),
-                    delivery_reply_to_tg_id=reply_kw_tg.get('reply_to'),
-                    delivery_schedule_at=schedule_at,
-                    delivery_started_at=now,
-                )
+                tg_handle_id = tg_handle.id
+                tg_chat_id = tg_handle.tg_chat_id
+                reply_target_id = reply_target.id if reply_target else None
                 stored_path = _store_media_bytes(user_id, data)
-                db.add(msg)
-                db.flush()  # нужно msg.id для Attachment
-                att = _attach_message_file(
-                    db, user_id, msg.id, kind, mime, upload_name,
-                    stored_path, len(data))
-                db.commit()
+                db.rollback()
+
+                def persist_media_outbox(write_db):
+                    msg = Messages(
+                        sender='Вы', text=md_plain or placeholder,
+                        text_html=md_html, messenger_name='Telegram',
+                        time=now.strftime('%H:%M'), user_id=user_id,
+                        handle_id=tg_handle_id, created_at=now,
+                        outgoing=True, tg_message_id=None,
+                        reply_to_message_id=reply_target_id,
+                        notification_dedup_key=client_send_key,
+                        delivery_status='sending', delivery_error=None,
+                        delivery_caption=text or '',
+                        delivery_silent=bool(silent),
+                        delivery_reply_to_tg_id=reply_kw_tg.get('reply_to'),
+                        delivery_schedule_at=schedule_at,
+                        delivery_started_at=now)
+                    write_db.add(msg)
+                    write_db.flush()  # нужно msg.id для Attachment
+                    att = _attach_message_file(
+                        write_db, user_id, msg.id, kind, mime, upload_name,
+                        stored_path, len(data))
+                    return msg, att
+
+                try:
+                    msg, att = db_sessions.run_write_transaction(
+                        persist_media_outbox)
+                except Exception as exc:  # noqa: BLE001
+                    _remove_media_paths([stored_path])
+                    if db_sessions.is_database_busy_error(exc):
+                        return jsonify({
+                            'error': 'database_busy',
+                            'detail': ('Сервер занят сохранением сообщений. '
+                                       'Повторите отправку через несколько секунд.'),
+                        }), 503
+                    raise
 
                 message_id = msg.id
                 response_payload = {
@@ -6399,7 +6433,7 @@ def register_routes(app: Flask) -> None:
 
                 try:
                     telegram_bridge.queue_file(
-                        tg_handle.tg_chat_id, _load_delivery_file,
+                        tg_chat_id, _load_delivery_file,
                         upload_name, text,
                         callback=_delivery_done,
                         **_md_kw_f, **reply_kw_tg, **_opts_f,
@@ -6421,9 +6455,28 @@ def register_routes(app: Flask) -> None:
                 _opts['silent'] = True
             if schedule_at is not None:
                 _opts['schedule'] = schedule_at
+            tg_chat_id = tg_handle.tg_chat_id
+            tg_handle_id = tg_handle.id
+            reply_target_id = reply_target.id if reply_target else None
+            reply_quote = None
+            if reply_target is not None:
+                from data.matching import display_author
+                rt_text = reply_target.text or ''
+                reply_quote = {
+                    'id': reply_target.id,
+                    'author': ('Вы' if reply_target.outgoing
+                               else display_author(reply_target.sender,
+                                                   contact.display_name)),
+                    'text': rt_text[:120] + ('…' if len(rt_text) > 120 else ''),
+                }
+            forwarded = forward_source is not None
+            # MTProto может ждать сеть несколько секунд. Не удерживаем
+            # SQLite read-транзакцию всё это время: она мешает входящим
+            # сообщениям и последующей записи результата отправки.
+            db.rollback()
             try:
                 sent_id = telegram_bridge.send_message(
-                    tg_handle.tg_chat_id, text,
+                    tg_chat_id, text,
                     **_md_kw, **reply_kw_tg, **_opts,
                     user_id=user_id)
             except Exception as exc:  # noqa: BLE001
@@ -6433,80 +6486,109 @@ def register_routes(app: Flask) -> None:
                 return jsonify({'ok': True, 'scheduled': True,
                                 'when': schedule_at.isoformat()})
             now = datetime.now()
-            msg = Messages(
-                sender='Вы',
-                text=md_plain,
-                text_html=md_html,
-                messenger_name='Telegram',
-                time=now.strftime('%H:%M'),
-                user_id=user_id,
-                handle_id=tg_handle.id,
-                created_at=now,
-                outgoing=True,
-                tg_message_id=sent_id,
-                reply_to_message_id=reply_target.id if reply_target else None,
-                notification_dedup_key=client_send_key,
-            )
-            db.add(msg)
-            db.commit()
-            reply_quote = None
-            if reply_target is not None:
-                from data.matching import display_author
-                rt_text = reply_target.text or ''
-                reply_quote = {
-                    'id': reply_target.id,
-                    'author': ('Вы' if reply_target.outgoing
-                               else display_author(reply_target.sender,
-                                                    contact.display_name)),
-                    'text': rt_text[:120] + ('…' if len(rt_text) > 120 else ''),
-                }
+
+            def persist_sent_text(write_db):
+                # Telethon echo иногда успевает сохранить тот же tg-id.
+                existing = (write_db.query(Messages)
+                            .filter(Messages.user_id == user_id,
+                                    Messages.handle_id == tg_handle_id,
+                                    Messages.tg_message_id == sent_id)
+                            .first()) if sent_id is not None else None
+                if existing is not None:
+                    if client_send_key and not existing.notification_dedup_key:
+                        existing.notification_dedup_key = client_send_key
+                    return existing.id, existing.time, existing.created_at
+                msg = Messages(
+                    sender='Вы', text=md_plain, text_html=md_html,
+                    messenger_name='Telegram', time=now.strftime('%H:%M'),
+                    user_id=user_id, handle_id=tg_handle_id, created_at=now,
+                    outgoing=True, tg_message_id=sent_id,
+                    reply_to_message_id=reply_target_id,
+                    notification_dedup_key=client_send_key)
+                write_db.add(msg)
+                write_db.flush()
+                return msg.id, msg.time, msg.created_at
+
+            try:
+                message_id, message_time, message_created_at = (
+                    db_sessions.run_write_transaction(persist_sent_text))
+            except Exception as exc:  # noqa: BLE001
+                if not db_sessions.is_database_busy_error(exc):
+                    raise
+                # Telegram уже подтвердил отправку. HTTP-ошибка вызвала бы
+                # повторную отправку того же текста из браузера.
+                app.logger.warning(
+                    'Telegram отправил сообщение, локальная запись ждёт '
+                    'синхронизации: user_id=%s tg_message_id=%s',
+                    user_id, sent_id)
+                return jsonify({'ok': True, 'pending_sync': True,
+                                'text': md_plain, 'time': now.strftime('%H:%M'),
+                                'date_label': _message_date_label(now),
+                                'forwarded': forwarded}), 202
             # Возвращаем text (plain без markdown-меток) и text_html для
             # оптимистичного рендера на фронте — иначе пользователь видит
             # звёздочки «**жирный**» 2-5 секунд, пока поллинг не подтянет
             # уже отформатированную версию.
-            return jsonify({'ok': True, 'id': msg.id, 'time': msg.time,
-                            'date_label': _message_date_label(msg.created_at),
+            return jsonify({'ok': True, 'id': message_id,
+                            'time': message_time,
+                            'date_label': _message_date_label(message_created_at),
                             'text': md_plain, 'text_html': md_html,
                             'reply_to': reply_quote,
-                            'forwarded': forward_source is not None})
+                            'forwarded': forwarded})
 
         # --- Notification reply через Android (только текст) ---
         if upload is not None:
             return jsonify({'error': 'media_not_supported'}), 400
         if not text:
             return jsonify({'error': 'empty'}), 400
-        if client_send_key:
-            existing_pr = (db.query(PendingReply)
-                           .filter(PendingReply.user_id == user_id,
-                                   PendingReply.client_send_key
-                                   == client_send_key,
-                                   PendingReply.status.in_(
-                                       [STATUS_PENDING, STATUS_PICKED]))
-                           .order_by(PendingReply.id.desc())
-                           .first())
-            if existing_pr is not None:
-                _invalidate_pending_poll_cache(user_id)
+        handle_id = notif_handle.id
+        package_name = _package_for_handle(notif_handle)
+        sender_label = notif_handle.sender_raw
+        reply_target_id = reply_target.id if reply_target else None
+        # Чтение контакта не должно держать транзакцию, пока отдельная
+        # короткая сессия надёжно ставит ответ в очередь.
+        db.rollback()
+
+        def queue_notification_reply(write_db):
+            if client_send_key:
+                existing_pr = (write_db.query(PendingReply)
+                               .filter(PendingReply.user_id == user_id,
+                                       PendingReply.client_send_key
+                                       == client_send_key,
+                                       PendingReply.status.in_(
+                                           [STATUS_PENDING, STATUS_PICKED]))
+                               .order_by(PendingReply.id.desc())
+                               .first())
+                if existing_pr is not None:
+                    return existing_pr.id, True
+            pending = PendingReply(
+                user_id=user_id,
+                handle_id=handle_id,
+                text=text,
+                package_name=package_name,
+                sender_label=sender_label,
+                status=STATUS_PENDING,
+                reply_to_message_id=reply_target_id,
+                client_send_key=client_send_key,
+            )
+            write_db.add(pending)
+            write_db.flush()
+            return pending.id, False
+
+        try:
+            pending_id, duplicate = db_sessions.run_write_transaction(
+                queue_notification_reply)
+        except Exception as exc:  # noqa: BLE001
+            if db_sessions.is_database_busy_error(exc):
                 return jsonify({
-                    'ok': True,
-                    'duplicate': True,
-                    'queued': True,
-                    'pending_id': existing_pr.id,
-                    'via': 'notif',
-                })
-        pr = PendingReply(
-            user_id=user_id,
-            handle_id=notif_handle.id,
-            text=text,
-            package_name=_package_for_handle(notif_handle),
-            sender_label=notif_handle.sender_raw,
-            status=STATUS_PENDING,
-            reply_to_message_id=reply_target.id if reply_target else None,
-            client_send_key=client_send_key,
-        )
-        db.add(pr)
-        db.commit()
+                    'error': 'database_busy',
+                    'detail': ('Сервер занят сохранением сообщений. '
+                               'Повторите отправку через несколько секунд.'),
+                }), 503
+            raise
         _invalidate_pending_poll_cache(user_id)
-        return jsonify({'ok': True, 'queued': True, 'pending_id': pr.id,
+        return jsonify({'ok': True, 'duplicate': duplicate,
+                        'queued': True, 'pending_id': pending_id,
                         'via': 'notif'})
 
     @app.route('/contacts/<int:contact_id>/send-sticker', methods=['POST'])

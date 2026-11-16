@@ -6382,7 +6382,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         contactsPollTimer = setTimeout(
             poll,
             delayMs == null
-                ? pollingIntervalMs(5000, contactsPollFailures)
+                ? pollingIntervalMs(8000, contactsPollFailures)
                 : delayMs);
     }
 
@@ -6508,7 +6508,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
     }
 
     // Доступ из меню pin/mute — чтобы порядок и значки обновились сразу,
-    // не дожидаясь 5-секундного тика.
+    // не дожидаясь следующего тика.
     window.refreshContactsNow = function() {
         contactsPollFailures = 0;
         scheduleContactsPoll(0);
@@ -9157,7 +9157,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         const a = wrap.querySelector('.contact-row');
         if (a) a.classList.add('active');
         // Бэйдж «непрочитано» убираем сразу — сервер пометит чат прочитанным
-        // в messages.json, поллинг списка подтвердит это в течение 5 c.
+        // в messages.json, поллинг списка подтвердит это следующим тиком.
         wrap.dataset.unreadCount = '0';
         const b = wrap.querySelector('.badge-unread');
         if (b) b.remove();
@@ -9218,7 +9218,7 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
         if (currentContactId == null) return;
         typingTimer = setTimeout(
             pollTyping,
-            delayMs == null ? pollDelay(1800, typingPollFailures) : delayMs);
+            delayMs == null ? pollDelay(3000, typingPollFailures) : delayMs);
     }
 
     function startPolling() {
@@ -10681,6 +10681,11 @@ window.loadDeferredVideo = function loadDeferredVideo(wrap, autoplay) {
                 }
                 clearClientSendKey(form);
                 clearReply();
+                if (data.pending_sync) {
+                    alert('Telegram подтвердил отправку. История Synapse '
+                        + 'пока обновляется; не отправляйте сообщение повторно.');
+                    pollMessages();
+                }
                 if (data.forwarded) {
                     clearForward();
                     pollMessages();
