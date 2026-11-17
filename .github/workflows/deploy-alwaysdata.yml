@@ -27,13 +27,19 @@ jobs:
       - name: Check application
         run: |
           python -m pip install -r requirements.txt
-          python -m compileall -q main.py wsgi.py data
+          python -m compileall -q main.py wsgi.py maintenance_wsgi.py data scripts/migrate_sqlite_to_postgres.py
           python - <<'PY'
           from main import create_app
+          from data import __all_models
+          from data.db_sessions import SqlAlchemyBase
+          from sqlalchemy.dialects.postgresql import dialect
+          from sqlalchemy.schema import CreateTable
           app = create_app(':memory:')
           response = app.test_client().get('/api/ping')
           assert response.status_code == 200, response.status_code
           assert response.json['ok'] is True, response.json
+          for table in SqlAlchemyBase.metadata.sorted_tables:
+              str(CreateTable(table).compile(dialect=dialect()))
           PY
 
       - name: Check deployment credentials

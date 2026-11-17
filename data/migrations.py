@@ -168,7 +168,8 @@ if __name__ == "__main__":
     if func is None or not callable(func) or not name.startswith("migrate_"):
         print(f"Неизвестная миграция: {name}")
         sys.exit(1)
-    db_sessions.global_init(os.environ.get("SKILLWOOD_DB_PATH", "db/blogs.db"))
+    db_sessions.global_init(os.environ.get("SKILLWOOD_DATABASE_URL")
+                            or os.environ.get("SKILLWOOD_DB_PATH", "db/blogs.db"))
     session = db_sessions.create_session()
     try:
         stats = func(session)

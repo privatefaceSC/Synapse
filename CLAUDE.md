@@ -15,7 +15,7 @@ pip install -r requirements.txt
 python main.py
 ```
 
-Зависимости зафиксированы в `requirements.txt` (Flask 3.1, Flask-Login, SQLAlchemy 2.0, sqlalchemy-serializer, Werkzeug, requests, pytest).
+Зависимости зафиксированы в `requirements.txt` (Flask 3.1, Flask-Login, SQLAlchemy 2.0, psycopg 3, sqlalchemy-serializer, Werkzeug, requests, pytest).
 
 Тесты на `pytest` в [tests/](tests/). Запуск:
 
@@ -31,7 +31,7 @@ python main.py
 
 ### Создание приложения
 
-Точка входа — `create_app(db_path="db/blogs.db")` в [main.py](main.py). Внутри: `db_sessions.global_init(db_path)`, создание Flask-app, регистрация маршрутов через `register_routes(app)`, `teardown_appcontext` для закрытия per-request сессии. Сессия создаётся лениво в `get_db()` и хранится в `flask.g.db`.
+Точка входа — `create_app(db_path=None)` в [main.py](main.py). При отсутствии аргумента адрес БД берётся из `SKILLWOOD_DATABASE_URL`, затем `SKILLWOOD_DB_PATH`, затем `db/blogs.db`. Внутри: `db_sessions.global_init(db_path)`, создание Flask-app, регистрация маршрутов через `register_routes(app)`, `teardown_appcontext` для закрытия per-request сессии. Сессия создаётся лениво в `get_db()` и хранится в `flask.g.db`.
 
 ### Привязка устройства (центральная нетривиальная идея)
 
@@ -63,8 +63,8 @@ UI:
 
 ### Слой данных
 
-- **SQLite** в `db/blogs.db`. Путь по умолчанию в `create_app("db/blogs.db")`, в тестах — `:memory:`.
-- Engine создаётся с `check_same_thread=False`. Сессия — **per-request** через `flask.g`: `get_db()` создаёт сессию при первом обращении в обработчике, `teardown_appcontext` закрывает.
+- По умолчанию **SQLite** в `db/blogs.db`; после переключения production использует PostgreSQL через `SKILLWOOD_DATABASE_URL`. В тестах — SQLite `:memory:`. Процедура переноса и отката описана в [deploy/POSTGRESQL_MIGRATION.md](deploy/POSTGRESQL_MIGRATION.md).
+- SQLite Engine создаётся с `check_same_thread=False`; PostgreSQL Engine использует небольшой пул соединений. Сессия — **per-request** через `flask.g`: `get_db()` создаёт сессию при первом обращении в обработчике, `teardown_appcontext` закрывает.
 - Модели:
   - [data/users.py](data/users.py) — `User`, `Messages`. У `Messages` поля `handle_id` (FK) и `created_at` добавлены под контакты; `sender`/`messenger_name` остаются как исторический снимок.
   - [data/contacts.py](data/contacts.py) — `Contact`, `MessengerHandle`, плюс сервисные функции `find_or_create_handle`, `record_message`, `merge_contacts`.

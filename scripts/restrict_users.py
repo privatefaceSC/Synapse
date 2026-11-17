@@ -142,8 +142,9 @@ def restrict_users(db_path: str, media_root: str, keep_user_ids: set[int],
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument('--db', default=os.environ.get(
-        'SKILLWOOD_DB_PATH', str(PROJECT_ROOT / 'db' / 'blogs.db')))
+    parser.add_argument('--db', default=(os.environ.get('SKILLWOOD_DATABASE_URL')
+        or os.environ.get('SKILLWOOD_DB_PATH',
+                          str(PROJECT_ROOT / 'db' / 'blogs.db'))))
     parser.add_argument('--media-root', default=os.environ.get(
         'SKILLWOOD_MEDIA_ROOT', str(PROJECT_ROOT / 'media')))
     parser.add_argument('--keep-user', type=int, action='append', required=True)

@@ -581,7 +581,8 @@ def _evict_reloadable_telegram_media(bytes_needed, existing_files=None):
     if not existing_files:
         return 0
 
-    from sqlalchemy import func, or_
+    from sqlalchemy import and_, exists, or_
+    from sqlalchemy.orm import aliased
 
     from data import db_sessions
     from data.attachments import Attachment
@@ -590,61 +591,46 @@ def _evict_reloadable_telegram_media(bytes_needed, existing_files=None):
     from data.stickers import SavedSticker
     from data.users import Messages
 
-    eligible_paths = set()
-    stored_paths = list(existing_files)
+    cutoff = time.time() - _MEDIA_EVICTION_GRACE_SECONDS
+    other_attachment = aliased(Attachment)
     db = db_sessions.create_session()
     try:
-        # SQLite имеет предел на число bind-параметров. Небольшие пачки
-        # также не заставляют сетевую БД строить огромный временный список.
-        for offset in range(0, len(stored_paths), 400):
-            path_batch = stored_paths[offset:offset + 400]
-            attachment_ref_counts = dict(
-                db.query(Attachment.stored_path, func.count(Attachment.id))
-                .filter(Attachment.stored_path.in_(path_batch))
-                .group_by(Attachment.stored_path).all()
+        # Один запрос вместо четырёх запросов на каждую пачку путей:
+        # на сетевой SQLite прежний обход мог держать read-lock минуты.
+        rows = (
+            db.query(Attachment.stored_path)
+            .join(Messages, Messages.id == Attachment.message_id)
+            .join(MessengerHandle,
+                  MessengerHandle.id == Messages.handle_id)
+            .filter(
+                Attachment.kind.in_(tuple(_EVICTABLE_MEDIA_KINDS)),
+                Attachment.user_id == Messages.user_id,
+                Messages.user_id == MessengerHandle.user_id,
+                Messages.messenger_name == "Telegram",
+                MessengerHandle.messenger_name == "Telegram",
+                MessengerHandle.tg_chat_id.isnot(None),
+                Messages.tg_message_id.isnot(None),
+                Messages.tg_ttl_seconds.is_(None),
+                Messages.deleted_at.is_(None),
+                or_(Messages.delivery_status.is_(None),
+                    Messages.delivery_status == "sent"),
+                ~exists().where(
+                    DirectAttachment.stored_path == Attachment.stored_path),
+                ~exists().where(
+                    SavedSticker.stored_path == Attachment.stored_path),
+                ~exists().where(and_(
+                    other_attachment.stored_path == Attachment.stored_path,
+                    other_attachment.id != Attachment.id)),
             )
-            protected_paths = {
-                path for (path,) in db.query(DirectAttachment.stored_path)
-                .filter(DirectAttachment.stored_path.in_(path_batch)).all()
-                if path
-            }
-            protected_paths.update(
-                path for (path,) in db.query(SavedSticker.stored_path)
-                .filter(SavedSticker.stored_path.in_(path_batch)).all()
-                if path
-            )
-            rows = (
-                db.query(Attachment.stored_path)
-                .join(Messages, Messages.id == Attachment.message_id)
-                .join(MessengerHandle,
-                      MessengerHandle.id == Messages.handle_id)
-                .filter(
-                    Attachment.stored_path.in_(path_batch),
-                    Attachment.kind.in_(tuple(_EVICTABLE_MEDIA_KINDS)),
-                    Attachment.user_id == Messages.user_id,
-                    Messages.user_id == MessengerHandle.user_id,
-                    Messages.messenger_name == "Telegram",
-                    MessengerHandle.messenger_name == "Telegram",
-                    MessengerHandle.tg_chat_id.isnot(None),
-                    Messages.tg_message_id.isnot(None),
-                    Messages.tg_ttl_seconds.is_(None),
-                    Messages.deleted_at.is_(None),
-                    or_(Messages.delivery_status.is_(None),
-                        Messages.delivery_status == "sent"),
-                )
-                .all()
-            )
-            eligible_paths.update(
-                stored_path for (stored_path,) in rows
-                if (stored_path not in protected_paths
-                    and attachment_ref_counts.get(stored_path, 0) == 1)
-            )
+            .all()
+        )
     finally:
+        # В rollback-journal режиме отпускаем read-lock до удаления файлов.
+        db.rollback()
         db.close()
 
-    cutoff = time.time() - _MEDIA_EVICTION_GRACE_SECONDS
     candidates = []
-    for stored_path in eligible_paths:
+    for (stored_path,) in rows:
         file_meta = existing_files.get(stored_path)
         if file_meta is None:
             continue

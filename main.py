@@ -744,8 +744,7 @@ def _commit_best_effort(db, context: str) -> bool:
     try:
         # Это некритичные read-receipt/presence-метки. Они не должны
         # держать HTTP-ответ пять секунд, если SQLite занята.
-        db.connection().exec_driver_sql(
-            f"PRAGMA busy_timeout={_PRESENCE_WRITE_BUSY_TIMEOUT_MS}")
+        db_sessions.set_busy_timeout(db, _PRESENCE_WRITE_BUSY_TIMEOUT_MS)
         db.commit()
         return True
     except Exception as exc:  # noqa: BLE001
@@ -1473,8 +1472,10 @@ def _recover_interrupted_media_deliveries(force=False):
         db.close()
 
 
-def create_app(db_path: str = "db/blogs.db") -> Flask:
+def create_app(db_path: str | None = None) -> Flask:
     _configure_timezone()
+    db_path = (db_path or os.environ.get("SKILLWOOD_DATABASE_URL")
+               or os.environ.get("SKILLWOOD_DB_PATH", "db/blogs.db"))
     db_sessions.global_init(db_path)
     # На AlwaysData SQLite лежит на сетевом диске. Проверка прерванных
     # отправок остаётся в contact_messages_json, но не должна задерживать
@@ -1530,6 +1531,13 @@ def create_app(db_path: str = "db/blogs.db") -> Flask:
     register_routes(app)
 
     from data import telegram_bridge
+
+    # На проде кэш должен чиститься и без активного Telegram-соединения.
+    # Фоновая задача короткая и запускается после прогрева WSGI; локальные
+    # тестовые приложения без настроенного постоянного хранилища не трогаем.
+    if (os.environ.get("SKILLWOOD_DB_PATH")
+            and os.environ.get("SKILLWOOD_MEDIA_ROOT")):
+        telegram_bridge.schedule_media_cache_trim()
 
     @app.errorhandler(BadRequest)
     @app.errorhandler(RequestEntityTooLarge)
@@ -3747,8 +3755,7 @@ def register_routes(app: Flask) -> None:
                     # Одного UPDATE на пользователя достаточно для всех.
                     db.rollback()
                     continue
-                db.connection().exec_driver_sql(
-                    f"PRAGMA busy_timeout={_PRESENCE_WRITE_BUSY_TIMEOUT_MS}")
+                db_sessions.set_busy_timeout(db, _PRESENCE_WRITE_BUSY_TIMEOUT_MS)
                 db.query(User).filter(User.id == user_id).update(
                     {User.last_seen_at: seen_at}, synchronize_session=False)
                 db.commit()
@@ -8867,8 +8874,7 @@ def register_routes(app: Flask) -> None:
             # Короткий timeout должен действовать ДО авторизации и чтения
             # очереди. Раньше он выставлялся лишь перед heartbeat UPDATE,
             # поэтому несколько SELECT подряд могли ждать SQLite по 5 секунд.
-            connection.exec_driver_sql(
-                f"PRAGMA busy_timeout={_DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS}")
+            db_sessions.set_busy_timeout(db, _DEVICE_HEARTBEAT_BUSY_TIMEOUT_MS)
             device = _poll_device_identity(db)
             if device is None:
                 return jsonify({'error': 'unauthorized'}), 401
