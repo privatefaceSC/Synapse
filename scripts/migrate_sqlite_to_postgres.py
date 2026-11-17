@@ -240,6 +240,9 @@ def migrate(sqlite_path, postgres_url, batch_size=250):
                     source, conn, table, target_tables[table.name], batch_size,
                     orphans.get(table.name, set()))
                 print(f"Проверено {table.name}: {checked}")
+            # SQLAlchemy сохраняет stream_results в опциях Connection;
+            # CREATE TABLE нельзя выполнять через серверный курсор.
+            conn.execution_options(stream_results=False)
             conn.exec_driver_sql(
                 "CREATE TABLE synapse_schema_version (version INTEGER NOT NULL)")
             conn.exec_driver_sql(
