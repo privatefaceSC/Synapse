@@ -43,7 +43,7 @@ class DirectAttachment(SqlAlchemyBase):
     original_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     # Относительный путь к зашифрованному файлу внутри media-каталога.
     stored_path = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    size = sqlalchemy.Column(sqlalchemy.Integer, nullable=True)
+    size = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
     sticker_pack_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     sticker_pack_title = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     sticker_item_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)

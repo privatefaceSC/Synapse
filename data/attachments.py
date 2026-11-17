@@ -18,7 +18,7 @@ class Attachment(SqlAlchemyBase):
     mime = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     original_name = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     stored_path = sqlalchemy.Column(sqlalchemy.String, nullable=False)
-    size = sqlalchemy.Column(sqlalchemy.Integer, nullable=True)
+    size = sqlalchemy.Column(sqlalchemy.BigInteger, nullable=True)
     dedup_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     sticker_pack_key = sqlalchemy.Column(sqlalchemy.String, nullable=True)
     sticker_pack_title = sqlalchemy.Column(sqlalchemy.String, nullable=True)
